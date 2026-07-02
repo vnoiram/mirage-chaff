@@ -25,8 +25,11 @@ import (
 	"github.com/vnoiram/mirage-chaff/internal/catalog"
 	"github.com/vnoiram/mirage-chaff/internal/certgen"
 	"github.com/vnoiram/mirage-chaff/internal/config"
+	"github.com/vnoiram/mirage-chaff/internal/forward"
 	"github.com/vnoiram/mirage-chaff/internal/observability"
+	"github.com/vnoiram/mirage-chaff/internal/passthrough"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
+	"github.com/vnoiram/mirage-chaff/internal/resolver"
 	"github.com/vnoiram/mirage-chaff/internal/stub"
 )
 
@@ -36,14 +39,17 @@ const safeDefaultStub = "beacon-204"
 
 // Server owns the running process.
 type Server struct {
-	cfg     config.Config
-	version string
-	cfgPath string
-	health  *observability.Health
-	issuer  *certgen.Issuer
-	engine  *policy.Engine
+	cfg      config.Config
+	version  string
+	cfgPath  string
+	health   *observability.Health
+	issuer   *certgen.Issuer
+	engine   *policy.Engine
+	resolver *resolver.Resolver
+	recorder *observability.Recorder
 
 	cat  atomic.Pointer[catalog.Catalog]
+	fwd  atomic.Pointer[forward.Forwarder]
 	once sync.Map // action name -> logged "not implemented" once
 }
 
@@ -73,6 +79,15 @@ func (s *Server) Run(ctx context.Context) error {
 	log.Printf("catalog loaded: %d entries; policy loaded: %d rules from %s",
 		len(cat.Names()), len(rs.Rules()), s.cfg.Paths.PolicyDir)
 
+	// Independent resolver + forwarder for forward/passthrough actions.
+	res, err := resolver.New(s.cfg.Upstream.Resolvers)
+	if err != nil {
+		return err
+	}
+	s.resolver = res
+	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe}))
+	s.recorder = observability.NewRecorder(s.cfg.Log.Redact, 4096)
+
 	// Load intermediate CA. If it is missing, run without TLS interception so
 	// health/monitoring still work before CA setup (logged prominently).
 	if iss, err := certgen.NewIssuer(s.cfg.Cert); err != nil {
@@ -90,7 +105,7 @@ func (s *Server) Run(ctx context.Context) error {
 	fatal := make(chan error, 4)
 
 	// Health/metrics — independent of admin (A-3).
-	obs := observability.New(s.cfg.Observability.Listen, s.cfg.Observability.Metrics, s.health)
+	obs := observability.New(s.cfg.Observability.Listen, s.cfg.Observability.Metrics, s.health, s.recorder)
 	wg.Add(1)
 	go func() { defer wg.Done(); fatal <- obs.Start(ctx) }()
 	log.Printf("health/metrics listening on %s (independent of admin.enabled=%v)",
@@ -109,18 +124,29 @@ func (s *Server) Run(ctx context.Context) error {
 		log.Printf("intercept HTTP listening on %s", s.cfg.Listen.HTTP)
 	}
 
-	// :443 TLS (HTTP/1.1 + optional h2 via ALPN).
+	// :443 TLS. A routing listener peeks the SNI before TLS termination and
+	// splices passthrough domains straight to the origin (design doc
+	// tcp-passthrough); everything else is TLS-terminated and served as HTTP.
 	if s.issuer != nil && s.cfg.Listen.HTTPS != "" {
+		ln, err := s.listen(s.cfg.Listen.HTTPS)
+		if err != nil {
+			return err
+		}
+		routed := &routingListener{Listener: ln, s: s}
 		srv := &http.Server{
 			Handler:           handler,
 			TLSConfig:         s.issuer.TLSConfig(s.alpn()),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		servers = append(servers, srv)
-		if err := s.serve(ctx, &wg, fatal, srv, s.cfg.Listen.HTTPS, true); err != nil {
-			return err
-		}
-		log.Printf("intercept HTTPS listening on %s (alpn=%v)", s.cfg.Listen.HTTPS, s.alpn())
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if e := srv.ServeTLS(routed, "", ""); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				fatal <- e
+			}
+		}()
+		log.Printf("intercept HTTPS listening on %s (alpn=%v, passthrough-aware)", s.cfg.Listen.HTTPS, s.alpn())
 	}
 
 	s.health.SetReady(true)
@@ -149,34 +175,73 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-// serve binds addr and serves srv, reporting a bind failure synchronously.
-// With ipv6 enabled it binds dual-stack ("tcp"); otherwise IPv4 only ("tcp4"),
-// so a wildcard listener does not accidentally accept over IPv6.
-func (s *Server) serve(ctx context.Context, wg *sync.WaitGroup, fatal chan<- error, srv *http.Server, addr string, tlsMode bool) error {
+// listen binds addr. With ipv6 enabled it binds dual-stack ("tcp"); otherwise
+// IPv4 only ("tcp4"), so a wildcard listener does not accidentally accept over
+// IPv6 (design doc: close the IPv6 bypass under operator control).
+func (s *Server) listen(addr string) (net.Listener, error) {
 	network := "tcp"
 	if !s.cfg.Listen.IPv6 {
 		network = "tcp4"
 	}
-	ln, err := net.Listen(network, addr)
+	return net.Listen(network, addr)
+}
+
+// serve binds addr and serves srv (plaintext), reporting a bind failure
+// synchronously.
+func (s *Server) serve(ctx context.Context, wg *sync.WaitGroup, fatal chan<- error, srv *http.Server, addr string, tlsMode bool) error {
+	ln, err := s.listen(addr)
 	if err != nil {
 		return err
 	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		var e error
-		if tlsMode {
-			// GetCertificate is set on srv.TLSConfig; empty cert/key files are fine
-			// and this path auto-configures HTTP/2 from the ALPN list.
-			e = srv.ServeTLS(ln, "", "")
-		} else {
-			e = srv.Serve(ln)
-		}
-		if e != nil && !errors.Is(e, http.ErrServerClosed) {
+		if e := srv.Serve(ln); e != nil && !errors.Is(e, http.ErrServerClosed) {
 			fatal <- e
 		}
 	}()
 	return nil
+}
+
+// routingListener peeks the TLS SNI on each accepted connection. Passthrough
+// domains are spliced to the origin here and never bubble up to TLS termination;
+// all other connections are returned (with the ClientHello replayed) to ServeTLS.
+type routingListener struct {
+	net.Listener
+	s *Server
+}
+
+func (l *routingListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		sni, replay, perr := passthrough.PeekClientHello(c)
+		if perr == nil && sni != "" {
+			if d := l.s.engine.Ruleset().Match(sni, "", ""); d.Action == policy.ActionPassthrough {
+				go l.s.doPassthrough(replay, sni)
+				continue
+			}
+		}
+		return replay, nil
+	}
+}
+
+// doPassthrough splices a passthrough connection to the origin. The replayed
+// ClientHello is fed to the origin via the copy loop, so the client's TLS
+// session terminates at the real server (pinning preserved).
+func (s *Server) doPassthrough(conn net.Conn, sni string) {
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := passthrough.Splice(ctx, conn, nil, sni, "443", s.resolver); err != nil {
+		log.Printf("passthrough %s failed: %v", sni, err)
+	}
+	s.recorder.Log(observability.Record{
+		Time: time.Now(), Domain: sni, Method: "CONNECT",
+		Action: policy.ActionPassthrough, Status: 0,
+	})
 }
 
 func (s *Server) shutdown(servers []*http.Server) {
@@ -201,23 +266,90 @@ func (s *Server) alpn() []string {
 	return a
 }
 
-// handleIntercept routes a decrypted request through the policy engine and
-// applies the matched action. Actions not yet implemented (forward*/passthrough)
-// fail safe to the default stub until their phase lands.
+// handleIntercept routes a decrypted request through the policy engine, applies
+// the matched action, and records a redacted summary.
 func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	cat := s.cat.Load()
-	d := s.engine.Decide(hostname(r), r.URL.Path, r.Method)
+	domain := hostname(r)
+	d := s.engine.Decide(domain, r.URL.Path, r.Method)
+	rw := &respRecorder{ResponseWriter: w, status: http.StatusOK}
 
 	switch d.Action {
 	case policy.ActionStub:
-		stub.Serve(w, r, cat, d.Catalog)
+		stub.Serve(rw, r, cat, d.Catalog)
+	case policy.ActionForwardAsis:
+		s.fwd.Load().Asis(rw, r)
+	case policy.ActionForwardScrubbed:
+		s.fwd.Load().Scrubbed(rw, r)
+	case policy.ActionPassthrough:
+		// Reached only when a passthrough rule is path-scoped (can't be decided
+		// pre-termination). Closest no-modify behavior after termination is asis.
+		s.noteOnce(d.Action, d.Rule, "serving forward-asis after termination")
+		s.fwd.Load().Asis(rw, r)
+	case policy.ActionForwardMimic:
+		// Phase 4. Until then fail safe to a stub (no decoy shaping yet).
+		s.noteOnce(d.Action, d.Rule, "serving safe stub until Phase 4")
+		stub.Serve(rw, r, cat, safeDefaultStub)
 	default:
-		// forward-scrubbed / forward-mimic / forward-asis / passthrough — wired in
-		// Phases 3-5. Until then, serve a safe decoy and note it once per action.
-		if _, loaded := s.once.LoadOrStore(d.Action, true); !loaded {
-			log.Printf("action %q not yet implemented (rule %q); serving safe stub for now", d.Action, d.Rule)
-		}
-		stub.Serve(w, r, cat, safeDefaultStub)
+		stub.Serve(rw, r, cat, safeDefaultStub)
+	}
+
+	s.recorder.Log(observability.Record{
+		Time:        time.Now(),
+		Domain:      domain,
+		Path:        r.URL.RequestURI(),
+		Method:      r.Method,
+		Action:      d.Action,
+		Rule:        d.Rule,
+		Status:      rw.status,
+		Bytes:       rw.n,
+		ContentType: rw.Header().Get("Content-Type"),
+	})
+}
+
+func (s *Server) noteOnce(action, rule, msg string) {
+	if _, loaded := s.once.LoadOrStore(action, true); !loaded {
+		log.Printf("action %q (rule %q): %s", action, rule, msg)
+	}
+}
+
+// forwardFailSafe is the forward ErrorHandler: on upstream failure serve a safe
+// decoy instead of a hard error, so a broken origin never fails worse than a
+// block (design doc circuit-breaker spirit).
+func (s *Server) forwardFailSafe(w http.ResponseWriter, r *http.Request, err error) {
+	log.Printf("forward failed for %s%s: %v (serving safe stub)", hostname(r), r.URL.Path, err)
+	stub.Serve(w, r, s.cat.Load(), safeDefaultStub)
+}
+
+// respRecorder captures status and byte count for logging.
+type respRecorder struct {
+	http.ResponseWriter
+	status      int
+	n           int64
+	wroteHeader bool
+}
+
+func (rw *respRecorder) WriteHeader(code int) {
+	if !rw.wroteHeader {
+		rw.status = code
+		rw.wroteHeader = true
+	}
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *respRecorder) Write(p []byte) (int, error) {
+	if !rw.wroteHeader {
+		rw.wroteHeader = true
+	}
+	n, err := rw.ResponseWriter.Write(p)
+	rw.n += int64(n)
+	return n, err
+}
+
+// Flush proxies http.Flusher so streaming responses still stream.
+func (rw *respRecorder) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }
 
@@ -284,6 +416,20 @@ func (s *Server) reload() {
 	s.cfg.Mode = newCfg.Mode
 	s.cfg.Log = newCfg.Log
 	s.cfg.Mimic = newCfg.Mimic
+
+	// Rebuild the resolver/forwarder if the upstream resolver list changed
+	// (reload-safe). Recorder redaction follows log.redact.
+	if !equalStrings(s.cfg.Upstream.Resolvers, newCfg.Upstream.Resolvers) {
+		if res, err := resolver.New(newCfg.Upstream.Resolvers); err != nil {
+			log.Printf("reload: keeping current resolver (new one invalid: %v)", err)
+		} else {
+			s.resolver = res
+			s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe}))
+			s.cfg.Upstream = newCfg.Upstream
+			log.Printf("reload: resolver updated")
+		}
+	}
+	s.recorder.SetRedact(newCfg.Log.Redact)
 	log.Printf("reload complete: %d catalog entries, %d rules", len(newCat.Names()), len(newRules.Rules()))
 	s.logUnmatched()
 }
@@ -306,4 +452,16 @@ func displayPath(p string) string {
 		return "(defaults)"
 	}
 	return p
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

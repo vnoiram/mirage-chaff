@@ -11,8 +11,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -30,12 +32,14 @@ type Server struct {
 	addr       string
 	metricsOn  bool
 	health     *Health
+	rec        *Recorder
 	httpServer *http.Server
 }
 
-// New builds the observability server. addr is e.g. "127.0.0.1:9256".
-func New(addr string, metricsOn bool, h *Health) *Server {
-	return &Server{addr: addr, metricsOn: metricsOn, health: h}
+// New builds the observability server. addr is e.g. "127.0.0.1:9256". rec may be
+// nil (then /metrics reports only the up gauge).
+func New(addr string, metricsOn bool, h *Health, rec *Recorder) *Server {
+	return &Server{addr: addr, metricsOn: metricsOn, health: h, rec: rec}
 }
 
 func (s *Server) handler() http.Handler {
@@ -61,10 +65,15 @@ func (s *Server) handler() http.Handler {
 		// Phase 7 wires real Prometheus metrics; Phase 0 exposes a stub so the
 		// scrape target and Blackbox probe have something to hit.
 		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			var sb strings.Builder
+			sb.WriteString("# HELP mirage_chaff_up 1 if the server is up.\n")
+			sb.WriteString("# TYPE mirage_chaff_up gauge\n")
+			sb.WriteString("mirage_chaff_up 1\n")
+			if s.rec != nil {
+				s.rec.WriteMetrics(&sb)
+			}
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-			fmt.Fprintln(w, "# HELP mirage_chaff_up 1 if the server is up.")
-			fmt.Fprintln(w, "# TYPE mirage_chaff_up gauge")
-			fmt.Fprintln(w, "mirage_chaff_up 1")
+			_, _ = io.WriteString(w, sb.String())
 		})
 	}
 	return mux
