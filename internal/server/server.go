@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -26,6 +27,8 @@ import (
 	"github.com/vnoiram/mirage-chaff/internal/certgen"
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/forward"
+	"github.com/vnoiram/mirage-chaff/internal/hashrewrite"
+	"github.com/vnoiram/mirage-chaff/internal/mimic"
 	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/passthrough"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
@@ -48,9 +51,10 @@ type Server struct {
 	resolver *resolver.Resolver
 	recorder *observability.Recorder
 
-	cat  atomic.Pointer[catalog.Catalog]
-	fwd  atomic.Pointer[forward.Forwarder]
-	once sync.Map // action name -> logged "not implemented" once
+	cat   atomic.Pointer[catalog.Catalog]
+	fwd   atomic.Pointer[forward.Forwarder]
+	mimic atomic.Pointer[mimic.Handler]
+	once  sync.Map // action name -> logged "not implemented" once
 }
 
 // New constructs a Server.
@@ -79,13 +83,14 @@ func (s *Server) Run(ctx context.Context) error {
 	log.Printf("catalog loaded: %d entries; policy loaded: %d rules from %s",
 		len(cat.Names()), len(rs.Rules()), s.cfg.Paths.PolicyDir)
 
-	// Independent resolver + forwarder for forward/passthrough actions.
+	// Independent resolver + forwarder + mimic for forward/passthrough actions.
 	res, err := resolver.New(s.cfg.Upstream.Resolvers)
 	if err != nil {
 		return err
 	}
 	s.resolver = res
-	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe}))
+	s.mimic.Store(mimic.New(res, mimic.Options{MaxBytes: s.cfg.Mimic.MaxBytes, AllowVideo: s.cfg.Mimic.AllowVideo}))
+	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes}))
 	s.recorder = observability.NewRecorder(s.cfg.Log.Redact, 4096)
 
 	// Load intermediate CA. If it is missing, run without TLS interception so
@@ -287,9 +292,12 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		s.noteOnce(d.Action, d.Rule, "serving forward-asis after termination")
 		s.fwd.Load().Asis(rw, r)
 	case policy.ActionForwardMimic:
-		// Phase 4. Until then fail safe to a stub (no decoy shaping yet).
-		s.noteOnce(d.Action, d.Rule, "serving safe stub until Phase 4")
-		stub.Serve(rw, r, cat, safeDefaultStub)
+		// Shape-preserving decoy (image/js/binary). Video/oversized fall back to a
+		// safe stub (privacy default, design C-1).
+		if !s.mimic.Load().Serve(rw, r) {
+			s.noteOnce(d.Action, d.Rule, "mimic fell back to stub (unsupported/oversized media)")
+			stub.Serve(rw, r, cat, safeDefaultStub)
+		}
 	default:
 		stub.Serve(rw, r, cat, safeDefaultStub)
 	}
@@ -311,6 +319,27 @@ func (s *Server) noteOnce(action, rule, msg string) {
 	if _, loaded := s.once.LoadOrStore(action, true); !loaded {
 		log.Printf("action %q (rule %q): %s", action, rule, msg)
 	}
+}
+
+// rewriteHashes is the forward BodyModifier: for HTML/JSON manifests it rewrites
+// SRI/integrity references whose target URL we have decoyed via mimic, so the
+// integrity check passes against the decoy (design doc hashrewrite). References
+// to URLs we have not decoyed are left untouched (forward-asis fallback, C-3).
+func (s *Server) rewriteHashes(contentType string, body []byte) ([]byte, bool) {
+	m := s.mimic.Load()
+	hasher := func(src string) (string, bool) {
+		key := src
+		if u, err := url.Parse(src); err == nil {
+			key = u.RequestURI()
+		}
+		if d, ok := m.Lookup(key); ok {
+			return hashrewrite.Integrity(d.Hash), true
+		}
+		return "", false
+	}
+	out, n1 := hashrewrite.RewriteSRI(body, hasher)
+	out, n2 := hashrewrite.RewriteJSONIntegrity(out, hasher)
+	return out, n1+n2 > 0
 }
 
 // forwardFailSafe is the forward ErrorHandler: on upstream failure serve a safe
@@ -416,6 +445,9 @@ func (s *Server) reload() {
 	s.cfg.Mode = newCfg.Mode
 	s.cfg.Log = newCfg.Log
 	s.cfg.Mimic = newCfg.Mimic
+
+	// Rebuild mimic (reload-safe thresholds: max_bytes/allow_video/mode).
+	s.mimic.Store(mimic.New(s.resolver, mimic.Options{MaxBytes: newCfg.Mimic.MaxBytes, AllowVideo: newCfg.Mimic.AllowVideo}))
 
 	// Rebuild the resolver/forwarder if the upstream resolver list changed
 	// (reload-safe). Recorder redaction follows log.redact.

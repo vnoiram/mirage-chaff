@@ -1,16 +1,23 @@
 package forward
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// htmlModifyLimit caps the body size we buffer to rewrite (hashrewrite). Larger
+// bodies stream through unmodified.
+const htmlModifyLimit = 4 << 20
 
 // Resolver resolves a hostname to IPs via the independent resolver.
 type Resolver interface {
@@ -57,6 +64,11 @@ type Options struct {
 	// OnError is called when forwarding fails, so the caller can fail safe (e.g.
 	// serve a stub). If nil, a 502 is written.
 	OnError func(w http.ResponseWriter, r *http.Request, err error)
+	// BodyModifier, if set, may rewrite a buffered response body (used for
+	// hashrewrite/SRI on HTML/JSON manifests). It receives the Content-Type and
+	// body and returns the possibly-changed body plus whether it changed. Only
+	// called for uncompressed bodies with a known length under htmlModifyLimit.
+	BodyModifier func(contentType string, body []byte) ([]byte, bool)
 }
 
 // New builds a Forwarder using res for upstream resolution.
@@ -80,14 +92,15 @@ func New(res Resolver, opts Options) *Forwarder {
 		w.WriteHeader(http.StatusBadGateway)
 	}
 	f.asis = &httputil.ReverseProxy{
-		Rewrite:      rewriteTo(false),
-		Transport:    transport,
-		ErrorHandler: errHandler,
+		Rewrite:        rewriteTo(false),
+		Transport:      transport,
+		ModifyResponse: modifyResponse(false, opts.BodyModifier),
+		ErrorHandler:   errHandler,
 	}
 	f.scrubbed = &httputil.ReverseProxy{
 		Rewrite:        rewriteTo(true),
 		Transport:      transport,
-		ModifyResponse: scrubResponse,
+		ModifyResponse: modifyResponse(true, opts.BodyModifier),
 		ErrorHandler:   errHandler,
 	}
 	return f
@@ -145,13 +158,60 @@ func scrubRequest(r *http.Request) {
 	}
 }
 
-func scrubResponse(resp *http.Response) error {
-	// Prevent the origin from setting/refreshing tracking cookies.
-	resp.Header.Del("Set-Cookie")
-	resp.Header.Del("P3p")
-	resp.Header.Del("Report-To")
-	resp.Header.Del("Nel")
+// modifyResponse builds a ReverseProxy ModifyResponse that (optionally) scrubs
+// tracking response headers and (optionally) rewrites a buffered HTML/JSON body
+// via mod (hashrewrite/SRI).
+func modifyResponse(scrub bool, mod func(string, []byte) ([]byte, bool)) func(*http.Response) error {
+	return func(resp *http.Response) error {
+		if scrub {
+			resp.Header.Del("Set-Cookie")
+			resp.Header.Del("P3p")
+			resp.Header.Del("Report-To")
+			resp.Header.Del("Nel")
+		}
+		if mod == nil {
+			return nil
+		}
+		return rewriteBody(resp, mod)
+	}
+}
+
+// rewriteBody buffers a small, uncompressed HTML/JSON body, applies mod, and
+// replaces the response body + Content-Length when it changed. Compressed,
+// unknown-length, or oversized bodies stream through untouched.
+func rewriteBody(resp *http.Response, mod func(string, []byte) ([]byte, bool)) error {
+	ct := resp.Header.Get("Content-Type")
+	if !isRewritable(ct) {
+		return nil
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		return nil // don't touch compressed bodies
+	}
+	if resp.ContentLength < 0 || resp.ContentLength > htmlModifyLimit {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, htmlModifyLimit))
+	resp.Body.Close()
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return nil
+	}
+	newBody, changed := mod(ct, body)
+	if !changed {
+		newBody = body
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(newBody))
+	resp.ContentLength = int64(len(newBody))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
 	return nil
+}
+
+func isRewritable(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.HasPrefix(ct, "text/html") ||
+		strings.Contains(ct, "json") ||
+		strings.Contains(ct, "dash+xml") ||
+		strings.Contains(ct, "mpegurl")
 }
 
 // dialViaResolver dials addr's host through the independent resolver, so upstream
