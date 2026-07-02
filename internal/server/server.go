@@ -11,18 +11,22 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/vnoiram/mirage-chaff/internal/admin"
 	"github.com/vnoiram/mirage-chaff/internal/catalog"
 	"github.com/vnoiram/mirage-chaff/internal/certgen"
 	"github.com/vnoiram/mirage-chaff/internal/config"
@@ -172,6 +176,13 @@ func (s *Server) Run(ctx context.Context) error {
 		log.Printf("protocols.quic set but no CA/listener; UDP443 not opened")
 	}
 
+	// Admin UI (optional; MITM control plane). Health/metrics stay independent.
+	if s.cfg.Admin.Enabled {
+		if err := s.startAdmin(ctx, &wg, fatal, &servers); err != nil {
+			return err
+		}
+	}
+
 	s.health.SetReady(true)
 	_ = sdnotify.Ready()
 	watchdogStop := make(chan struct{})
@@ -205,6 +216,75 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// startAdmin builds and serves the admin UI, wiring it to server state via Deps.
+func (s *Server) startAdmin(ctx context.Context, wg *sync.WaitGroup, fatal chan<- error, servers *[]*http.Server) error {
+	store, err := admin.OpenStore(filepath.Join(s.cfg.Paths.StateDir, "admin", "admin.json"))
+	if err != nil {
+		return err
+	}
+	a := admin.New(store, admin.Deps{
+		Version:    s.version,
+		ConfigPath: s.cfgPath,
+		Paths:      s.cfg.Paths,
+		Recorder:   s.recorder,
+		Engine:     s.engine,
+		CertFingerprint: func() string {
+			if s.issuer != nil {
+				return s.issuer.Fingerprint()
+			}
+			return ""
+		},
+		CertKeyType: s.cfg.Cert.KeyType,
+		Reload:      func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
+		KillSwitch:  s.runKillSwitch,
+		Listeners:   s.listenersInfo,
+	})
+	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	*servers = append(*servers, srv)
+	if err := s.serve(ctx, wg, fatal, srv, s.cfg.Admin.Listen, false); err != nil {
+		return err
+	}
+	log.Printf("admin UI listening on %s (RBAC; localhost by default)", s.cfg.Admin.Listen)
+	return nil
+}
+
+// runKillSwitch executes the kill-switch script (design doc A-4). Its path comes
+// from MC_KILLSWITCH or the default install location.
+func (s *Server) runKillSwitch() error {
+	path := os.Getenv("MC_KILLSWITCH")
+	if path == "" {
+		path = "/usr/local/bin/mirage-chaff-killswitch"
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("kill-switch script not found at %s (set MC_KILLSWITCH)", path)
+	}
+	out, err := exec.Command("/bin/sh", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, out)
+	}
+	return nil
+}
+
+// listenersInfo reports the active listeners for the admin dashboard.
+func (s *Server) listenersInfo() map[string]string {
+	m := map[string]string{}
+	if s.cfg.Protocols.HTTP1 && s.cfg.Listen.HTTP != "" {
+		m["http"] = s.cfg.Listen.HTTP
+	}
+	if s.issuer != nil && s.cfg.Listen.HTTPS != "" {
+		m["https"] = s.cfg.Listen.HTTPS
+	}
+	if s.cfg.Protocols.QUIC {
+		if s.cfg.Protocols.HTTP3 {
+			m["http3"] = s.cfg.Listen.HTTPS + " (udp)"
+		} else {
+			m["quic-passthrough"] = s.cfg.Listen.HTTPS + " (udp)"
+		}
+	}
+	m["health"] = s.cfg.Observability.Listen
+	return m
 }
 
 // startQUIC opens UDP443: HTTP/3 termination when protocols.http3, otherwise a

@@ -10,16 +10,64 @@ import (
 // Engine holds the live ruleset (hot-swappable) and aggregates requests that hit
 // the default (no rule matched) so operators can see which domains/paths are
 // candidates for a new curated rule (design doc "curation 支援").
+//
+// It also carries a temporary per-domain override layer (TTL'd) that the admin UI
+// uses for the "pass this site through for N minutes" control (design doc C).
 type Engine struct {
 	rs        atomic.Pointer[Ruleset]
 	unmatched *aggregator
+
+	tmu   sync.Mutex
+	temps map[string]tempRule
+}
+
+type tempRule struct {
+	dec     Decision
+	expires time.Time
 }
 
 // NewEngine wraps an initial ruleset.
 func NewEngine(rs *Ruleset) *Engine {
-	e := &Engine{unmatched: newAggregator(10000)}
+	e := &Engine{unmatched: newAggregator(10000), temps: map[string]tempRule{}}
 	e.rs.Store(rs)
 	return e
+}
+
+// AddTempRule installs a temporary override for domain that expires after ttl.
+// action/catalog are validated by the caller; typically forward-asis (pass the
+// real site through) for a "temporary allow".
+func (e *Engine) AddTempRule(domain, action, catalog string, ttl time.Duration) {
+	e.tmu.Lock()
+	e.temps[domain] = tempRule{dec: Decision{Action: action, Catalog: catalog, Rule: "temp:" + domain, Matched: true}, expires: time.Now().Add(ttl)}
+	e.tmu.Unlock()
+}
+
+// TempRules returns the active (non-expired) temporary overrides.
+func (e *Engine) TempRules() map[string]time.Time {
+	e.tmu.Lock()
+	defer e.tmu.Unlock()
+	out := map[string]time.Time{}
+	now := time.Now()
+	for d, t := range e.temps {
+		if now.Before(t.expires) {
+			out[d] = t.expires
+		}
+	}
+	return out
+}
+
+func (e *Engine) tempFor(domain string) (Decision, bool) {
+	e.tmu.Lock()
+	defer e.tmu.Unlock()
+	t, ok := e.temps[domain]
+	if !ok {
+		return Decision{}, false
+	}
+	if time.Now().After(t.expires) {
+		delete(e.temps, domain)
+		return Decision{}, false
+	}
+	return t.dec, true
 }
 
 // Swap atomically replaces the ruleset (used on reload after validation).
@@ -29,8 +77,11 @@ func (e *Engine) Swap(rs *Ruleset) { e.rs.Store(rs) }
 func (e *Engine) Ruleset() *Ruleset { return e.rs.Load() }
 
 // Decide matches a request and records it in the unmatched aggregator when the
-// default was used.
+// default was used. A live temporary override for the domain takes precedence.
 func (e *Engine) Decide(domain, path, method string) Decision {
+	if d, ok := e.tempFor(domain); ok {
+		return d
+	}
 	d := e.rs.Load().Match(domain, path, method)
 	if !d.Matched {
 		e.unmatched.record(domain, path)

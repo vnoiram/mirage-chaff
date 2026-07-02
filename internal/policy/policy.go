@@ -129,6 +129,24 @@ func Load(dir string) (*Ruleset, error) {
 	return rs, nil
 }
 
+// ValidateBytes parses and compiles a single policy.d YAML document, returning
+// an error if any rule is invalid. Used by the admin editor before writing.
+func ValidateBytes(raw []byte) error {
+	var pf policyFile
+	if err := yaml.Unmarshal(raw, &pf); err != nil {
+		return err
+	}
+	for _, r := range pf.Rules {
+		if err := r.compile(); err != nil {
+			return fmt.Errorf("rule %q: %w", r.Name, err)
+		}
+	}
+	if pf.Default != nil && !validAction(pf.Default.Action) {
+		return fmt.Errorf("invalid default action %q", pf.Default.Action)
+	}
+	return nil
+}
+
 func (r *Rule) compile() error {
 	if r.Name == "" {
 		return fmt.Errorf("rule has no name")
