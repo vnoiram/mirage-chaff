@@ -48,10 +48,13 @@ openssl req -x509 -new -key "$OUT/root.key" -sha256 -days "$DAYS_ROOT" \
 # --- Intermediate CA with Name Constraints ---
 genkey "$OUT/intermediate.key"
 
-# Build permitted;DNS entries for each curated suffix.
+# Build permitted;DNS entries for each curated suffix. In an openssl config
+# section each entry needs a unique indexed key and an '=' (permitted;DNS.N = ..).
 PERMITTED=""
+idx=0
 for d in "${DOMAINS[@]}"; do
-  PERMITTED+="permitted;DNS:${d}\n"
+  PERMITTED+="permitted;DNS.${idx} = ${d}\n"
+  idx=$((idx + 1))
 done
 
 EXT_CNF="$(mktemp)"

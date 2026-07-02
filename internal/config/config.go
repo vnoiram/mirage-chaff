@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/BurntSushi/toml"
 )
 
 // SchemaVersion is the config schema version this binary understands (D-3).
@@ -156,24 +158,25 @@ func Defaults() Config {
 	}
 }
 
-// Load reads the config file and returns a resolved Config.
-//
-// Phase 0: applies Defaults() and records the path. If the file is absent the
-// defaults are returned (so the skeleton runs out of the box). TODO(Phase 1):
-// decode the TOML at path over the defaults before validation.
+// Load reads the config file and returns a resolved Config: it starts from
+// Defaults() and decodes the TOML at path over them, so any field omitted in the
+// file keeps its default. If the file is absent, the defaults are returned (so
+// the binary runs out of the box for local testing).
 func Load(path string) (Config, error) {
 	cfg := Defaults()
 	cfg.path = path
 
-	if _, err := os.Stat(path); err != nil {
+	raw, err := os.ReadFile(path)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			// Defaults-only run; acceptable for the Phase 0 skeleton.
 			return cfg, nil
 		}
-		return cfg, fmt.Errorf("stat %s: %w", path, err)
+		return cfg, fmt.Errorf("read %s: %w", path, err)
 	}
-
-	// TODO(Phase 1): raw, err := os.ReadFile(path); toml.Unmarshal(raw, &cfg)
+	if err := toml.Unmarshal(raw, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse %s: %w", path, err)
+	}
+	cfg.path = path
 	return cfg, nil
 }
 
