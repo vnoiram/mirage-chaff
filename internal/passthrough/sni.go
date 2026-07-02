@@ -36,6 +36,11 @@ func PeekClientHello(conn net.Conn) (sni string, replay net.Conn, err error) {
 	return sni, &prefixConn{Conn: conn, buf: raw}, nil
 }
 
+// ParseSNI extracts the SNI host_name from a TLS ClientHello handshake message
+// (handshake type byte + length + body). Exported for reuse by the QUIC Initial
+// parser, which recovers the same ClientHello from CRYPTO frames.
+func ParseSNI(handshake []byte) string { return parseSNI(handshake) }
+
 // parseSNI extracts the SNI host_name from a ClientHello handshake body.
 func parseSNI(b []byte) string {
 	// Handshake: type(1)=1 ClientHello, length(3), then body.

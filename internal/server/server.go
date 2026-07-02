@@ -32,7 +32,9 @@ import (
 	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/passthrough"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
+	quicpkg "github.com/vnoiram/mirage-chaff/internal/quic"
 	"github.com/vnoiram/mirage-chaff/internal/resolver"
+	"github.com/vnoiram/mirage-chaff/internal/sdnotify"
 	"github.com/vnoiram/mirage-chaff/internal/stub"
 )
 
@@ -50,6 +52,8 @@ type Server struct {
 	engine   *policy.Engine
 	resolver *resolver.Resolver
 	recorder *observability.Recorder
+
+	breaker *breaker
 
 	cat   atomic.Pointer[catalog.Catalog]
 	fwd   atomic.Pointer[forward.Forwarder]
@@ -92,6 +96,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.mimic.Store(mimic.New(res, mimic.Options{MaxBytes: s.cfg.Mimic.MaxBytes, AllowVideo: s.cfg.Mimic.AllowVideo}))
 	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes}))
 	s.recorder = observability.NewRecorder(s.cfg.Log.Redact, 4096)
+	s.breaker = newBreaker(5, 30*time.Second)
 
 	// Load intermediate CA. If it is missing, run without TLS interception so
 	// health/monitoring still work before CA setup (logged prominently).
@@ -154,30 +159,92 @@ func (s *Server) Run(ctx context.Context) error {
 		log.Printf("intercept HTTPS listening on %s (alpn=%v, passthrough-aware)", s.cfg.Listen.HTTPS, s.alpn())
 	}
 
+	// UDP443 QUIC: terminate HTTP/3, passthrough-relay, or leave closed (firewall
+	// blocks it) per protocols.quic/http3 (design doc C-2 layering).
+	var quicCloser func()
+	if s.cfg.Protocols.QUIC && s.issuer != nil && s.cfg.Listen.HTTPS != "" {
+		var err error
+		quicCloser, err = s.startQUIC(&wg, fatal, handler)
+		if err != nil {
+			return err
+		}
+	} else if s.cfg.Protocols.QUIC {
+		log.Printf("protocols.quic set but no CA/listener; UDP443 not opened")
+	}
+
 	s.health.SetReady(true)
+	_ = sdnotify.Ready()
+	watchdogStop := make(chan struct{})
+	go sdnotify.RunWatchdog(watchdogStop)
 	log.Printf("ready (mode=%s, quic=%v, http3=%v)", s.cfg.Mode, s.cfg.Protocols.QUIC, s.cfg.Protocols.HTTP3)
 
 	// Lifecycle loop.
+	drain := func() {
+		s.health.SetReady(false)
+		_ = sdnotify.Stopping()
+		close(watchdogStop)
+		if quicCloser != nil {
+			quicCloser()
+		}
+		s.shutdown(servers)
+		wg.Wait()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("shutdown signal received; draining")
-			s.health.SetReady(false)
-			s.shutdown(servers)
-			wg.Wait()
+			drain()
 			return nil
 		case <-hup:
 			s.reload()
 		case err := <-fatal:
 			if err != nil {
 				log.Printf("listener failed: %v", err)
-				s.health.SetReady(false)
-				s.shutdown(servers)
-				wg.Wait()
+				drain()
 				return err
 			}
 		}
 	}
+}
+
+// startQUIC opens UDP443: HTTP/3 termination when protocols.http3, otherwise a
+// QUIC passthrough relay. Returns a closer for graceful shutdown.
+func (s *Server) startQUIC(wg *sync.WaitGroup, fatal chan<- error, handler http.Handler) (func(), error) {
+	if s.cfg.Protocols.HTTP3 {
+		h3, err := quicpkg.ListenHTTP3(s.cfg.Listen.HTTPS, s.issuer.GetCertificate, handler)
+		if err != nil {
+			return nil, err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if e := h3.Serve(); e != nil {
+				select {
+				case fatal <- e:
+				default:
+				}
+			}
+		}()
+		log.Printf("HTTP/3 termination listening on UDP %s", s.cfg.Listen.HTTPS)
+		return func() { _ = h3.Close() }, nil
+	}
+
+	relay, err := quicpkg.ListenPassthrough(s.cfg.Listen.HTTPS, "443", s.resolver)
+	if err != nil {
+		return nil, err
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if e := relay.Serve(); e != nil {
+			select {
+			case fatal <- e:
+			default:
+			}
+		}
+	}()
+	log.Printf("QUIC passthrough relay listening on UDP %s", s.cfg.Listen.HTTPS)
+	return func() { _ = relay.Close() }, nil
 }
 
 // listen binds addr. With ipv6 enabled it binds dual-stack ("tcp"); otherwise
@@ -279,6 +346,17 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	d := s.engine.Decide(domain, r.URL.Path, r.Method)
 	rw := &respRecorder{ResponseWriter: w, status: http.StatusOK}
 
+	// Circuit breaker: if a domain's origin has been failing, serve a safe stub
+	// directly instead of hammering it (only for actions that contact upstream).
+	contactsUpstream := d.Action == policy.ActionForwardAsis ||
+		d.Action == policy.ActionForwardScrubbed || d.Action == policy.ActionForwardMimic
+	if contactsUpstream && !s.breaker.Allow(domain) {
+		s.noteOnce("breaker-open:"+domain, d.Rule, "circuit open; serving safe stub")
+		stub.Serve(rw, r, cat, safeDefaultStub)
+		s.record(domain, r, d, rw)
+		return
+	}
+
 	switch d.Action {
 	case policy.ActionStub:
 		stub.Serve(rw, r, cat, d.Catalog)
@@ -302,6 +380,20 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		stub.Serve(rw, r, cat, safeDefaultStub)
 	}
 
+	// Feed the breaker: forwardFailSafe marks rw.failed on upstream error.
+	if contactsUpstream {
+		if rw.failed {
+			s.breaker.RecordFailure(domain)
+		} else {
+			s.breaker.RecordSuccess(domain)
+		}
+	}
+
+	s.record(domain, r, d, rw)
+}
+
+// record logs a redacted request summary via the recorder.
+func (s *Server) record(domain string, r *http.Request, d policy.Decision, rw *respRecorder) {
 	s.recorder.Log(observability.Record{
 		Time:        time.Now(),
 		Domain:      domain,
@@ -347,6 +439,9 @@ func (s *Server) rewriteHashes(contentType string, body []byte) ([]byte, bool) {
 // block (design doc circuit-breaker spirit).
 func (s *Server) forwardFailSafe(w http.ResponseWriter, r *http.Request, err error) {
 	log.Printf("forward failed for %s%s: %v (serving safe stub)", hostname(r), r.URL.Path, err)
+	if rw, ok := w.(*respRecorder); ok {
+		rw.failed = true
+	}
 	stub.Serve(w, r, s.cat.Load(), safeDefaultStub)
 }
 
@@ -356,6 +451,7 @@ type respRecorder struct {
 	status      int
 	n           int64
 	wroteHeader bool
+	failed      bool // set by forwardFailSafe on upstream error (feeds the breaker)
 }
 
 func (rw *respRecorder) WriteHeader(code int) {
