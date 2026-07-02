@@ -1,0 +1,40 @@
+[Unit]
+Description=mirage-chaff — selective anti-adblock / privacy cushion server
+Documentation=https://github.com/vnoiram/mirage-chaff
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/mirage-chaff run -config /etc/mirage-chaff/mirage-chaff.conf
+# Reload = SIGHUP: hot-reload policy.d/catalog (reload-safe fields only).
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+
+# Liveness watchdog. The daemon pings sd_notify WATCHDOG; failure -> restart.
+WatchdogSec=30
+
+User=mirage-chaff
+Group=mirage-chaff
+
+# Bind :80/:443 (and UDP443 when quic=true) without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# Filesystem hardening.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# /etc/mirage-chaff is writable so the admin UI can persist config + reload
+# (design doc A-1). Drop it here and use a staged-write helper if you prefer the
+# service to have no write access to its own config.
+ReadWritePaths=/etc/mirage-chaff /var/lib/mirage-chaff /var/log/mirage-chaff
+
+# Resource caps for constrained VMs (tune to the host).
+# MemoryMax=256M
+# CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

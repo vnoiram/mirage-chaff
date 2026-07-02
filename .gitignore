@@ -1,0 +1,30 @@
+# --- Secrets: NEVER commit private keys or generated CAs/leaves ---
+ca/
+*.key
+*.pem
+intermediate.crt
+root.crt
+certcache/
+
+# --- Runtime config (the real /etc/mirage-chaff is out of tree) ---
+# Only configs/*.sample and configs/policy.d/example.yaml + configs/catalog/ are tracked.
+*.conf
+!configs/*.conf.sample
+agh.env
+
+# --- Admin runtime state (accounts/sessions) ---
+admin/
+*.sqlite
+*.sqlite-*
+
+# --- Build artifacts ---
+/bin/
+/dist/
+mirage-chaff
+!cmd/mirage-chaff/
+
+# --- Go / editor ---
+*.test
+*.out
+coverage.*
+.DS_Store

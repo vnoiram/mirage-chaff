@@ -1,0 +1,62 @@
+# Example policy set (policy.d/*.yaml).
+#
+# Rules are evaluated in priority order (lower number = higher priority). The
+# first match on (domain, path, method) wins. Unknown domains that reach the
+# cushion get the safe default (stub 204). Actions:
+#   stub             serve a named catalog decoy; no upstream contact (default)
+#   forward-scrubbed strip identifiers, resolve real IP via independent resolver
+#   forward-mimic    shape-preserving decoy (image/js/binary; video deferred)
+#   forward-asis     unmodified passthrough of decrypted traffic
+#   passthrough      TCP/QUIC splice, no TLS termination (for pinned domains)
+#
+# Validate with:  mirage-chaff check
+
+rules:
+  # Ad script -> harmless no-op JS that satisfies anti-adblock globals.
+  - name: ads-doubleclick-gpt
+    priority: 10
+    match:
+      domain: "*.googlesyndication.com"
+      path: "*/gpt/*"
+      method: ["GET"]
+    action: stub
+    catalog: noop-js
+
+  # Tracking pixel -> 1x1 transparent gif.
+  - name: tracker-pixel
+    priority: 20
+    match:
+      domain: "*.doubleclick.net"
+      path: "*.gif"
+    action: stub
+    catalog: pixel
+
+  # Measurement beacon -> 204 No Content.
+  - name: analytics-beacon
+    priority: 30
+    match:
+      domain: "*.google-analytics.com"
+      path: "/collect*"
+      method: ["POST", "GET"]
+    action: stub
+    catalog: beacon-204
+
+  # Example privacy endpoint that genuinely needs a response: scrub + forward.
+  - name: example-scrubbed-api
+    priority: 40
+    match:
+      domain: "consent.example.com"
+      path: "/api/*"
+    action: forward-scrubbed
+
+  # Certificate-pinned domain we must not MITM: splice through untouched.
+  - name: pinned-passthrough
+    priority: 90
+    match:
+      domain: "pinned.example.com"
+    action: passthrough
+
+# Default action for anything that reaches the cushion but matches no rule.
+default:
+  action: stub
+  catalog: beacon-204

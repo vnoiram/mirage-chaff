@@ -1,0 +1,79 @@
+# mirage-chaff.conf (sample) — TOML
+#
+# Copy to /etc/mirage-chaff/mirage-chaff.conf and edit. Validate with:
+#   mirage-chaff check -config /etc/mirage-chaff/mirage-chaff.conf
+#
+# Reload semantics: fields tagged "reload-safe" below apply on `systemctl reload`
+# (SIGHUP). Fields tagged "restart" require `systemctl restart` (socket rebind).
+
+version = 1
+
+# Data-path intercept listeners (restart).
+[listen]
+http  = ":80"
+https = ":443"
+ipv6  = true      # dual-stack; also rewrite AAAA in AGH to close the IPv6 bypass
+
+# Transport / application protocols (restart — sockets/ALPN).
+# Default: QUIC OFF. On constrained VMs block UDP443 at the firewall and let
+# clients fall back to TCP (see deploy/firewall-udp443.sh). Enable as opt-in.
+[protocols]
+http1 = true
+http2 = true
+quic  = false
+http3 = false     # requires quic = true
+
+# Intermediate CA + dynamic leaf issuance.
+# SECURITY: the intermediate CA MUST carry Name Constraints limiting issuance to
+# the curated domains (see deploy/gen-ca.sh). key_type ecdsa is lighter for VMs.
+[cert]
+intermediate_cert = "/etc/mirage-chaff/ca/intermediate.crt"
+intermediate_key  = "/etc/mirage-chaff/ca/intermediate.key"
+key_type          = "ecdsa"     # "ecdsa" (default) | "rsa"  (restart)
+cache_max         = 2048        # reload-safe
+cache_ttl_hours   = 168         # reload-safe
+cache_dir         = "/var/lib/mirage-chaff/certcache"
+
+# INDEPENDENT resolver for forward/passthrough real-IP resolution.
+# MUST NOT be AdGuard Home, or you create a DNS rewrite loop.
+[upstream]
+resolvers = ["https://1.1.1.1/dns-query", "https://9.9.9.9/dns-query"]
+
+# Global mode: "full" (all actions) | "stub-only" (lightest: decoys only).
+mode = "full"                   # reload-safe (stub side)
+
+# forward-mimic (shape-preserving decoys). Phase 4 scope: image/js/binary.
+[mimic]
+enabled     = true              # reload-safe
+max_bytes   = 8388608           # 8 MiB; over this -> stub fallback
+cache_max   = 512
+allow_video = false             # video -> stub/asis (design decision C-1)
+
+# Resource caps for constrained VMs (pair with systemd MemoryMax/CPUQuota).
+[resources]
+max_conns      = 1024           # reload-safe
+rate_limit     = 0              # 0 = unlimited; reload-safe
+body_max_bytes = 33554432       # 32 MiB; reload-safe
+
+# Structured logging + redaction (reload-safe).
+[log]
+level  = "info"                 # debug|info|warn|error
+redact = true                   # mask URL/query/header sensitive values BEFORE Loki
+
+# Health/metrics — INDEPENDENT of the admin UI so watchdog/monitoring survive
+# admin.enabled = false. Serves /-/healthy, /ready, and /metrics.
+[observability]
+listen  = "127.0.0.1:9256"      # restart
+metrics = true                  # restart (toggles /metrics only)
+
+# Web admin UI (MITM control plane). Localhost + auth by default; off = lightest.
+[admin]
+enabled = false                 # restart
+listen  = "127.0.0.1:8443"      # restart
+
+# On-disk paths.
+[paths]
+policy_dir  = "/etc/mirage-chaff/policy.d"   # reload-safe
+catalog_dir = "/etc/mirage-chaff/catalog"    # reload-safe
+state_dir   = "/var/lib/mirage-chaff"
+agh_env     = "/etc/mirage-chaff/agh.env"    # kill-switch AGH creds (0600, git-ignored)

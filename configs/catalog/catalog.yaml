@@ -1,0 +1,57 @@
+# Catalog: named decoy response definitions referenced by policy rules.
+#
+# Each entry is a complete response: status, arbitrary headers, and a body that
+# is either inline or a file reference (relative to this catalog dir). multipart
+# entries define boundary-separated parts. Templating (SNI/path echo) is added in
+# a later phase where detection requires it.
+
+noop-js:
+  status: 200
+  headers:
+    Content-Type: "application/javascript"
+    Cache-Control: "no-store"
+  body:
+    file: "noop.js"
+
+pixel:
+  status: 200
+  headers:
+    Content-Type: "image/gif"
+    Cache-Control: "no-store"
+  body:
+    file: "pixel.gif"
+
+beacon-204:
+  status: 204
+
+empty-json:
+  status: 200
+  headers:
+    Content-Type: "application/json"
+  body:
+    file: "empty.json"
+
+# Empty VAST so a video player cleanly skips "no ad".
+empty-vast:
+  status: 200
+  headers:
+    Content-Type: "application/xml"
+  body:
+    inline: |
+      <?xml version="1.0" encoding="UTF-8"?>
+      <VAST version="4.0"></VAST>
+
+# Example multipart/mixed response.
+mp-example:
+  status: 200
+  multipart:
+    type: "multipart/mixed"
+    parts:
+      - headers:
+          Content-Type: "application/json"
+        body:
+          inline: "{}"
+      - headers:
+          Content-Type: "image/gif"
+        body:
+          file: "pixel.gif"
