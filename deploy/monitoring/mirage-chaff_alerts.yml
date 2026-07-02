@@ -1,0 +1,55 @@
+# Alertmanager rules for mirage-chaff (design doc §3).
+#
+# Same format as roles/prometheus/files/alert_rules.yml; routes through the
+# existing Alertmanager -> ntfy + Discord. Annotations carry a JP summary to
+# match the standard convention.
+
+groups:
+  - name: mirage-chaff
+    rules:
+      - alert: CushionDown
+        expr: up{job="mirage-chaff"} == 0 or mirage_chaff_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "mirage-chaff が停止しています"
+          description: "クッションサーバーが応答しません。curated ドメインが壊れる恐れがあります。kill-switch を検討してください。"
+
+      - alert: CertExpiringSoon
+        expr: (mirage_chaff_intermediate_ca_not_after_seconds - time()) < 14 * 24 * 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "中間 CA の有効期限が近づいています"
+          description: "中間 CA があと {{ $value | humanizeDuration }} で失効します。ローテーションしてください。"
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(mirage_chaff_responses_total{class="5xx"}[5m]))
+            / clamp_min(sum(rate(mirage_chaff_responses_total[5m])), 1) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "5xx 応答の比率が高い"
+          description: "直近5分の 5xx 比率が 10% を超えています（上流障害またはポリシー不備の可能性）。"
+
+      - alert: UpstreamResolverDown
+        expr: increase(mirage_chaff_responses_total{class="5xx"}[10m]) > 50 and rate(mirage_chaff_requests_total{action=~"forward.*"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "独立リゾルバ/上流の障害が疑われます"
+          description: "forward 系アクションで 5xx が多発しています。独立 DNS リゾルバ到達性を確認してください。"
+
+      - alert: UnmatchedDomainSpike
+        expr: increase(mirage_chaff_unmatched_domains[15m]) > 100
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "未マッチドメインが急増"
+          description: "curation 候補が急増しています。新しい壊れやすいサイトが増えた可能性。ポリシー追加を検討してください。"

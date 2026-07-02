@@ -31,13 +31,14 @@ type Record struct {
 type Recorder struct {
 	redact bool
 
-	mu       sync.Mutex
-	ring     []Record
-	next     int
-	full     bool
-	byAction map[string]int64
-	byStatus map[int]int64
-	total    int64
+	mu         sync.Mutex
+	ring       []Record
+	next       int
+	full       bool
+	byAction   map[string]int64
+	byStatus   map[int]int64
+	total      int64
+	bytesTotal int64
 }
 
 // NewRecorder builds a Recorder with a ring buffer of ringSize records.
@@ -74,6 +75,7 @@ func (r *Recorder) Log(rec Record) {
 	r.byAction[rec.Action]++
 	r.byStatus[rec.Status]++
 	r.total++
+	r.bytesTotal += rec.Bytes
 	r.mu.Unlock()
 
 	logged := rec
@@ -124,6 +126,37 @@ func (r *Recorder) WriteMetrics(sb *strings.Builder) {
 	for _, a := range actions {
 		sb.WriteString("mirage_chaff_requests_total{action=\"" + a + "\"} ")
 		sb.WriteString(itoa(r.byAction[a]) + "\n")
+	}
+
+	sb.WriteString("# HELP mirage_chaff_responses_total Responses by HTTP status class.\n")
+	sb.WriteString("# TYPE mirage_chaff_responses_total counter\n")
+	classes := map[string]int64{}
+	for code, n := range r.byStatus {
+		classes[statusClass(code)] += n
+	}
+	for _, c := range []string{"2xx", "3xx", "4xx", "5xx", "other"} {
+		if classes[c] > 0 {
+			sb.WriteString("mirage_chaff_responses_total{class=\"" + c + "\"} " + itoa(classes[c]) + "\n")
+		}
+	}
+
+	sb.WriteString("# HELP mirage_chaff_response_bytes_total Total response bytes served.\n")
+	sb.WriteString("# TYPE mirage_chaff_response_bytes_total counter\n")
+	sb.WriteString("mirage_chaff_response_bytes_total " + itoa(r.bytesTotal) + "\n")
+}
+
+func statusClass(code int) string {
+	switch {
+	case code >= 200 && code < 300:
+		return "2xx"
+	case code >= 300 && code < 400:
+		return "3xx"
+	case code >= 400 && code < 500:
+		return "4xx"
+	case code >= 500:
+		return "5xx"
+	default:
+		return "other"
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -120,6 +121,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Health/metrics — independent of admin (A-3).
 	obs := observability.New(s.cfg.Observability.Listen, s.cfg.Observability.Metrics, s.health, s.recorder)
+	obs.SetExtraMetrics(s.extraMetrics)
 	wg.Add(1)
 	go func() { defer wg.Done(); fatal <- obs.Start(ctx) }()
 	log.Printf("health/metrics listening on %s (independent of admin.enabled=%v)",
@@ -265,6 +267,28 @@ func (s *Server) runKillSwitch() error {
 		return fmt.Errorf("%v: %s", err, out)
 	}
 	return nil
+}
+
+// extraMetrics appends server-level gauges to /metrics (Phase 7 Prometheus).
+func (s *Server) extraMetrics(sb *strings.Builder) {
+	rs := s.engine.Ruleset()
+	sb.WriteString("# HELP mirage_chaff_policy_rules Loaded policy rules.\n")
+	sb.WriteString("# TYPE mirage_chaff_policy_rules gauge\n")
+	fmt.Fprintf(sb, "mirage_chaff_policy_rules %d\n", len(rs.Rules()))
+
+	sb.WriteString("# HELP mirage_chaff_temp_allows Active temporary allow overrides.\n")
+	sb.WriteString("# TYPE mirage_chaff_temp_allows gauge\n")
+	fmt.Fprintf(sb, "mirage_chaff_temp_allows %d\n", len(s.engine.TempRules()))
+
+	sb.WriteString("# HELP mirage_chaff_unmatched_domains Distinct unmatched domain/path pairs seen.\n")
+	sb.WriteString("# TYPE mirage_chaff_unmatched_domains gauge\n")
+	fmt.Fprintf(sb, "mirage_chaff_unmatched_domains %d\n", len(s.engine.UnmatchedTop(0)))
+
+	if s.issuer != nil {
+		sb.WriteString("# HELP mirage_chaff_intermediate_ca_not_after_seconds Intermediate CA expiry (unix seconds).\n")
+		sb.WriteString("# TYPE mirage_chaff_intermediate_ca_not_after_seconds gauge\n")
+		fmt.Fprintf(sb, "mirage_chaff_intermediate_ca_not_after_seconds %d\n", s.issuer.NotAfter().Unix())
+	}
 }
 
 // listenersInfo reports the active listeners for the admin dashboard.

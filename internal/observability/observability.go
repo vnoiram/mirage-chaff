@@ -33,8 +33,13 @@ type Server struct {
 	metricsOn  bool
 	health     *Health
 	rec        *Recorder
+	extra      func(*strings.Builder)
 	httpServer *http.Server
 }
+
+// SetExtraMetrics registers a callback that appends additional Prometheus lines
+// (e.g. server-level gauges) to /metrics. Must be set before Start.
+func (s *Server) SetExtraMetrics(f func(*strings.Builder)) { s.extra = f }
 
 // New builds the observability server. addr is e.g. "127.0.0.1:9256". rec may be
 // nil (then /metrics reports only the up gauge).
@@ -71,6 +76,9 @@ func (s *Server) handler() http.Handler {
 			sb.WriteString("mirage_chaff_up 1\n")
 			if s.rec != nil {
 				s.rec.WriteMetrics(&sb)
+			}
+			if s.extra != nil {
+				s.extra(&sb)
 			}
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 			_, _ = io.WriteString(w, sb.String())

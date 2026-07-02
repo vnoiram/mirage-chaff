@@ -1,0 +1,45 @@
+# promtail scrape config for mirage-chaff (design doc §4).
+#
+# mirage-chaff logs structured JSON to journald (unit mirage-chaff.service). This
+# ships those lines to Loki. IMPORTANT: redaction is applied by mirage-chaff
+# BEFORE the log line is written (log.redact = true), so Loki never receives raw
+# query values or identifiers.
+#
+# The request log lines look like:  req {"time":...,"domain":...,"action":...}
+
+scrape_configs:
+  - job_name: mirage-chaff-journal
+    journal:
+      json: false
+      max_age: 12h
+      labels:
+        job: mirage-chaff
+    relabel_configs:
+      - source_labels: ["__journal__systemd_unit"]
+        regex: "mirage-chaff.service"
+        action: keep
+      - source_labels: ["__journal__systemd_unit"]
+        target_label: unit
+    pipeline_stages:
+      # Extract the JSON object that follows the "req " prefix.
+      - match:
+          selector: '{job="mirage-chaff"}'
+          stages:
+            - regex:
+                expression: 'req (?P<reqjson>\{.*\})'
+            - json:
+                source: reqjson
+                expressions:
+                  domain: domain
+                  action: action
+                  status: status
+                  media_type: media_type
+            - labels:
+                action:
+                media_type:
+
+# --- Example LogQL queries (Grafana Explore) ---
+#   Top actions:        sum by (action) (count_over_time({job="mirage-chaff"} | json | __error__="" [5m]))
+#   Errors:             {job="mirage-chaff"} | json | status >= 500
+#   Admin auth events:  {job="mirage-chaff"} |= "login"
+#   Kill-switch usage:  {job="mirage-chaff"} |= "kill-switch"

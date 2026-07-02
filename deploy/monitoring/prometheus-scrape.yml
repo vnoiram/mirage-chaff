@@ -1,0 +1,27 @@
+# Prometheus scrape config for mirage-chaff (design doc §2).
+#
+# Add this job to prometheus.yml scrape_configs, or add the target to the
+# `prometheus_targets` group_var per the standard convention. The /metrics endpoint
+# is served by the admin-independent observability listener, so it works even
+# when the admin UI is disabled (design doc A-3).
+
+scrape_configs:
+  - job_name: mirage-chaff
+    metrics_path: /metrics
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "cushion.example.com:9256"   # observability.listen
+        labels:
+          service: mirage-chaff
+          role: cushion
+
+# Exposed series:
+#   mirage_chaff_up                                  gauge   1 when up
+#   mirage_chaff_requests_total{action}              counter per-action requests
+#   mirage_chaff_responses_total{class}              counter 2xx/3xx/4xx/5xx
+#   mirage_chaff_response_bytes_total                counter bytes served
+#   mirage_chaff_policy_rules                        gauge   loaded rules
+#   mirage_chaff_temp_allows                         gauge   active temp allows
+#   mirage_chaff_unmatched_domains                   gauge   curation candidates
+#   mirage_chaff_intermediate_ca_not_after_seconds   gauge   CA expiry (unix)

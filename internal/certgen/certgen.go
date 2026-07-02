@@ -112,6 +112,9 @@ func NewIssuer(cfg config.CertConfig) (*Issuer, error) {
 // Fingerprint returns the hex SHA-256 of the intermediate certificate.
 func (i *Issuer) Fingerprint() string { return i.fp }
 
+// NotAfter returns the intermediate CA's expiry (for cert-expiry monitoring).
+func (i *Issuer) NotAfter() time.Time { return i.interCert.NotAfter }
+
 // TLSConfig returns a *tls.Config whose GetCertificate mints per-SNI leaves.
 // alpn advertises the supported HTTP protocols (e.g. h2, http/1.1).
 func (i *Issuer) TLSConfig(alpn []string) *tls.Config {

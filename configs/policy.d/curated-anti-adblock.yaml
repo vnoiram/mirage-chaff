@@ -1,0 +1,61 @@
+# Curated anti-adblock policy bundle (design doc §B "採用").
+#
+# A conservative starter set for common ad/analytics endpoints that break
+# anti-adblock detection when hard-blocked. Each is served a harmless decoy so
+# the page keeps working while no real ad/tracking payload is delivered. Tune to
+# your needs; add domains from the Curation tab / unmatched report.
+#
+# NOTE: these rules only fire for domains you have AGH-rewritten to the cushion.
+# Rewriting is deliberate/curated — the cushion never sees a domain unless AGH
+# points it here (design doc curation flow).
+
+rules:
+  # Google Publisher Tag / AdSense loader -> harmless no-op that satisfies globals.
+  - name: gpt-adsense-js
+    priority: 100
+    match: { domain: "*.googlesyndication.com", path: "*.js" }
+    action: stub
+    catalog: noop-js
+  - name: gpt-doubleclick-js
+    priority: 100
+    match: { domain: "*.doubleclick.net", path: "*.js" }
+    action: stub
+    catalog: noop-js
+
+  # Tracking pixels.
+  - name: doubleclick-pixel
+    priority: 110
+    match: { domain: "*.doubleclick.net", path: "*.gif" }
+    action: stub
+    catalog: pixel
+
+  # Measurement beacons.
+  - name: ga-collect
+    priority: 120
+    match: { domain: "*.google-analytics.com", path: "/collect*" }
+    action: stub
+    catalog: beacon-204
+  - name: ga4-collect
+    priority: 120
+    match: { domain: "*.analytics.google.com", path: "/g/collect*" }
+    action: stub
+    catalog: beacon-204
+
+  # Ad JSON APIs -> empty JSON so callers get a valid, empty response.
+  - name: adservice-api
+    priority: 130
+    match: { domain: "adservice.google.com" }
+    action: stub
+    catalog: empty-json
+
+  # VAST/VMAP ad manifests -> empty VAST so players cleanly skip ("no ad").
+  - name: ima-vast
+    priority: 140
+    match: { domain: "*.googlesyndication.com", path: "*vast*" }
+    action: stub
+    catalog: empty-vast
+
+# Keep the safe default for anything else that reaches the cushion.
+default:
+  action: stub
+  catalog: beacon-204
