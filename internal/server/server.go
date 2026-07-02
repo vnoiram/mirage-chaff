@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -25,12 +26,13 @@ import (
 	"github.com/vnoiram/mirage-chaff/internal/certgen"
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/observability"
+	"github.com/vnoiram/mirage-chaff/internal/policy"
 	"github.com/vnoiram/mirage-chaff/internal/stub"
 )
 
-// defaultStubEntry is served for every intercepted request until the policy
-// engine (Phase 2) selects per-domain actions.
-const defaultStubEntry = "beacon-204"
+// safeDefaultStub is served when a matched action is not yet implemented, so the
+// request fails safe (no upstream contact) rather than breaking the page.
+const safeDefaultStub = "beacon-204"
 
 // Server owns the running process.
 type Server struct {
@@ -39,8 +41,10 @@ type Server struct {
 	cfgPath string
 	health  *observability.Health
 	issuer  *certgen.Issuer
+	engine  *policy.Engine
 
-	cat atomic.Pointer[catalog.Catalog]
+	cat  atomic.Pointer[catalog.Catalog]
+	once sync.Map // action name -> logged "not implemented" once
 }
 
 // New constructs a Server.
@@ -52,13 +56,22 @@ func New(cfg config.Config, version, cfgPath string) *Server {
 func (s *Server) Run(ctx context.Context) error {
 	log.Printf("mirage-chaff %s starting (config=%q)", s.version, displayPath(s.cfgPath))
 
-	// Load catalog (fail fast — a broken catalog must not start).
+	// Load catalog + policy (fail fast — broken config must not start).
 	cat, err := catalog.Load(s.cfg.Paths.CatalogDir)
 	if err != nil {
 		return err
 	}
+	rs, err := policy.Load(s.cfg.Paths.PolicyDir)
+	if err != nil {
+		return err
+	}
+	if err := validateRefs(cat, rs); err != nil {
+		return err
+	}
 	s.cat.Store(cat)
-	log.Printf("catalog loaded: %d entries from %s", len(cat.Names()), s.cfg.Paths.CatalogDir)
+	s.engine = policy.NewEngine(rs)
+	log.Printf("catalog loaded: %d entries; policy loaded: %d rules from %s",
+		len(cat.Names()), len(rs.Rules()), s.cfg.Paths.PolicyDir)
 
 	// Load intermediate CA. If it is missing, run without TLS interception so
 	// health/monitoring still work before CA setup (logged prominently).
@@ -137,8 +150,14 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 // serve binds addr and serves srv, reporting a bind failure synchronously.
+// With ipv6 enabled it binds dual-stack ("tcp"); otherwise IPv4 only ("tcp4"),
+// so a wildcard listener does not accidentally accept over IPv6.
 func (s *Server) serve(ctx context.Context, wg *sync.WaitGroup, fatal chan<- error, srv *http.Server, addr string, tlsMode bool) error {
-	ln, err := net.Listen("tcp", addr)
+	network := "tcp"
+	if !s.cfg.Listen.IPv6 {
+		network = "tcp4"
+	}
+	ln, err := net.Listen(network, addr)
 	if err != nil {
 		return err
 	}
@@ -182,10 +201,54 @@ func (s *Server) alpn() []string {
 	return a
 }
 
-// handleIntercept routes a decrypted request. Phase 1: everything gets the
-// default stub decoy. Phase 2 swaps in the policy engine.
+// handleIntercept routes a decrypted request through the policy engine and
+// applies the matched action. Actions not yet implemented (forward*/passthrough)
+// fail safe to the default stub until their phase lands.
 func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
-	stub.Serve(w, r, s.cat.Load(), defaultStubEntry)
+	cat := s.cat.Load()
+	d := s.engine.Decide(hostname(r), r.URL.Path, r.Method)
+
+	switch d.Action {
+	case policy.ActionStub:
+		stub.Serve(w, r, cat, d.Catalog)
+	default:
+		// forward-scrubbed / forward-mimic / forward-asis / passthrough — wired in
+		// Phases 3-5. Until then, serve a safe decoy and note it once per action.
+		if _, loaded := s.once.LoadOrStore(d.Action, true); !loaded {
+			log.Printf("action %q not yet implemented (rule %q); serving safe stub for now", d.Action, d.Rule)
+		}
+		stub.Serve(w, r, cat, safeDefaultStub)
+	}
+}
+
+// hostname returns the request authority for policy matching: SNI when present
+// (TLS), else the Host header, with any port stripped. Routing on authority/Host
+// (not just SNI) guards against HTTP/2 coalescing misrouting (design doc §A).
+func hostname(r *http.Request) string {
+	h := r.Host
+	if r.TLS != nil && r.TLS.ServerName != "" {
+		h = r.TLS.ServerName
+	}
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		return host
+	}
+	return h
+}
+
+// validateRefs ensures every catalog name referenced by the ruleset exists.
+func validateRefs(cat *catalog.Catalog, rs *policy.Ruleset) error {
+	for _, name := range rs.CatalogRefs() {
+		if _, ok := cat.Get(name); !ok {
+			return &refError{name}
+		}
+	}
+	return nil
+}
+
+type refError struct{ name string }
+
+func (e *refError) Error() string {
+	return "policy references unknown catalog entry " + strconv.Quote(e.name)
 }
 
 // reload re-reads config + catalog and swaps reload-safe state. Validate-then-swap
@@ -206,11 +269,36 @@ func (s *Server) reload() {
 		log.Printf("reload aborted: catalog invalid, keeping current: %v", err)
 		return
 	}
+	newRules, err := policy.Load(newCfg.Paths.PolicyDir)
+	if err != nil {
+		log.Printf("reload aborted: policy invalid, keeping current: %v", err)
+		return
+	}
+	if err := validateRefs(newCat, newRules); err != nil {
+		log.Printf("reload aborted: %v, keeping current", err)
+		return
+	}
+	// Validated — swap both atomically.
 	s.cat.Store(newCat)
+	s.engine.Swap(newRules)
 	s.cfg.Mode = newCfg.Mode
 	s.cfg.Log = newCfg.Log
 	s.cfg.Mimic = newCfg.Mimic
-	log.Printf("reload complete: %d catalog entries", len(newCat.Names()))
+	log.Printf("reload complete: %d catalog entries, %d rules", len(newCat.Names()), len(newRules.Rules()))
+	s.logUnmatched()
+}
+
+// logUnmatched surfaces the top unmatched (domain, path) pairs as curation
+// candidates. Triggered on reload so operators can pull the current list.
+func (s *Server) logUnmatched() {
+	top := s.engine.UnmatchedTop(10)
+	if len(top) == 0 {
+		return
+	}
+	log.Printf("curation candidates (top unmatched domains/paths):")
+	for _, e := range top {
+		log.Printf("  %6d  %s %s", e.Count, e.Domain, e.Path)
+	}
 }
 
 func displayPath(p string) string {
