@@ -1,0 +1,11 @@
+---
+# Deploy mirage-chaff to the cushion host(s). Run from the deployment control node.
+#   ansible-playbook -i inventory deploy/ansible/playbook.yml
+#
+# Secrets (OIDC client_secret, AGH creds) come from vault-encrypted group_vars.
+# CI validates with ansible-lint + the `mirage-chaff check` task (design doc §8).
+- name: mirage-chaff
+  hosts: cushion
+  become: true
+  roles:
+    - mirage-chaff

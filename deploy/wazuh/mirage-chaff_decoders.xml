@@ -1,0 +1,15 @@
+<!--
+  Wazuh decoders for mirage-chaff security audit events (design doc §9).
+  Install into /var/ossec/etc/decoders/ on the Wazuh manager (roles/wazuh_server).
+
+  mirage-chaff emits, via journald/syslog, lines like:
+    SECURITY mirage-chaff-audit {"time":"...","actor":"admin","action":"login.fail","detail":"invalid credentials"}
+-->
+<decoder name="mirage-chaff-audit">
+  <prematch>SECURITY mirage-chaff-audit </prematch>
+</decoder>
+
+<decoder name="mirage-chaff-audit-json">
+  <parent>mirage-chaff-audit</parent>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>

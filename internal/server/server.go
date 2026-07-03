@@ -242,6 +242,7 @@ func (s *Server) startAdmin(ctx context.Context, wg *sync.WaitGroup, fatal chan<
 		Reload:      func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
 		KillSwitch:  s.runKillSwitch,
 		Listeners:   s.listenersInfo,
+		OIDC:        s.cfg.Admin.OIDC,
 	})
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	*servers = append(*servers, srv)

@@ -113,8 +113,21 @@ type ObservabilityConfig struct {
 
 // AdminConfig controls the web admin UI (MITM control plane; localhost default).
 type AdminConfig struct {
-	Enabled bool   `toml:"enabled" reload:"restart"`
-	Listen  string `toml:"listen" reload:"restart"` // e.g. "127.0.0.1:8443"
+	Enabled bool       `toml:"enabled" reload:"restart"`
+	Listen  string     `toml:"listen" reload:"restart"` // e.g. "127.0.0.1:8443"
+	OIDC    OIDCConfig `toml:"oidc"`
+}
+
+// OIDCConfig enables SSO login mapping OIDC groups to RBAC roles (design doc §7).
+// Local accounts remain a fallback.
+type OIDCConfig struct {
+	Enabled      bool              `toml:"enabled" reload:"restart"`
+	Issuer       string            `toml:"issuer" reload:"restart"`
+	ClientID     string            `toml:"client_id" reload:"restart"`
+	ClientSecret string            `toml:"client_secret" reload:"restart"`
+	RedirectURL  string            `toml:"redirect_url" reload:"restart"`
+	GroupsClaim  string            `toml:"groups_claim" reload:"restart"` // default "groups"
+	RoleMap      map[string]string `toml:"role_map" reload:"restart"`     // oidc group -> admin|editor|viewer
 }
 
 // PathsConfig holds on-disk locations the daemon reads/writes.

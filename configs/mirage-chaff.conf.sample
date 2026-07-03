@@ -71,6 +71,20 @@ metrics = true                  # restart (toggles /metrics only)
 enabled = false                 # restart
 listen  = "127.0.0.1:8443"      # restart
 
+# Optional OIDC SSO for the admin UI (maps OIDC groups -> RBAC roles). Local
+# accounts remain a fallback. Leave enabled=false to use local accounts only.
+[admin.oidc]
+enabled       = false
+issuer        = "https://idp.example.com/realms/example"
+client_id     = "mirage-chaff"
+client_secret = ""              # keep out of git; inject via deploy/vault
+redirect_url  = "https://cushion.example.com:8443/api/oidc/callback"
+groups_claim  = "groups"
+[admin.oidc.role_map]
+# "sso-admins" = "admin"
+# "sso-editors"    = "editor"
+# "sso-viewers" = "viewer"
+
 # On-disk paths.
 [paths]
 policy_dir  = "/etc/mirage-chaff/policy.d"   # reload-safe

@@ -1,0 +1,24 @@
+---
+# Example group_vars for the `cushion` group. Copy to group_vars/cushion.yml and
+# move secrets into a vault-encrypted file (vault.yml). Design doc §7/§8.
+
+mirage_chaff_binary_src: files/mirage-chaff        # prebuilt binary shipped by CI
+mirage_chaff_quic: false                            # block UDP443, TCP fallback (C-2)
+mirage_chaff_ipv6: true
+
+mirage_chaff_resolvers:
+  - "https://1.1.1.1/dns-query"
+  - "https://9.9.9.9/dns-query"
+
+# Admin UI behind your SSO (Keycloak realm example), groups -> RBAC.
+mirage_chaff_admin_enabled: true
+mirage_chaff_admin_listen: "127.0.0.1:8443"
+mirage_chaff_admin_oidc_enabled: true
+mirage_chaff_admin_oidc_issuer: "https://idp.example.com/realms/example"
+mirage_chaff_admin_oidc_client_id: "mirage-chaff"
+# mirage_chaff_admin_oidc_client_secret:  <-- put in vault.yml
+mirage_chaff_admin_oidc_redirect_url: "https://cushion.example.com:8443/api/oidc/callback"
+mirage_chaff_admin_oidc_role_map:
+  sso-admins: admin
+  sso-editors: editor
+  sso-viewers: viewer
