@@ -98,9 +98,10 @@ sudo ./deploy/kill-switch.sh   # remove cushion rewrites from AGH → normal res
 cmd/mirage-chaff/   entry point (run / check / version)
 internal/           config, certgen, policy, catalog, stub, forward, mimic,
                     hashrewrite, passthrough, quic, server, observability, admin
-web/                admin UI SPA (embedded; Phase 6)
-configs/            sample config + example policy + catalog (tracked)
-deploy/             systemd unit, install/uninstall, kill-switch, gen-ca, firewall
+web/                admin UI SPA (embedded)
+configs/            sample config + example/curated policy + catalog (tracked)
+deploy/             systemd unit, install/uninstall, kill-switch, gen-ca,
+                    step-ca-issue, firewall, monitoring/, wazuh/, ansible/
 ```
 
 Only source and **sample** configs are tracked. Real `/etc/mirage-chaff` config,
@@ -108,10 +109,25 @@ CA keys, cert cache, and admin state are **not** in this repo (see `.gitignore`)
 
 ## Status
 
-Phase 0 skeleton: runnable binary with config load/validate and an
-admin-independent health/metrics listener. The TLS interception data path,
-policy engine, mimic, admin UI, and monitoring integration land in later phases
-(see the design doc's phased rollout).
+All phased milestones are implemented (see the design doc's rollout):
+
+1. **TLS interception** — per-SNI dynamic leaves from a name-constrained
+   intermediate CA (`internal/certgen`), catalog decoys, stub action.
+2. **Policy engine** — `policy.d` matcher, unmatched-domain curation, dual-stack.
+3. **Forward + passthrough** — scrubbed/asis reverse-proxy via an independent
+   resolver (DoH/DoT/plain), SNI-peek TCP splice, redacted observability.
+4. **forward-mimic** — deterministic image/js/binary decoys with Range support;
+   SRI/JSON `hashrewrite` (video deferred, C-1).
+5. **QUIC** — HTTP/3 termination (quic-go) and a from-scratch RFC 9001 Initial
+   SNI parser + UDP passthrough relay; `sd_notify` watchdog; circuit breaker.
+6. **Admin UI** — argon2id + sessions + CSRF + lockout + RBAC, embedded SPA,
+   live traffic, editors, temporary-allow, kill-switch, audit.
+7. **Monitoring** — Prometheus `/metrics`, Alertmanager rules, promtail→Loki,
+   Grafana dashboard, health/synthetic probes (`deploy/monitoring/`).
+8. **Deployment** — step-ca issuance, admin OIDC SSO, Ansible role, Wazuh SOC feed.
+
+Notes: the admin user/audit store is a 0600 JSON file (SQLite is the documented
+production target); QUIC passthrough is best-effort per C-2 and off by default.
 
 ## License
 
