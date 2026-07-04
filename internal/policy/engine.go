@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"container/list"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -100,46 +101,48 @@ type UnmatchedEntry struct {
 // UnmatchedTop returns the top-n unmatched entries by hit count.
 func (e *Engine) UnmatchedTop(n int) []UnmatchedEntry { return e.unmatched.top(n) }
 
-// aggregator counts unmatched (domain, path) pairs with a bounded map.
+// aggregator counts unmatched (domain, path) pairs with a bounded LRU. Eviction
+// is O(1): the intrusive list keeps entries in recency order (front = most
+// recently seen), so record() never scans the whole set even when full — this
+// path runs on every unmatched request, including high-cardinality junk traffic.
 type aggregator struct {
-	mu   sync.Mutex
-	max  int
-	hits map[string]*UnmatchedEntry
+	mu    sync.Mutex
+	max   int
+	ll    *list.List               // *UnmatchedEntry, front = most recently seen
+	items map[string]*list.Element // key -> element
 }
 
 func newAggregator(max int) *aggregator {
-	return &aggregator{max: max, hits: make(map[string]*UnmatchedEntry)}
+	return &aggregator{max: max, ll: list.New(), items: make(map[string]*list.Element)}
 }
 
 func (a *aggregator) record(domain, path string) {
 	key := domain + " " + path
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if e, ok := a.hits[key]; ok {
+	if el, ok := a.items[key]; ok {
+		e := el.Value.(*UnmatchedEntry)
 		e.Count++
 		e.Last = time.Now()
+		a.ll.MoveToFront(el)
 		return
 	}
-	if len(a.hits) >= a.max {
-		// Bounded: drop the least-recently-seen entry to make room.
-		var oldestKey string
-		var oldest time.Time
-		first := true
-		for k, e := range a.hits {
-			if first || e.Last.Before(oldest) {
-				oldest, oldestKey, first = e.Last, k, false
-			}
+	if a.ll.Len() >= a.max {
+		// Bounded: drop the least-recently-seen entry (list back) to make room.
+		if back := a.ll.Back(); back != nil {
+			old := back.Value.(*UnmatchedEntry)
+			delete(a.items, old.Domain+" "+old.Path)
+			a.ll.Remove(back)
 		}
-		delete(a.hits, oldestKey)
 	}
-	a.hits[key] = &UnmatchedEntry{Domain: domain, Path: path, Count: 1, Last: time.Now()}
+	a.items[key] = a.ll.PushFront(&UnmatchedEntry{Domain: domain, Path: path, Count: 1, Last: time.Now()})
 }
 
 func (a *aggregator) top(n int) []UnmatchedEntry {
 	a.mu.Lock()
-	out := make([]UnmatchedEntry, 0, len(a.hits))
-	for _, e := range a.hits {
-		out = append(out, *e)
+	out := make([]UnmatchedEntry, 0, a.ll.Len())
+	for el := a.ll.Front(); el != nil; el = el.Next() {
+		out = append(out, *el.Value.(*UnmatchedEntry))
 	}
 	a.mu.Unlock()
 

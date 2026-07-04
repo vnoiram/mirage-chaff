@@ -87,6 +87,47 @@ func (r *Recorder) Log(rec Record) {
 	}
 }
 
+// SnapshotSince returns records logged after position sinceSeq (the monotonic
+// total count previously returned) plus the current sequence position. It powers
+// the live SSE stream: callers pass back the returned seq each tick so delivery
+// continues correctly even after the ring buffer has wrapped (the length of the
+// ring is constant once full, so it cannot be used as a cursor). Records older
+// than the ring can hold are necessarily dropped; only what remains is returned.
+func (r *Recorder) SnapshotSince(sinceSeq int64) (recs []Record, seq int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	seq = r.total
+	newCount := seq - sinceSeq
+	if newCount <= 0 {
+		return nil, seq
+	}
+	// Records currently retained in the ring, oldest first.
+	var buffered []Record
+	if r.full {
+		buffered = append(buffered, r.ring[r.next:]...)
+		buffered = append(buffered, r.ring[:r.next]...)
+	} else {
+		buffered = append(buffered, r.ring[:r.next]...)
+	}
+	if int64(len(buffered)) > newCount {
+		buffered = buffered[int64(len(buffered))-newCount:]
+	}
+	if r.redact {
+		for i := range buffered {
+			buffered[i].Path = RedactURL(buffered[i].Path)
+		}
+	}
+	return buffered, seq
+}
+
+// Seq returns the current monotonic record count (an SSE cursor start point).
+func (r *Recorder) Seq() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.total
+}
+
 // Snapshot returns up to n most-recent records (newest last). n<=0 returns all.
 func (r *Recorder) Snapshot(n int) []Record {
 	r.mu.Lock()
