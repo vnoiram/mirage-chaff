@@ -62,6 +62,31 @@ func TestRewriteJSONIntegrity(t *testing.T) {
 	}
 }
 
+func TestRewriteJSONIntegrityPreservesKeyName(t *testing.T) {
+	// A manifest using "src" (not "url") must keep its key name after rewrite
+	// (A-4: the key was previously hardcoded to "url", corrupting such manifests).
+	body := []byte(`{"src":"seg1.m4s","integrity":"sha256-OLD"}`)
+	out, n := RewriteJSONIntegrity(body, func(url string) (string, bool) {
+		if url == "seg1.m4s" {
+			return "sha256-NEW", true
+		}
+		return "", false
+	})
+	if n != 1 {
+		t.Fatalf("rewritten = %d, want 1", n)
+	}
+	s := string(out)
+	if !strings.Contains(s, `"src":"seg1.m4s"`) {
+		t.Errorf("src key must be preserved: %s", s)
+	}
+	if strings.Contains(s, `"url"`) {
+		t.Errorf("key must not be rewritten to url: %s", s)
+	}
+	if !strings.Contains(s, `"integrity":"sha256-NEW"`) {
+		t.Errorf("integrity not rewritten: %s", s)
+	}
+}
+
 func TestIntegrityOf(t *testing.T) {
 	if got := IntegrityOf([]byte("abc")); !strings.HasPrefix(got, "sha256-") {
 		t.Errorf("IntegrityOf = %q", got)

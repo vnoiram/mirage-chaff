@@ -175,15 +175,39 @@ func dohQuery(ctx context.Context, client *http.Client, endpoint, host string, q
 	if err != nil {
 		return nil, err
 	}
-	return parseAnswers(body)
+	return parseAnswers(body, name, qt)
 }
 
-func parseAnswers(wire []byte) ([]net.IP, error) {
+func parseAnswers(wire []byte, wantName dnsmessage.Name, wantType dnsmessage.Type) ([]net.IP, error) {
 	var p dnsmessage.Parser
-	if _, err := p.Start(wire); err != nil {
+	hdr, err := p.Start(wire)
+	if err != nil {
 		return nil, err
 	}
-	p.SkipAllQuestions()
+	if !hdr.Response {
+		return nil, fmt.Errorf("DoH: reply is not a response")
+	}
+	if hdr.RCode != dnsmessage.RCodeSuccess {
+		return nil, fmt.Errorf("DoH: server returned %s", hdr.RCode)
+	}
+	// Validate the echoed question matches our query, so answers for a different
+	// name/type are never accepted (basic anti-spoofing on the DoH channel).
+	matched := false
+	for {
+		q, err := p.Question()
+		if err == dnsmessage.ErrSectionDone {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if q.Type == wantType && strings.EqualFold(q.Name.String(), wantName.String()) {
+			matched = true
+		}
+	}
+	if !matched {
+		return nil, fmt.Errorf("DoH: response question does not match query")
+	}
 	var ips []net.IP
 	for {
 		h, err := p.AnswerHeader()

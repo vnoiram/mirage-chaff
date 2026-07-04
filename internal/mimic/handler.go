@@ -40,7 +40,15 @@ type Handler struct {
 	mode       string
 	maxBytes   int64
 	allowVideo bool
-	cache      sync.Map // url string -> CachedDecoy
+
+	mu       sync.Mutex
+	cacheMax int
+	cache    map[string]*cacheEntry // url string -> decoy (bounded, LRU)
+}
+
+type cacheEntry struct {
+	decoy CachedDecoy
+	used  time.Time
 }
 
 // Options tunes the Handler.
@@ -49,6 +57,10 @@ type Options struct {
 	MaxBytes        int64
 	Mode            string
 	AllowVideo      bool
+	// CacheMax bounds the URL->decoy lookup cache (LRU). <=0 uses a default, so a
+	// long-running process cannot grow the cache without limit (one entry per
+	// distinct decoyed URL otherwise).
+	CacheMax int
 }
 
 // New builds a Handler probing origins through res.
@@ -58,6 +70,9 @@ func New(res Resolver, opts Options) *Handler {
 	}
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = 8 << 20
+	}
+	if opts.CacheMax <= 0 {
+		opts.CacheMax = 512
 	}
 	transport := &http.Transport{
 		DialContext:         dialViaResolver(res),
@@ -69,41 +84,79 @@ func New(res Resolver, opts Options) *Handler {
 		mode:       opts.Mode,
 		maxBytes:   opts.MaxBytes,
 		allowVideo: opts.AllowVideo,
+		cacheMax:   opts.CacheMax,
+		cache:      make(map[string]*cacheEntry),
 	}
 }
 
 // Lookup returns the cached decoy for a URL, if one was served.
 func (h *Handler) Lookup(url string) (CachedDecoy, bool) {
-	v, ok := h.cache.Load(url)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.cache[url]
 	if !ok {
 		return CachedDecoy{}, false
 	}
-	return v.(CachedDecoy), true
+	e.used = time.Now()
+	return e.decoy, true
+}
+
+// storeDecoy records what was served for url, evicting the least-recently-used
+// entry when over cacheMax.
+func (h *Handler) storeDecoy(url string, d CachedDecoy) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cache[url] = &cacheEntry{decoy: d, used: time.Now()}
+	for len(h.cache) > h.cacheMax {
+		var oldestKey string
+		var oldest time.Time
+		first := true
+		for k, e := range h.cache {
+			if first || e.used.Before(oldest) {
+				oldest, oldestKey, first = e.used, k, false
+			}
+		}
+		delete(h.cache, oldestKey)
+	}
 }
 
 // Serve mimics r's resource. It returns false (serving nothing) when the media
 // is unsupported (video) or too large, so the caller falls back to stub/asis.
 func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) bool {
-	media := ClassifyExt(r.URL.Path)
-	shape := h.probe(r) // best-effort; fills content-type/length
-	if media == "" {
-		media = ClassifyContentType(shape.ContentType)
+	urlKey := r.URL.String()
+
+	// Reuse a previously-resolved shape when we have already decoyed this URL, so
+	// we do not send a HEAD probe to the origin (a tracker) on every request —
+	// this both cuts latency and avoids repeatedly contacting the very host the
+	// privacy mode exists to avoid.
+	var shape Shape
+	if cached, ok := h.Lookup(urlKey); ok {
+		shape = cached.Shape
+	} else {
+		media := ClassifyExt(r.URL.Path)
+		shape = h.probe(r) // best-effort; fills content-type/length
+		if media == "" {
+			media = ClassifyContentType(shape.ContentType)
+		}
+		if media == MediaVideo && !h.allowVideo {
+			return false
+		}
+		shape.Media = media
+		if shape.ContentType == "" {
+			shape.ContentType = defaultContentType(media, r.URL.Path)
+		}
+		if shape.Length <= 0 {
+			shape.Length = defaultLength(media)
+		}
 	}
-	if media == MediaVideo && !h.allowVideo {
+	if shape.Media == MediaVideo && !h.allowVideo {
 		return false
-	}
-	shape.Media = media
-	if shape.ContentType == "" {
-		shape.ContentType = defaultContentType(media, r.URL.Path)
-	}
-	if shape.Length <= 0 {
-		shape.Length = defaultLength(media)
 	}
 	if shape.Length > h.maxBytes {
 		return false // too big; fall back (avoids heavy generation)
 	}
 
-	seed := r.URL.String()
+	seed := urlKey
 	if h.mode == ModePerRequest {
 		var nonce [8]byte
 		_, _ = rand.Read(nonce[:])
@@ -115,7 +168,7 @@ func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) bool {
 		return false // e.g. ErrUnsupported
 	}
 	sum, _ := Hash(seed, shape)
-	h.cache.Store(r.URL.String(), CachedDecoy{Shape: shape, Seed: seed, Hash: sum})
+	h.storeDecoy(urlKey, CachedDecoy{Shape: shape, Seed: seed, Hash: sum})
 
 	h.write(w, r, shape, full)
 	return true

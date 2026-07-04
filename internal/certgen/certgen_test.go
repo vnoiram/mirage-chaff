@@ -169,3 +169,18 @@ func TestNoSNIRejected(t *testing.T) {
 		t.Fatal("expected error for empty SNI")
 	}
 }
+
+func TestValidHostname(t *testing.T) {
+	valid := []string{"a.b.example", "ads.doubleclick.net", "_dmarc.example.com", "x-1.test", "a"}
+	for _, h := range valid {
+		if !validHostname(h) {
+			t.Errorf("validHostname(%q) = false, want true", h)
+		}
+	}
+	invalid := []string{"", "*.example.com", "a/b", "a b", "a\tb", "a..b", ".leading", "trailing.", "bad!char", "under_score/../etc"}
+	for _, h := range invalid {
+		if validHostname(h) {
+			t.Errorf("validHostname(%q) = true, want false", h)
+		}
+	}
+}
