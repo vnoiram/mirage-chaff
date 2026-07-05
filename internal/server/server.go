@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/netutil"
+
 	"github.com/vnoiram/mirage-chaff/internal/admin"
 	"github.com/vnoiram/mirage-chaff/internal/catalog"
 	"github.com/vnoiram/mirage-chaff/internal/certgen"
@@ -59,6 +61,7 @@ type Server struct {
 	recorder *observability.Recorder
 
 	breaker *breaker
+	limiter atomic.Pointer[rateLimiter]
 
 	cat   atomic.Pointer[catalog.Catalog]
 	fwd   atomic.Pointer[forward.Forwarder]
@@ -98,10 +101,11 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	s.resolver = res
-	s.mimic.Store(mimic.New(res, mimic.Options{MaxBytes: s.cfg.Mimic.MaxBytes, AllowVideo: s.cfg.Mimic.AllowVideo}))
+	s.mimic.Store(mimic.New(res, mimic.Options{MaxBytes: s.cfg.Mimic.MaxBytes, AllowVideo: s.cfg.Mimic.AllowVideo, CacheMax: s.cfg.Mimic.CacheMax}))
 	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes}))
 	s.recorder = observability.NewRecorder(s.cfg.Log.Redact, 4096)
 	s.breaker = newBreaker(5, 30*time.Second)
+	s.limiter.Store(newRateLimiter(s.cfg.Resources.RateLimit))
 
 	// Load intermediate CA. If it is missing, run without TLS interception so
 	// health/monitoring still work before CA setup (logged prominently).
@@ -134,7 +138,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.Protocols.HTTP1 && s.cfg.Listen.HTTP != "" {
 		srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 		servers = append(servers, srv)
-		if err := s.serve(ctx, &wg, fatal, srv, s.cfg.Listen.HTTP, false); err != nil {
+		if err := s.serve(ctx, &wg, fatal, srv, s.cfg.Listen.HTTP, true); err != nil {
 			return err
 		}
 		log.Printf("intercept HTTP listening on %s", s.cfg.Listen.HTTP)
@@ -144,11 +148,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// splices passthrough domains straight to the origin (design doc
 	// tcp-passthrough); everything else is TLS-terminated and served as HTTP.
 	if s.issuer != nil && s.cfg.Listen.HTTPS != "" {
-		ln, err := s.listen(s.cfg.Listen.HTTPS)
+		ln, err := s.limitedListen(s.cfg.Listen.HTTPS)
 		if err != nil {
 			return err
 		}
-		routed := &routingListener{Listener: ln, s: s}
+		routed := newRoutingListener(ln, s)
 		srv := &http.Server{
 			Handler:           handler,
 			TLSConfig:         s.issuer.TLSConfig(s.alpn()),
@@ -363,10 +367,31 @@ func (s *Server) listen(addr string) (net.Listener, error) {
 	return net.Listen(network, addr)
 }
 
-// serve binds addr and serves srv (plaintext), reporting a bind failure
-// synchronously.
-func (s *Server) serve(ctx context.Context, wg *sync.WaitGroup, fatal chan<- error, srv *http.Server, addr string, tlsMode bool) error {
+// limitedListen binds addr and, when resources.max_conns > 0, caps the number of
+// simultaneously accepted connections (netutil.LimitListener) so a constrained VM
+// cannot be exhausted by connection floods. Used for the intercept listeners; the
+// health/admin listeners are left unlimited so they stay reachable under load.
+func (s *Server) limitedListen(addr string) (net.Listener, error) {
 	ln, err := s.listen(addr)
+	if err != nil {
+		return nil, err
+	}
+	if n := s.cfg.Resources.MaxConns; n > 0 {
+		ln = netutil.LimitListener(ln, n)
+	}
+	return ln, nil
+}
+
+// serve binds addr and serves srv (plaintext), reporting a bind failure
+// synchronously. When limit is set the listener honors resources.max_conns.
+func (s *Server) serve(ctx context.Context, wg *sync.WaitGroup, fatal chan<- error, srv *http.Server, addr string, limit bool) error {
+	var ln net.Listener
+	var err error
+	if limit {
+		ln, err = s.limitedListen(addr)
+	} else {
+		ln, err = s.listen(addr)
+	}
 	if err != nil {
 		return err
 	}
@@ -383,26 +408,77 @@ func (s *Server) serve(ctx context.Context, wg *sync.WaitGroup, fatal chan<- err
 // routingListener peeks the TLS SNI on each accepted connection. Passthrough
 // domains are spliced to the origin here and never bubble up to TLS termination;
 // all other connections are returned (with the ClientHello replayed) to ServeTLS.
+//
+// The peek runs in a per-connection goroutine (not inline in Accept) so a single
+// slow handshake cannot stall acceptance of every other new connection
+// (slowloris resistance): a background acceptor feeds raw conns to peek workers,
+// and terminated conns are delivered to Accept via a channel.
 type routingListener struct {
 	net.Listener
-	s *Server
+	s         *Server
+	conns     chan net.Conn
+	errs      chan error
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
-func (l *routingListener) Accept() (net.Conn, error) {
+func newRoutingListener(inner net.Listener, s *Server) *routingListener {
+	l := &routingListener{
+		Listener: inner,
+		s:        s,
+		conns:    make(chan net.Conn),
+		errs:     make(chan error, 1),
+		done:     make(chan struct{}),
+	}
+	go l.acceptLoop()
+	return l
+}
+
+// acceptLoop pulls raw connections and hands each to a peek worker.
+func (l *routingListener) acceptLoop() {
 	for {
 		c, err := l.Listener.Accept()
 		if err != nil {
-			return nil, err
-		}
-		sni, replay, perr := passthrough.PeekClientHello(c)
-		if perr == nil && sni != "" {
-			if d := l.s.engine.Ruleset().Match(sni, "", ""); d.Action == policy.ActionPassthrough {
-				go l.s.doPassthrough(replay, sni)
-				continue
+			select {
+			case l.errs <- err:
+			case <-l.done:
 			}
+			return
 		}
-		return replay, nil
+		go l.route(c)
 	}
+}
+
+// route peeks the SNI: passthrough domains are spliced here, everything else is
+// delivered to Accept for TLS termination.
+func (l *routingListener) route(c net.Conn) {
+	sni, replay, perr := passthrough.PeekClientHello(c)
+	if perr == nil && sni != "" {
+		if d := l.s.engine.Ruleset().Match(sni, "", ""); d.Action == policy.ActionPassthrough {
+			l.s.doPassthrough(replay, sni)
+			return
+		}
+	}
+	select {
+	case l.conns <- replay:
+	case <-l.done:
+		replay.Close()
+	}
+}
+
+func (l *routingListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case err := <-l.errs:
+		return nil, err
+	}
+}
+
+// Close stops the acceptor and unblocks any pending peek workers.
+func (l *routingListener) Close() error {
+	l.closeOnce.Do(func() { close(l.done) })
+	return l.Listener.Close()
 }
 
 // doPassthrough splices a passthrough connection to the origin. The replayed
@@ -446,9 +522,26 @@ func (s *Server) alpn() []string {
 // handleIntercept routes a decrypted request through the policy engine, applies
 // the matched action, and records a redacted summary.
 func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
+	// Resource guards (resources.rate_limit / resources.body_max_bytes).
+	if !s.limiter.Load().Allow() {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	}
+	if s.cfg.Resources.BodyMaxBytes > 0 && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Resources.BodyMaxBytes)
+	}
+
 	cat := s.cat.Load()
 	domain := hostname(r)
 	d := s.engine.Decide(domain, r.URL.Path, r.Method)
+
+	// stub-only mode (design doc: safety mode that never contacts an upstream):
+	// downgrade every non-stub action to a safe stub so no origin is reached.
+	if gated, changed := stubOnlyGate(s.cfg.Mode, d); changed {
+		s.noteOnce("stub-only:"+d.Action, d.Rule, "stub-only mode: serving safe stub instead of contacting upstream")
+		d = gated
+	}
+
 	rw := &respRecorder{ResponseWriter: w, status: http.StatusOK}
 
 	// Circuit breaker: if a domain's origin has been failing, serve a safe stub
@@ -456,7 +549,6 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	contactsUpstream := d.Action == policy.ActionForwardAsis ||
 		d.Action == policy.ActionForwardScrubbed || d.Action == policy.ActionForwardMimic
 	if contactsUpstream && !s.breaker.Allow(domain) {
-		s.noteOnce("breaker-open:"+domain, d.Rule, "circuit open; serving safe stub")
 		stub.Serve(rw, r, cat, safeDefaultStub)
 		s.record(domain, r, d, rw)
 		return
@@ -495,6 +587,19 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.record(domain, r, d, rw)
+}
+
+// stubOnlyGate downgrades any non-stub decision to a safe stub when mode is
+// "stub-only", so no upstream is contacted. changed reports whether it altered d.
+func stubOnlyGate(mode string, d policy.Decision) (policy.Decision, bool) {
+	if mode != "stub-only" || d.Action == policy.ActionStub {
+		return d, false
+	}
+	d.Action = policy.ActionStub
+	if d.Catalog == "" {
+		d.Catalog = safeDefaultStub
+	}
+	return d, true
 }
 
 // record logs a redacted request summary via the recorder.
@@ -583,12 +688,14 @@ func (rw *respRecorder) Flush() {
 	}
 }
 
-// hostname returns the request authority for policy matching: SNI when present
-// (TLS), else the Host header, with any port stripped. Routing on authority/Host
-// (not just SNI) guards against HTTP/2 coalescing misrouting (design doc §A).
+// hostname returns the request authority for policy matching: the request's own
+// Host/:authority header when present, else the TLS SNI, with any port stripped.
+// Matching on the request authority (not just the connection SNI) guards against
+// HTTP/2 connection-coalescing misrouting — a reused connection can carry a
+// request whose :authority differs from the SNI that opened it (design doc §A).
 func hostname(r *http.Request) string {
 	h := r.Host
-	if r.TLS != nil && r.TLS.ServerName != "" {
+	if h == "" && r.TLS != nil {
 		h = r.TLS.ServerName
 	}
 	if host, _, err := net.SplitHostPort(h); err == nil {
@@ -647,8 +754,14 @@ func (s *Server) reload() {
 	s.cfg.Log = newCfg.Log
 	s.cfg.Mimic = newCfg.Mimic
 
+	// Resource guards: rate_limit and body_max_bytes apply live; max_conns only
+	// affects newly-bound listeners (restart-required), so it is left in place.
+	s.cfg.Resources.RateLimit = newCfg.Resources.RateLimit
+	s.cfg.Resources.BodyMaxBytes = newCfg.Resources.BodyMaxBytes
+	s.limiter.Store(newRateLimiter(newCfg.Resources.RateLimit))
+
 	// Rebuild mimic (reload-safe thresholds: max_bytes/allow_video/mode).
-	s.mimic.Store(mimic.New(s.resolver, mimic.Options{MaxBytes: newCfg.Mimic.MaxBytes, AllowVideo: newCfg.Mimic.AllowVideo}))
+	s.mimic.Store(mimic.New(s.resolver, mimic.Options{MaxBytes: newCfg.Mimic.MaxBytes, AllowVideo: newCfg.Mimic.AllowVideo, CacheMax: newCfg.Mimic.CacheMax}))
 
 	// Rebuild the resolver/forwarder if the upstream resolver list changed
 	// (reload-safe). Recorder redaction follows log.redact.
@@ -657,7 +770,7 @@ func (s *Server) reload() {
 			log.Printf("reload: keeping current resolver (new one invalid: %v)", err)
 		} else {
 			s.resolver = res
-			s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe}))
+			s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes}))
 			s.cfg.Upstream = newCfg.Upstream
 			log.Printf("reload: resolver updated")
 		}

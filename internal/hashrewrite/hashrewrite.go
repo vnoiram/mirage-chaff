@@ -82,24 +82,25 @@ func attrValue(m [][]byte) string {
 
 // jsonIntegrityRe matches "integrity":"sha256-..." style fields alongside a
 // preceding "url"/"src" key within a small window (best-effort JSON manifests).
-var jsonIntegrityRe = regexp.MustCompile(`(?is)"(?:url|src|uri)"\s*:\s*"([^"]+)"([^{}]*?)"integrity"\s*:\s*"([^"]*)"`)
+var jsonIntegrityRe = regexp.MustCompile(`(?is)"(url|src|uri)"\s*:\s*"([^"]+)"([^{}]*?)"integrity"\s*:\s*"([^"]*)"`)
 
-// RewriteJSONIntegrity rewrites "integrity" fields that follow a "url"/"src"
-// field when the URL is decoyed. Best-effort for JSON manifests.
+// RewriteJSONIntegrity rewrites "integrity" fields that follow a "url"/"src"/
+// "uri" field when the URL is decoyed. Best-effort for JSON manifests.
 func RewriteJSONIntegrity(body []byte, h Hasher) (out []byte, rewritten int) {
 	result := jsonIntegrityRe.ReplaceAllFunc(body, func(m []byte) []byte {
 		sub := jsonIntegrityRe.FindSubmatch(m)
 		if sub == nil {
 			return m
 		}
-		url := string(sub[1])
+		key, url := string(sub[1]), string(sub[2])
 		newIntegrity, ok := h(url)
 		if !ok {
 			return m
 		}
 		rewritten++
-		// Rebuild with the new integrity value, preserving the url + middle.
-		return []byte(`"url":"` + url + `"` + string(sub[2]) + `"integrity":"` + newIntegrity + `"`)
+		// Rebuild with the new integrity value, preserving the original key name
+		// (url/src/uri) and the bytes between it and the integrity field.
+		return []byte(`"` + key + `":"` + url + `"` + string(sub[3]) + `"integrity":"` + newIntegrity + `"`)
 	})
 	return result, rewritten
 }

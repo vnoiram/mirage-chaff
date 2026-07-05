@@ -76,7 +76,13 @@ type PassthroughRelay struct {
 
 	mu    sync.Mutex
 	flows map[string]*udpFlow
+	done  chan struct{}
 }
+
+// flowIdleTimeout reaps flows (including ones stuck mid-SNI-sniff) with no
+// activity, so junk UDP from many source ports cannot grow the flow map without
+// bound.
+const flowIdleTimeout = 2 * time.Minute
 
 type udpFlow struct {
 	upstream *net.UDPConn
@@ -95,11 +101,12 @@ func ListenPassthrough(addr, originPort string, res Resolver) (*PassthroughRelay
 	if err != nil {
 		return nil, err
 	}
-	return &PassthroughRelay{conn: conn, res: res, port: originPort, flows: map[string]*udpFlow{}}, nil
+	return &PassthroughRelay{conn: conn, res: res, port: originPort, flows: map[string]*udpFlow{}, done: make(chan struct{})}, nil
 }
 
 // Serve runs the relay loop until Close.
 func (p *PassthroughRelay) Serve() error {
+	go p.reap()
 	buf := make([]byte, 2048)
 	for {
 		n, client, err := p.conn.ReadFromUDP(buf)
@@ -112,11 +119,37 @@ func (p *PassthroughRelay) Serve() error {
 	}
 }
 
+// reap periodically drops flows idle beyond flowIdleTimeout.
+func (p *PassthroughRelay) reap() {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case now := <-t.C:
+			p.mu.Lock()
+			for k, f := range p.flows {
+				if now.Sub(f.last) > flowIdleTimeout {
+					if f.upstream != nil {
+						f.upstream.Close()
+					}
+					delete(p.flows, k)
+				}
+			}
+			p.mu.Unlock()
+		}
+	}
+}
+
 // Close shuts the relay down.
 func (p *PassthroughRelay) Close() error {
+	close(p.done)
 	p.mu.Lock()
 	for _, f := range p.flows {
-		f.upstream.Close()
+		if f.upstream != nil {
+			f.upstream.Close()
+		}
 	}
 	p.mu.Unlock()
 	return p.conn.Close()
@@ -126,9 +159,11 @@ func (p *PassthroughRelay) handle(client *net.UDPAddr, data []byte) {
 	key := client.String()
 	p.mu.Lock()
 	flow, ok := p.flows[key]
+	if ok {
+		flow.last = time.Now() // under lock: reaper reads last concurrently
+	}
 	p.mu.Unlock()
 	if ok {
-		flow.last = time.Now()
 		if flow.upstream != nil {
 			_, _ = flow.upstream.Write(data)
 		} else {
@@ -202,6 +237,11 @@ func (p *PassthroughRelay) routeFlow(client *net.UDPAddr, key, sni string, pendi
 				break
 			}
 			_, _ = p.conn.WriteToUDP(rbuf[:m], client)
+			p.mu.Lock()
+			if f, ok := p.flows[key]; ok {
+				f.last = time.Now() // keep active flows from being reaped
+			}
+			p.mu.Unlock()
 		}
 		p.mu.Lock()
 		delete(p.flows, key)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -73,8 +74,12 @@ func (b *breaker) RecordFailure(domain string) {
 		b.state[domain] = s
 	}
 	s.failures++
-	if s.failures >= b.threshold {
+	if s.failures >= b.threshold && s.openUntil.IsZero() {
 		s.openUntil = time.Now().Add(b.cooldown)
+		// Log once per open transition (naturally bounded), rather than tracking a
+		// per-domain "logged" flag that would grow without bound.
+		log.Printf("circuit breaker open for %s (%d consecutive failures); serving safe stub for %s",
+			domain, s.failures, b.cooldown)
 	}
 }
 

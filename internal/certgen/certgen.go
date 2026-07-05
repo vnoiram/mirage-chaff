@@ -345,13 +345,27 @@ func parseKey(pemBytes []byte) (crypto.Signer, error) {
 	return nil, fmt.Errorf("unsupported private key format (want PKCS8/EC/PKCS1)")
 }
 
+// validHostname accepts only DNS hostnames made of LDH labels (letters, digits,
+// hyphen) plus underscore (seen in some service names). It rejects wildcards and
+// any other character, so an SNI can never inject something unexpected into the
+// on-disk leaf-cache filename (which is derived from the SNI).
 func validHostname(h string) bool {
-	if h == "" || len(h) > 253 || strings.ContainsAny(h, "/\\ \t") {
+	if h == "" || len(h) > 253 {
 		return false
 	}
 	for _, label := range strings.Split(h, ".") {
 		if label == "" || len(label) > 63 {
 			return false
+		}
+		for _, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z':
+			case r >= 'A' && r <= 'Z':
+			case r >= '0' && r <= '9':
+			case r == '-' || r == '_':
+			default:
+				return false
+			}
 		}
 	}
 	return true
