@@ -72,6 +72,15 @@ func cmdCheck(args []string) int {
 		return 2
 	}
 
+	if _, err := os.Stat(*cfgPath); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "config load failed: %s does not exist\n", *cfgPath)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "config load failed: stat %s: %v\n", *cfgPath, err)
+		return 1
+	}
+
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
