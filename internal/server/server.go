@@ -965,14 +965,16 @@ func recorderOptions(cfg config.Config) observability.Options {
 
 func syncConfig(cfg config.Config) rulecatalog.SyncConfig {
 	return rulecatalog.SyncConfig{
-		Enabled:         cfg.AGHSync.Enabled,
-		BaseURL:         cfg.AGHSync.BaseURL,
-		SyncFilters:     cfg.AGHSync.SyncFilters,
-		SyncCustomRules: cfg.AGHSync.SyncCustomRules,
-		SyncAllowDeny:   cfg.AGHSync.SyncAllowDeny,
-		SyncQueryLog:    cfg.AGHSync.SyncQueryLog,
-		FilterURLs:      cfg.AGHSync.FilterURLs,
-		CustomRules:     cfg.AGHSync.CustomRules,
+		Enabled:          cfg.AGHSync.Enabled,
+		BaseURL:          cfg.AGHSync.BaseURL,
+		SyncFilters:      cfg.AGHSync.SyncFilters,
+		SyncCustomRules:  cfg.AGHSync.SyncCustomRules,
+		SyncAllowDeny:    cfg.AGHSync.SyncAllowDeny,
+		SyncQueryLog:     cfg.AGHSync.SyncQueryLog,
+		CNAMEEnabled:     cfg.AGHSync.CNAME.Enabled,
+		CNAMEUseQueryLog: cfg.AGHSync.CNAME.UseQueryLog,
+		FilterURLs:       cfg.AGHSync.FilterURLs,
+		CustomRules:      cfg.AGHSync.CustomRules,
 	}
 }
 

@@ -436,15 +436,17 @@ func (s *Store) Sync(cfg SyncConfig) Status {
 
 // SyncConfig is a local copy of config.AGHSyncConfig to avoid import cycles.
 type SyncConfig struct {
-	Enabled         bool
-	BaseURL         string
-	SyncFilters     bool
-	SyncCustomRules bool
-	SyncAllowDeny   bool
-	SyncQueryLog    bool
-	FilterURLs      []string
-	CustomRules     []string
-	Client          *http.Client
+	Enabled          bool
+	BaseURL          string
+	SyncFilters      bool
+	SyncCustomRules  bool
+	SyncAllowDeny    bool
+	SyncQueryLog     bool
+	CNAMEEnabled     bool
+	CNAMEUseQueryLog bool
+	FilterURLs       []string
+	CustomRules      []string
+	Client           *http.Client
 }
 
 func normalize(e Entry) Entry {

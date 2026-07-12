@@ -166,3 +166,31 @@ func TestBuildFetchesAGHFilteringStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildFetchesAGHQueryLogCNAMECandidates(t *testing.T) {
+	agh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/control/filtering/status":
+			_, _ = w.Write([]byte(`{"filters":[],"user_rules":[]}`))
+		case "/control/querylog":
+			_, _ = w.Write([]byte(`{"data":[{"question":{"name":"metrics.example.com."},"answer":[{"type":"CNAME","value":"tracker.vendor.net."}],"reason":"Filtered by CNAME"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer agh.Close()
+
+	entries, sources, err := Build(SyncConfig{
+		Enabled: true, BaseURL: agh.URL, SyncFilters: false, SyncCustomRules: false,
+		SyncQueryLog: true, CNAMEEnabled: true, CNAMEUseQueryLog: true, Client: agh.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sources != 1 {
+		t.Fatalf("sources = %d, want query log source", sources)
+	}
+	if len(entries) != 1 || !entries[0].CloakingDetected || entries[0].CNAMETarget != "tracker.vendor.net" {
+		t.Fatalf("entries = %+v", entries)
+	}
+}

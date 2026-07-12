@@ -59,6 +59,16 @@ func Build(cfg SyncConfig) ([]Entry, int, error) {
 		out = append(out, entries...)
 		sources++
 	}
+	if cfg.Enabled && cfg.SyncQueryLog && cfg.CNAMEEnabled && cfg.CNAMEUseQueryLog && cfg.BaseURL != "" {
+		entries, err := fetchAGHQueryLogCNAME(client, cfg.BaseURL)
+		if err != nil {
+			return nil, sources, err
+		}
+		if len(entries) > 0 {
+			out = append(out, entries...)
+			sources++
+		}
+	}
 	return mergePriority(out), sources, nil
 }
 
@@ -99,6 +109,76 @@ func fetchAGHFilteringStatus(client *http.Client, base string) ([]string, []stri
 	rules := append([]string{}, st.UserRules...)
 	rules = append(rules, st.AllowlistRules...)
 	return urls, rules, nil
+}
+
+type aghQueryLog struct {
+	Data []struct {
+		Question struct {
+			Name string `json:"name"`
+		} `json:"question"`
+		Answer []struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"answer"`
+		Reason string `json:"reason"`
+	} `json:"data"`
+}
+
+func fetchAGHQueryLogCNAME(client *http.Client, base string) ([]Entry, error) {
+	u, err := url.Parse(strings.TrimRight(base, "/") + "/control/querylog")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Get(u.String())
+	if err != nil {
+		return nil, fmt.Errorf("fetch AGH query log: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("fetch AGH query log: status %d", resp.StatusCode)
+	}
+	var ql aghQueryLog
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&ql); err != nil {
+		return nil, fmt.Errorf("parse AGH query log: %w", err)
+	}
+	var out []Entry
+	for _, row := range ql.Data {
+		domain := strings.TrimSuffix(strings.ToLower(row.Question.Name), ".")
+		if domain == "" {
+			continue
+		}
+		chain := []string{domain}
+		target := ""
+		for _, ans := range row.Answer {
+			if strings.EqualFold(ans.Type, "CNAME") && ans.Value != "" {
+				target = strings.TrimSuffix(strings.ToLower(ans.Value), ".")
+				chain = append(chain, target)
+			}
+		}
+		if target == "" {
+			continue
+		}
+		conf := "medium"
+		if safeCNAMEHost(target) {
+			conf = "low"
+		}
+		e := Entry{
+			Source:       Source{Type: "adguard_query_log", Name: "query_log"},
+			OriginalRule: row.Reason,
+			Match:        Match{Domain: domain},
+			Layer:        LayerDNS, ResourceType: "domain", Category: "tracker", Risk: "medium", Confidence: conf,
+			CNAMEChain: chain, CNAMETarget: target, CNAMEConfidence: conf,
+			CloakingDetected: !safeCNAMEHost(target),
+			ActionCandidates: []string{"agh-rewrite", "agh-custom-rule"},
+			RewriteState:     "agh_rewrite_candidate",
+			AGHQueryLogRef:   domain,
+		}
+		out = append(out, normalize(e))
+	}
+	for i := range out {
+		out[i].ID = stableID(out[i])
+	}
+	return out, nil
 }
 
 func fetch(client *http.Client, rawurl string) (string, error) {
