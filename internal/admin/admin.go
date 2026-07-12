@@ -1,0 +1,296 @@
+// Package admin is the web admin UI backend (MITM control plane): argon2id
+// login, server-side sessions, CSRF, login lockout, and RBAC (admin/editor/
+// viewer). It reads/writes /etc/mirage-chaff config with validation and triggers
+// SIGHUP reload; restart-required fields are flagged in the UI. Health and
+// metrics live in package observability, not here, so they survive
+// admin.enabled=false (design doc A-3).
+package admin
+
+import (
+	"context"
+	"crypto/subtle"
+	"embed"
+	"encoding/json"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/vnoiram/mirage-chaff/internal/config"
+	"github.com/vnoiram/mirage-chaff/internal/observability"
+	"github.com/vnoiram/mirage-chaff/internal/policy"
+)
+
+//go:embed web
+var webFS embed.FS
+
+const sessionCookie = "mc_admin_session"
+
+// Deps is what the admin backend needs from the running server. Passing
+// functions/refs avoids an import cycle (server imports admin, not vice-versa).
+type Deps struct {
+	Version         string
+	ConfigPath      string
+	Paths           config.PathsConfig
+	Recorder        *observability.Recorder
+	Engine          *policy.Engine
+	CertFingerprint func() string
+	CertKeyType     string
+	Reload          func() error
+	KillSwitch      func() error
+	Listeners       func() map[string]string
+	OIDC            config.OIDCConfig
+}
+
+// Server is the admin HTTP backend.
+type Server struct {
+	store *Store
+	sess  *sessionManager
+	deps  Deps
+	oidc  *oidcAuth
+}
+
+// New builds the admin server and ensures an initial admin account exists,
+// printing a one-time bootstrap password to the log when it creates one. When
+// OIDC is configured, provider discovery is attempted best-effort (failure is
+// logged; local accounts still work).
+func New(store *Store, deps Deps) *Server {
+	s := &Server{store: store, sess: newSessionManager(30 * time.Minute), deps: deps}
+	s.bootstrap()
+	if deps.OIDC.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if a, err := newOIDC(ctx, deps.OIDC); err != nil {
+			log.Printf("admin: OIDC disabled — %v (local accounts still available)", err)
+		} else {
+			s.oidc = a
+			log.Printf("admin: OIDC SSO enabled (issuer %s)", deps.OIDC.Issuer)
+		}
+	}
+	return s
+}
+
+// bootstrap creates an initial admin with a random temporary password (forced
+// change on first login) when the store has no users (design doc install step 5).
+func (s *Server) bootstrap() {
+	if s.store.UserCount() > 0 {
+		return
+	}
+	tempPW := randToken()[:16]
+	_ = s.store.Upsert(User{
+		Username:   "admin",
+		Hash:       HashPassword(tempPW),
+		Role:       RoleAdmin,
+		MustChange: true,
+		Created:    time.Now(),
+	})
+	log.Printf("admin: created initial account 'admin' — TEMPORARY PASSWORD: %s (change on first login)", tempPW)
+	s.store.Audit("system", "bootstrap", "created initial admin account")
+}
+
+// Handler returns the admin HTTP handler (API + embedded SPA).
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	// Auth.
+	mux.HandleFunc("GET /api/authinfo", s.handleAuthInfo)
+	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/logout", s.withAuth("", s.handleLogout))
+	mux.HandleFunc("GET /api/me", s.withAuth("", s.handleMe))
+	mux.HandleFunc("POST /api/me/password", s.withAuth("", s.handleChangePassword))
+	if s.oidc != nil {
+		mux.HandleFunc("GET /api/oidc/login", s.handleOIDCLogin)
+		mux.HandleFunc("GET /api/oidc/callback", s.handleOIDCCallback)
+	}
+
+	// Read views.
+	mux.HandleFunc("GET /api/dashboard", s.withAuth("dashboard.view", s.handleDashboard))
+	mux.HandleFunc("GET /api/traffic", s.withAuth("traffic.view", s.handleTraffic))
+	mux.HandleFunc("GET /api/traffic/stream", s.withAuth("traffic.view", s.handleTrafficStream))
+	mux.HandleFunc("GET /api/curation", s.withAuth("policy.view", s.handleCuration))
+	mux.HandleFunc("GET /api/policy", s.withAuth("policy.view", s.handlePolicyList))
+	mux.HandleFunc("GET /api/policy/{name}", s.withAuth("policy.view", s.handlePolicyGet))
+	mux.HandleFunc("GET /api/catalog", s.withAuth("catalog.view", s.handleCatalogList))
+	mux.HandleFunc("GET /api/config", s.withAuth("config.view", s.handleConfigGet))
+	mux.HandleFunc("GET /api/audit", s.withAuth("audit.view", s.handleAudit))
+
+	// Mutations.
+	mux.HandleFunc("PUT /api/policy/{name}", s.withAuth("policy.edit", s.handlePolicyPut))
+	mux.HandleFunc("PUT /api/config", s.withAuth("config.edit", s.handleConfigPut))
+	mux.HandleFunc("POST /api/reload", s.withAuth("apply.reload", s.handleReload))
+	mux.HandleFunc("POST /api/allow", s.withAuth("allow.temp", s.handleTempAllow))
+	mux.HandleFunc("POST /api/killswitch", s.withAuth("killswitch.execute", s.handleKillSwitch))
+
+	// User management.
+	mux.HandleFunc("GET /api/users", s.withAuth("users.manage", s.handleUserList))
+	mux.HandleFunc("POST /api/users", s.withAuth("users.manage", s.handleUserCreate))
+	mux.HandleFunc("DELETE /api/users/{name}", s.withAuth("users.manage", s.handleUserDelete))
+	mux.HandleFunc("POST /api/users/{name}/password", s.withAuth("users.manage", s.handleUserSetPassword))
+
+	// Embedded SPA.
+	sub, _ := fs.Sub(webFS, "web")
+	mux.Handle("/", http.FileServer(http.FS(sub)))
+	return mux
+}
+
+// --- middleware ---
+
+// withAuth wraps a handler requiring a valid session and (optionally) a
+// capability. State-changing methods additionally require a valid CSRF token.
+func (s *Server) withAuth(capability string, h func(http.ResponseWriter, *http.Request, *session)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie(sessionCookie)
+		if err != nil {
+			unauthorized(w)
+			return
+		}
+		sess := s.sess.get(c.Value)
+		if sess == nil {
+			unauthorized(w)
+			return
+		}
+		// CSRF on mutations (constant-time compare).
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(sess.csrf)) != 1 {
+				http.Error(w, "bad CSRF token", http.StatusForbidden)
+				return
+			}
+		}
+		if capability != "" && !Can(sess.role, capability) {
+			http.Error(w, "forbidden: missing capability "+capability, http.StatusForbidden)
+			return
+		}
+		h(w, r, sess)
+	}
+}
+
+// --- auth handlers ---
+
+// handleAuthInfo is a public endpoint telling the SPA which login methods exist.
+func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"oidc": s.oidc != nil})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Username, Password string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if s.sess.locked(req.Username) {
+		http.Error(w, "account temporarily locked", http.StatusTooManyRequests)
+		return
+	}
+	u, ok := s.store.Get(req.Username)
+	// Always run a password verification (dummy hash for unknown/disabled users)
+	// so response time does not reveal whether an account exists.
+	hash := u.Hash
+	if !ok || u.Disabled {
+		hash = dummyArgonHash
+	}
+	if !VerifyPassword(req.Password, hash) || !ok || u.Disabled {
+		// Only track failures for real accounts, so an attacker submitting random
+		// usernames cannot grow the lockout map without bound.
+		if ok {
+			s.sess.recordFailure(req.Username)
+		}
+		s.store.Audit(req.Username, "login.fail", "invalid credentials")
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+	s.sess.recordSuccess(req.Username)
+	sess := s.sess.create(u.Username, u.Role)
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    sess.id,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+	})
+	s.store.Audit(u.Username, "login", "success")
+	writeJSON(w, map[string]any{
+		"username": u.Username, "role": u.Role, "csrf": sess.csrf, "must_change": u.MustChange,
+	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, sess *session) {
+	s.sess.destroy(sess.id)
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, sess *session) {
+	u, _ := s.store.Get(sess.username)
+	writeJSON(w, map[string]any{
+		"username": sess.username, "role": sess.role, "csrf": sess.csrf,
+		"must_change": u.MustChange, "capabilities": capList(sess.role),
+	})
+}
+
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, sess *session) {
+	var req struct{ Old, New string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.New) < 8 {
+		http.Error(w, "new password must be at least 8 chars", http.StatusBadRequest)
+		return
+	}
+	u, _ := s.store.Get(sess.username)
+	if !VerifyPassword(req.Old, u.Hash) {
+		http.Error(w, "old password incorrect", http.StatusUnauthorized)
+		return
+	}
+	if err := s.store.SetPassword(sess.username, req.New); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.Audit(sess.username, "password.change", "self")
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// --- helpers ---
+
+func capList(role Role) []string {
+	var out []string
+	for c := range roleCaps[role] {
+		out = append(out, c)
+	}
+	return out
+}
+
+func unauthorized(w http.ResponseWriter) { http.Error(w, "unauthorized", http.StatusUnauthorized) }
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// safeName rejects path separators so a policy filename can't escape the dir.
+func safeName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "/\\") && !strings.Contains(name, "..") &&
+		(strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml"))
+}
+
+func readDirFiles(dir, suffixA, suffixB string) (map[string]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(e.Name(), suffixA) && !strings.HasSuffix(e.Name(), suffixB) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out[e.Name()] = string(b)
+	}
+	return out, nil
+}

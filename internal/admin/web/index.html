@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mirage-chaff admin</title>
+<style>
+  :root { --bg:#0f1216; --panel:#171c22; --fg:#d7dde3; --mut:#8a95a1; --acc:#4a9df0; --bad:#e0674a; --ok:#4ac07a; --line:#242c34; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:center; gap:16px; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header b { color:var(--acc); }
+  nav { display:flex; gap:4px; flex-wrap:wrap; }
+  nav button { background:none; border:1px solid transparent; color:var(--mut); padding:6px 10px; border-radius:6px; cursor:pointer; }
+  nav button.active, nav button:hover { color:var(--fg); border-color:var(--line); background:var(--bg); }
+  main { padding:16px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--mut); font-weight:600; }
+  .grid { overflow-x:auto; }
+  input,select,textarea,button.act { font:inherit; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:8px; }
+  textarea { width:100%; min-height:340px; font-family:ui-monospace,monospace; }
+  button.act { cursor:pointer; }
+  button.act:hover { border-color:var(--acc); }
+  button.danger { border-color:var(--bad); color:var(--bad); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .kv { display:grid; grid-template-columns:180px 1fr; gap:6px 12px; }
+  .kv div:nth-child(odd){ color:var(--mut); }
+  .pill { padding:1px 7px; border-radius:10px; font-size:12px; border:1px solid var(--line); }
+  .a-stub{color:var(--ok)} .a-forward-scrubbed,.a-forward-asis{color:var(--acc)} .a-forward-mimic{color:#c79bf0} .a-passthrough{color:#e0b64a}
+  #login { max-width:360px; margin:12vh auto; }
+  .msg { color:var(--bad); min-height:20px; }
+  .hidden { display:none; }
+  h2 { margin:0 0 12px; font-size:16px; }
+  small { color:var(--mut); }
+</style>
+</head>
+<body>
+<div id="login" class="card hidden">
+  <h2>mirage-chaff admin</h2>
+  <div class="row" style="flex-direction:column;align-items:stretch">
+    <input id="lu" placeholder="username" autocomplete="username">
+    <input id="lp" type="password" placeholder="password" autocomplete="current-password">
+    <button class="act" onclick="doLogin()">Sign in</button>
+    <button id="sso" class="act hidden" onclick="location.href='/api/oidc/login'">Sign in with SSO</button>
+    <div id="lmsg" class="msg"></div>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <b>mirage-chaff</b>
+    <nav id="nav"></nav>
+    <span style="margin-left:auto"></span>
+    <small id="who"></small>
+    <button class="act" onclick="logout()">Logout</button>
+  </header>
+  <main id="view"></main>
+</div>
+
+<script>
+let ME = null;
+const api = async (method, path, body) => {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers['Content-Type']='application/json'; opt.body=JSON.stringify(body); }
+  if (ME && method!=='GET') opt.headers['X-CSRF-Token']=ME.csrf;
+  const r = await fetch(path, opt);
+  if (r.status===401) { ME=null; render(); throw new Error('unauthorized'); }
+  if (!r.ok) throw new Error(await r.text());
+  const ct = r.headers.get('content-type')||'';
+  return ct.includes('json') ? r.json() : r.text();
+};
+const el = (h) => { const d=document.createElement('div'); d.innerHTML=h; return d; };
+const esc = (s) => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function doLogin(){
+  try {
+    const u=document.getElementById('lu').value, p=document.getElementById('lp').value;
+    await api('POST','/api/login',{username:u,password:p});
+    ME = await api('GET','/api/me');
+    render();
+  } catch(e){ document.getElementById('lmsg').textContent = e.message; }
+}
+async function logout(){ try{ await api('POST','/api/logout'); }catch{} ME=null; render(); }
+
+const has = (cap) => ME && ME.capabilities && ME.capabilities.includes(cap);
+const TABS = [
+  ['Dashboard','dashboard.view',viewDashboard],
+  ['Traffic','traffic.view',viewTraffic],
+  ['Curation','policy.view',viewCuration],
+  ['Policy','policy.view',viewPolicy],
+  ['Config','config.view',viewConfig],
+  ['Users','users.manage',viewUsers],
+  ['Audit','audit.view',viewAudit],
+];
+let CUR = 'Dashboard';
+
+function render(){
+  const login=document.getElementById('login'), app=document.getElementById('app');
+  if(!ME){ login.classList.remove('hidden'); app.classList.add('hidden'); return; }
+  login.classList.add('hidden'); app.classList.remove('hidden');
+  document.getElementById('who').textContent = ME.username+' · '+ME.role;
+  const nav=document.getElementById('nav'); nav.innerHTML='';
+  TABS.filter(t=>has(t[1])).forEach(t=>{
+    const b=document.createElement('button'); b.textContent=t[0];
+    if(t[0]===CUR) b.className='active';
+    b.onclick=()=>{ CUR=t[0]; render(); };
+    nav.appendChild(b);
+  });
+  const tab = TABS.find(t=>t[0]===CUR) || TABS[0];
+  document.getElementById('view').innerHTML='';
+  tab[2](document.getElementById('view'));
+  if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
+}
+
+async function viewDashboard(v){
+  const d = await api('GET','/api/dashboard');
+  const temp = Object.entries(d.temp_allows||{}).map(([k,t])=>`${esc(k)} → ${esc(new Date(t).toLocaleTimeString())}`).join('<br>')||'<small>none</small>';
+  const lis = Object.entries(d.listeners||{}).map(([k,val])=>`<div>${esc(k)}</div><div>${esc(val)}</div>`).join('');
+  v.appendChild(el(`<div class="card"><h2>Status</h2><div class="kv">
+    <div>version</div><div>${esc(d.version)}</div>
+    <div>policy rules</div><div>${d.policy_rules}</div>
+    <div>cert key type</div><div>${esc(d.cert_key_type)}</div>
+    <div>cert fingerprint</div><div><small>${esc((d.cert_fingerprint||'').slice(0,32))}…</small></div>
+    <div>admin users</div><div>${d.users}</div>
+    ${lis}
+  </div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Temporary allows</h2><div>${temp}</div>
+    <div class="row" style="margin-top:12px">
+      <input id="ta-d" placeholder="domain"><input id="ta-m" type="number" value="15" style="width:80px">min
+      <button class="act" onclick="tempAllow()">Allow (pass-through)</button>
+    </div></div>`));
+  if(has('killswitch.execute'))
+    v.appendChild(el(`<div class="card"><h2>Emergency</h2>
+      <button class="act danger" onclick="killswitch()">Execute kill-switch (remove AGH rewrites)</button></div>`));
+}
+async function tempAllow(){ try{
+  await api('POST','/api/allow',{domain:document.getElementById('ta-d').value,minutes:+document.getElementById('ta-m').value});
+  render();
+}catch(e){ alert(e.message);} }
+async function killswitch(){ if(!confirm('Remove all cushion AGH rewrites and revert to normal resolution?'))return;
+  try{ const r=await api('POST','/api/killswitch'); alert(r.status);}catch(e){alert(e.message);} }
+
+async function viewTraffic(v){
+  v.appendChild(el(`<div class="card"><h2>Live traffic <small>(redacted)</small></h2>
+    <div class="grid"><table><thead><tr><th>time</th><th>domain</th><th>path</th><th>method</th><th>action</th><th>rule</th><th>status</th><th>bytes</th></tr></thead>
+    <tbody id="tbody"></tbody></table></div></div>`));
+  const tb=document.getElementById('tbody');
+  const add=(r)=>{ const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${esc(new Date(r.time).toLocaleTimeString())}</td><td>${esc(r.domain)}</td><td>${esc(r.path)}</td>
+      <td>${esc(r.method)}</td><td class="a-${esc(r.action)}">${esc(r.action)}</td><td>${esc(r.rule||'')}</td><td>${r.status}</td><td>${r.bytes}</td>`;
+    tb.prepend(tr); while(tb.children.length>300) tb.removeChild(tb.lastChild); };
+  (await api('GET','/api/traffic')).slice(-100).forEach(add);
+  const es=new EventSource('/api/traffic/stream');
+  es.onmessage=(e)=>{ try{ add(JSON.parse(e.data)); }catch{} };
+  v._cleanup=()=>es.close();
+}
+
+async function viewCuration(v){
+  const rows=await api('GET','/api/curation');
+  v.appendChild(el(`<div class="card"><h2>Curation candidates <small>(unmatched domains/paths)</small></h2>
+    <div class="grid"><table><thead><tr><th>count</th><th>domain</th><th>path</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${r.Count}</td><td>${esc(r.Domain)}</td><td>${esc(r.Path)}</td></tr>`).join('')}
+    </tbody></table></div></div>`));
+}
+
+async function viewPolicy(v){
+  const list=await api('GET','/api/policy');
+  const canEdit=has('policy.edit');
+  v.appendChild(el(`<div class="card"><h2>Policy files</h2>
+    <div class="row"><select id="pf">${(list.files||[]).map(f=>`<option>${esc(f)}</option>`).join('')}</select>
+    <button class="act" onclick="loadPolicy()">Open</button></div>
+    <textarea id="pc" ${canEdit?'':'readonly'} style="margin-top:10px"></textarea>
+    ${canEdit?'<div class="row"><button class="act" onclick="savePolicy()">Save</button><button class="act" onclick="reload()">Apply (reload)</button><span id="pmsg"></span></div>':''}
+  </div>`));
+  if((list.files||[]).length) loadPolicy();
+}
+async function loadPolicy(){ const n=document.getElementById('pf').value; const r=await api('GET','/api/policy/'+n); document.getElementById('pc').value=r.content; }
+async function savePolicy(){ try{ const n=document.getElementById('pf').value;
+  const r=await api('PUT','/api/policy/'+n,{content:document.getElementById('pc').value});
+  document.getElementById('pmsg').textContent=r.note||'saved'; }catch(e){ document.getElementById('pmsg').textContent=e.message; } }
+async function reload(){ try{ const r=await api('POST','/api/reload'); alert('reloaded'); }catch(e){ alert(e.message);} }
+
+async function viewConfig(v){
+  const r=await api('GET','/api/config'); const canEdit=has('config.edit');
+  v.appendChild(el(`<div class="card"><h2>Config <small>${esc(r.path)}</small></h2>
+    <textarea id="cc" ${canEdit?'':'readonly'}>${esc(r.content)}</textarea>
+    ${canEdit?'<div class="row"><button class="act" onclick="saveConfig()">Save</button><small>restart-required fields need a service restart</small><span id="cmsg"></span></div>':''}
+  </div>`));
+}
+async function saveConfig(){ try{ const r=await api('PUT','/api/config',{content:document.getElementById('cc').value});
+  document.getElementById('cmsg').textContent=r.note||'saved'; }catch(e){ document.getElementById('cmsg').textContent=e.message; } }
+
+async function viewUsers(v){
+  const users=await api('GET','/api/users');
+  v.appendChild(el(`<div class="card"><h2>Users</h2>
+    <div class="grid"><table><thead><tr><th>username</th><th>role</th><th>disabled</th><th></th></tr></thead><tbody>
+    ${users.map(u=>`<tr><td>${esc(u.username)}</td><td>${esc(u.role)}</td><td>${u.disabled?'yes':''}</td>
+      <td><button class="act" onclick="resetPw('${esc(u.username)}')">reset pw</button>
+      <button class="act danger" onclick="delUser('${esc(u.username)}')">delete</button></td></tr>`).join('')}
+    </tbody></table></div>
+    <h2 style="margin-top:16px">Add user</h2>
+    <div class="row"><input id="nu" placeholder="username"><input id="np" type="password" placeholder="password (>=8)">
+    <select id="nr"><option>viewer</option><option>editor</option><option>admin</option></select>
+    <button class="act" onclick="addUser()">Create</button></div>
+    <h2 style="margin-top:16px">Change my password</h2>
+    <div class="row"><input id="op" type="password" placeholder="old"><input id="mp" type="password" placeholder="new (>=8)">
+    <button class="act" onclick="changePw()">Update</button></div>
+  </div>`));
+}
+async function addUser(){ try{ await api('POST','/api/users',{username:document.getElementById('nu').value,password:document.getElementById('np').value,role:document.getElementById('nr').value}); render(); }catch(e){ alert(e.message);} }
+async function delUser(n){ if(!confirm('Delete '+n+'?'))return; try{ await api('DELETE','/api/users/'+n); render(); }catch(e){ alert(e.message);} }
+async function resetPw(n){ const p=prompt('New password for '+n+' (>=8):'); if(!p)return; try{ await api('POST','/api/users/'+n+'/password',{password:p}); alert('done'); }catch(e){ alert(e.message);} }
+async function changePw(){ try{ await api('POST','/api/me/password',{old:document.getElementById('op').value,new:document.getElementById('mp').value}); alert('password changed'); }catch(e){ alert(e.message);} }
+
+async function viewAudit(v){
+  const rows=await api('GET','/api/audit');
+  v.appendChild(el(`<div class="card"><h2>Audit log</h2><div class="grid"><table><thead><tr><th>time</th><th>actor</th><th>action</th><th>detail</th></tr></thead><tbody>
+    ${rows.map(a=>`<tr><td>${esc(new Date(a.time).toLocaleString())}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.detail)}</td></tr>`).join('')}
+    </tbody></table></div></div>`));
+}
+
+(async function init(){
+  try{ ME=await api('GET','/api/me'); }catch{}
+  if(!ME){ try{ const ai=await api('GET','/api/authinfo'); if(ai.oidc) document.getElementById('sso').classList.remove('hidden'); }catch{} }
+  render();
+})();
+</script>
+</body>
+</html>

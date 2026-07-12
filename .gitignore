@@ -13,7 +13,7 @@ certcache/
 agh.env
 
 # --- Admin runtime state (accounts/sessions) ---
-admin/
+/admin/
 *.sqlite
 *.sqlite-*
 
