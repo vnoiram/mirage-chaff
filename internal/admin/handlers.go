@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/vnoiram/mirage-chaff/internal/config"
@@ -141,6 +142,137 @@ func (s *Server) handleCatalogList(w http.ResponseWriter, r *http.Request, sess 
 	writeJSON(w, map[string]any{"files": names})
 }
 
+func (s *Server) handleRuleCatalogList(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		writeJSON(w, map[string]any{"entries": []any{}})
+		return
+	}
+	filter := map[string]string{}
+	for _, k := range []string{"domain", "category", "risk", "verified", "review_status", "source_type"} {
+		filter[k] = r.URL.Query().Get(k)
+	}
+	writeJSON(w, map[string]any{"entries": s.deps.RuleCatalog.List(filter)})
+}
+
+func (s *Server) handleRuleCatalogGet(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	e, ok := s.deps.RuleCatalog.Get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, e)
+}
+
+func (s *Server) handleRuleCatalogReview(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		ReviewStatus string `json:"review_status"`
+		Verified     *bool  `json:"verified"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	e, err := s.deps.RuleCatalog.Review(r.PathValue("id"), req.ReviewStatus, req.Verified)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.review", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleAGHSyncStatus(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, s.deps.RuleCatalog.Status())
+}
+
+func (s *Server) handleAGHSyncRun(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHSync == nil {
+		http.Error(w, "AGH sync unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	st := s.deps.AGHSync()
+	s.store.Audit(sess.username, "agh_sync.run", st.LastError)
+	writeJSON(w, st)
+}
+
+func (s *Server) handleTriageContext(w http.ResponseWriter, r *http.Request, sess *session) {
+	domain := r.URL.Query().Get("domain")
+	path := r.URL.Query().Get("path")
+	if domain == "" {
+		http.Error(w, "domain required", http.StatusBadRequest)
+		return
+	}
+	resp := map[string]any{
+		"domain":      domain,
+		"path":        path,
+		"temp_allows": s.deps.Engine.TempRules(),
+	}
+	if s.deps.RuleCatalog != nil {
+		if e, ok := s.deps.RuleCatalog.Lookup(domain, path); ok {
+			resp["rule_catalog"] = e
+		}
+	}
+	rs := s.deps.Engine.Ruleset()
+	resp["decision"] = rs.Match(domain, path, http.MethodGet)
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request, sess *session) {
+	out := s.deps.Recorder.Analytics()
+	if s.deps.RuleCatalog != nil {
+		out["catalog"] = s.deps.RuleCatalog.Analytics()
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleAnalyticsDomains(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeJSON(w, s.deps.Recorder.Analytics()["top_domains"])
+}
+
+func (s *Server) handleAnalyticsRules(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeJSON(w, s.deps.Recorder.Analytics()["top_rules"])
+}
+
+func (s *Server) handleAnalyticsCatalog(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		writeJSON(w, map[string]any{"total": 0})
+		return
+	}
+	writeJSON(w, s.deps.RuleCatalog.Analytics())
+}
+
+func (s *Server) handleAnalyticsJSStubs(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeCatalogAnalyticsSlice(w, s, "js_stub_candidates")
+}
+
+func (s *Server) handleAnalyticsFalsePositiveCandidates(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeCatalogAnalyticsSlice(w, s, "high_unverified")
+}
+
+func (s *Server) handleAnalyticsCNAMECandidates(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeCatalogAnalyticsSlice(w, s, "cname_candidates")
+}
+
+func writeCatalogAnalyticsSlice(w http.ResponseWriter, s *Server, key string) {
+	if s.deps.RuleCatalog == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, s.deps.RuleCatalog.Analytics()[key])
+}
+
 func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request, sess *session) {
 	b, err := os.ReadFile(s.deps.ConfigPath)
 	if err != nil {
@@ -220,6 +352,66 @@ func (s *Server) handleTempAllow(w http.ResponseWriter, r *http.Request, sess *s
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+func (s *Server) handlePermanentAllow(w http.ResponseWriter, r *http.Request, sess *session) {
+	var req struct {
+		Domain string `json:"domain"`
+		Path   string `json:"path"`
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	action := req.Action
+	if action == "" {
+		action = policy.ActionForwardAsis
+	}
+	name := "allow-" + safeSlug(req.Domain) + ".yaml"
+	content := allowPolicyYAML(req.Domain, req.Path, action)
+	if err := policy.ValidateBytes([]byte(content)); err != nil {
+		http.Error(w, "invalid generated policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(s.deps.Paths.PolicyDir, name), []byte(content), 0o640); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.Audit(sess.username, "allow.permanent", req.Domain)
+	writeJSON(w, map[string]string{"status": "ok", "file": name, "note": "call /api/reload to apply"})
+}
+
+func (s *Server) handleSiteOverride(w http.ResponseWriter, r *http.Request, sess *session) {
+	var req struct {
+		Domain  string `json:"domain"`
+		Profile string `json:"profile"`
+		Action  string `json:"action"`
+		Catalog string `json:"catalog"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	action := req.Action
+	if action == "" {
+		action = policy.ActionForwardAsis
+	}
+	name := "site-override-" + safeSlug(req.Domain) + ".yaml"
+	content := fmt.Sprintf("rules:\n  - name: site-override-%s\n    priority: 5\n    match:\n      domain: %q\n    action: %q\n", safeSlug(req.Domain), req.Domain, action)
+	if action == policy.ActionStub && req.Catalog != "" {
+		content += fmt.Sprintf("    catalog: %q\n", req.Catalog)
+	}
+	if err := policy.ValidateBytes([]byte(content)); err != nil {
+		http.Error(w, "invalid generated policy: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(s.deps.Paths.PolicyDir, name), []byte(content), 0o640); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.Audit(sess.username, "site_override.write", req.Domain+" "+req.Profile)
+	writeJSON(w, map[string]string{"status": "ok", "file": name, "note": "call /api/reload to apply"})
+}
+
 func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.KillSwitch == nil {
 		http.Error(w, "kill-switch unavailable", http.StatusServiceUnavailable)
@@ -235,6 +427,32 @@ func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request, sess *
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, sess *session) {
 	writeJSON(w, s.store.AuditLog(500))
+}
+
+func safeSlug(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "rule"
+	}
+	return out
+}
+
+func allowPolicyYAML(domain, path, action string) string {
+	content := fmt.Sprintf("rules:\n  - name: allow-%s\n    priority: 1\n    match:\n      domain: %q\n", safeSlug(domain), domain)
+	if path != "" {
+		content += fmt.Sprintf("      path: %q\n", path)
+	}
+	content += fmt.Sprintf("    action: %q\n", action)
+	return content
 }
 
 // --- user management ---

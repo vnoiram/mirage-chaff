@@ -22,6 +22,7 @@ import (
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
+	"github.com/vnoiram/mirage-chaff/internal/rulecatalog"
 )
 
 //go:embed web
@@ -43,6 +44,8 @@ type Deps struct {
 	KillSwitch      func() error
 	Listeners       func() map[string]string
 	OIDC            config.OIDCConfig
+	RuleCatalog     *rulecatalog.Store
+	AGHSync         func() rulecatalog.Status
 }
 
 // Server is the admin HTTP backend.
@@ -114,6 +117,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/policy", s.withAuth("policy.view", s.handlePolicyList))
 	mux.HandleFunc("GET /api/policy/{name}", s.withAuth("policy.view", s.handlePolicyGet))
 	mux.HandleFunc("GET /api/catalog", s.withAuth("catalog.view", s.handleCatalogList))
+	mux.HandleFunc("GET /api/rule-catalog", s.withAuth("catalog.view", s.handleRuleCatalogList))
+	mux.HandleFunc("GET /api/rule-catalog/{id}", s.withAuth("catalog.view", s.handleRuleCatalogGet))
+	mux.HandleFunc("GET /api/agh-sync/status", s.withAuth("catalog.view", s.handleAGHSyncStatus))
+	mux.HandleFunc("GET /api/triage/context", s.withAuth("traffic.view", s.handleTriageContext))
+	mux.HandleFunc("GET /api/analytics/summary", s.withAuth("traffic.view", s.handleAnalyticsSummary))
+	mux.HandleFunc("GET /api/analytics/domains", s.withAuth("traffic.view", s.handleAnalyticsDomains))
+	mux.HandleFunc("GET /api/analytics/rules", s.withAuth("traffic.view", s.handleAnalyticsRules))
+	mux.HandleFunc("GET /api/analytics/catalog", s.withAuth("catalog.view", s.handleAnalyticsCatalog))
+	mux.HandleFunc("GET /api/analytics/js-stubs", s.withAuth("catalog.view", s.handleAnalyticsJSStubs))
+	mux.HandleFunc("GET /api/analytics/false-positive-candidates", s.withAuth("catalog.view", s.handleAnalyticsFalsePositiveCandidates))
+	mux.HandleFunc("GET /api/analytics/cname-candidates", s.withAuth("catalog.view", s.handleAnalyticsCNAMECandidates))
 	mux.HandleFunc("GET /api/config", s.withAuth("config.view", s.handleConfigGet))
 	mux.HandleFunc("GET /api/audit", s.withAuth("audit.view", s.handleAudit))
 
@@ -122,6 +136,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.withAuth("config.edit", s.handleConfigPut))
 	mux.HandleFunc("POST /api/reload", s.withAuth("apply.reload", s.handleReload))
 	mux.HandleFunc("POST /api/allow", s.withAuth("allow.temp", s.handleTempAllow))
+	mux.HandleFunc("POST /api/rule-catalog/{id}/review", s.withAuth("catalog.edit", s.handleRuleCatalogReview))
+	mux.HandleFunc("POST /api/agh-sync/run", s.withAuth("agh.manage", s.handleAGHSyncRun))
+	mux.HandleFunc("POST /api/allow/permanent", s.withAuth("policy.edit", s.handlePermanentAllow))
+	mux.HandleFunc("POST /api/site-override", s.withAuth("policy.edit", s.handleSiteOverride))
 	mux.HandleFunc("POST /api/killswitch", s.withAuth("killswitch.execute", s.handleKillSwitch))
 
 	// User management.

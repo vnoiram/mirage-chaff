@@ -35,6 +35,15 @@ func TestRBACCapabilities(t *testing.T) {
 	if !Can(RoleEditor, "policy.edit") {
 		t.Error("editor should have policy.edit")
 	}
+	if !Can(RoleEditor, "catalog.edit") {
+		t.Error("editor should be able to review catalog entries")
+	}
+	if Can(RoleEditor, "agh.manage") {
+		t.Error("editor must NOT run AGH sync")
+	}
+	if !Can(RoleAdmin, "agh.manage") {
+		t.Error("admin should run AGH sync")
+	}
 	if Can(RoleViewer, "policy.edit") {
 		t.Error("viewer must NOT have policy.edit")
 	}

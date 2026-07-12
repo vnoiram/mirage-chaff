@@ -88,6 +88,8 @@ const has = (cap) => ME && ME.capabilities && ME.capabilities.includes(cap);
 const TABS = [
   ['Dashboard','dashboard.view',viewDashboard],
   ['Traffic','traffic.view',viewTraffic],
+  ['Analytics','traffic.view',viewAnalytics],
+  ['Rule Catalog','catalog.view',viewRuleCatalog],
   ['Curation','policy.view',viewCuration],
   ['Policy','policy.view',viewPolicy],
   ['Config','config.view',viewConfig],
@@ -144,18 +146,65 @@ async function killswitch(){ if(!confirm('Remove all cushion AGH rewrites and re
 
 async function viewTraffic(v){
   v.appendChild(el(`<div class="card"><h2>Live traffic <small>(redacted)</small></h2>
-    <div class="grid"><table><thead><tr><th>time</th><th>domain</th><th>path</th><th>method</th><th>action</th><th>rule</th><th>status</th><th>bytes</th></tr></thead>
+    <div class="grid"><table><thead><tr><th>time</th><th>domain</th><th>path</th><th>method</th><th>action</th><th>rule</th><th>catalog</th><th>status</th><th>bytes</th><th></th></tr></thead>
     <tbody id="tbody"></tbody></table></div></div>`));
   const tb=document.getElementById('tbody');
   const add=(r)=>{ const tr=document.createElement('tr');
     tr.innerHTML=`<td>${esc(new Date(r.time).toLocaleTimeString())}</td><td>${esc(r.domain)}</td><td>${esc(r.path)}</td>
-      <td>${esc(r.method)}</td><td class="a-${esc(r.action)}">${esc(r.action)}</td><td>${esc(r.rule||'')}</td><td>${r.status}</td><td>${r.bytes}</td>`;
+      <td>${esc(r.method)}</td><td class="a-${esc(r.action)}">${esc(r.action)}</td><td>${esc(r.rule||'')}</td><td>${esc(r.category||r.catalog_id||'')}</td><td>${r.status}</td><td>${r.bytes}</td>
+      <td><button class="act" onclick="triage('${esc(r.domain)}','${esc(r.path||'')}')">triage</button></td>`;
     tb.prepend(tr); while(tb.children.length>300) tb.removeChild(tb.lastChild); };
   (await api('GET','/api/traffic')).slice(-100).forEach(add);
   const es=new EventSource('/api/traffic/stream');
   es.onmessage=(e)=>{ try{ add(JSON.parse(e.data)); }catch{} };
   v._cleanup=()=>es.close();
 }
+
+async function triage(domain,path){
+  const q=new URLSearchParams({domain,path});
+  const r=await api('GET','/api/triage/context?'+q.toString());
+  alert(JSON.stringify(r,null,2));
+}
+
+async function viewAnalytics(v){
+  const s=await api('GET','/api/analytics/summary');
+  const domains=await api('GET','/api/analytics/domains');
+  const rules=await api('GET','/api/analytics/rules');
+  const cat=s.catalog||{};
+  v.appendChild(el(`<div class="card"><h2>Analytics</h2><div class="kv">
+    <div>log mode</div><div>${esc(s.log_mode)}</div>
+    <div>requests</div><div>${s.total||0}</div>
+    <div>bytes</div><div>${s.bytes||0}</div>
+    <div>catalog entries</div><div>${cat.total||0}</div>
+  </div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Top domains</h2>${rankTable(domains)}</div>`));
+  v.appendChild(el(`<div class="card"><h2>Top rules</h2>${rankTable(rules)}</div>`));
+  v.appendChild(el(`<div class="card"><h2>Catalog classifications</h2><div class="grid"><table><tbody>
+    <tr><th>category</th><td>${esc(JSON.stringify(cat.by_category||{}))}</td></tr>
+    <tr><th>risk</th><td>${esc(JSON.stringify(cat.by_risk||{}))}</td></tr>
+    <tr><th>review</th><td>${esc(JSON.stringify(cat.by_review_status||{}))}</td></tr>
+    <tr><th>source</th><td>${esc(JSON.stringify(cat.by_source_type||{}))}</td></tr>
+  </tbody></table></div></div>`));
+}
+function rankTable(rows){
+  rows=rows||[];
+  return `<div class="grid"><table><thead><tr><th>item</th><th>count</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.key)}</td><td>${r.count}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+async function viewRuleCatalog(v){
+  const st=await api('GET','/api/agh-sync/status');
+  const rows=(await api('GET','/api/rule-catalog')).entries||[];
+  v.appendChild(el(`<div class="card"><h2>Rule Catalog</h2><div class="row">
+    <span class="pill">${rows.length} entries</span><span class="pill">last sync ${esc(st.last_success?new Date(st.last_success).toLocaleString():'never')}</span>
+    ${has('agh.manage')?'<button class="act" onclick="runSync()">Run AGH sync</button>':''}
+  </div></div>`));
+  v.appendChild(el(`<div class="card"><div class="grid"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>risk</th><th>review</th><th>verified</th><th>source</th><th></th></tr></thead><tbody>
+    ${rows.slice(0,500).map(r=>`<tr><td>${esc(r.match?.domain)}</td><td>${esc(r.match?.path||'')}</td><td>${esc(r.category)}</td><td>${esc(r.risk)}</td><td>${esc(r.review_status)}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.source?.type)}</td>
+    <td>${has('catalog.edit')?`<button class="act" onclick="reviewRule('${esc(r.id)}','approved',true)">approve</button><button class="act" onclick="reviewRule('${esc(r.id)}','rejected',false)">reject</button>`:''}</td></tr>`).join('')}
+  </tbody></table></div></div>`));
+}
+async function runSync(){ try{ const r=await api('POST','/api/agh-sync/run'); alert(JSON.stringify(r,null,2)); render(); }catch(e){ alert(e.message);} }
+async function reviewRule(id,status,verified){ try{ await api('POST','/api/rule-catalog/'+id+'/review',{review_status:status,verified}); render(); }catch(e){ alert(e.message);} }
 
 async function viewCuration(v){
   const rows=await api('GET','/api/curation');
