@@ -127,7 +127,9 @@ type ObservabilityConfig struct {
 
 // ObservabilityCatalogConfig controls catalog-derived metric/log enrichment.
 type ObservabilityCatalogConfig struct {
-	Enabled bool `toml:"enabled" reload:"safe"`
+	Enabled               bool     `toml:"enabled" reload:"safe"`
+	PrometheusLabels      []string `toml:"prometheus_labels" reload:"safe"`
+	EmitSIEMCatalogFields bool     `toml:"emit_siem_catalog_fields" reload:"safe"`
 }
 
 // AdminConfig controls the web admin UI (MITM control plane; localhost default).
@@ -159,16 +161,25 @@ type PathsConfig struct {
 
 // AGHSyncConfig mirrors AdGuard Home rule sources into the local rule catalog.
 type AGHSyncConfig struct {
-	Enabled         bool     `toml:"enabled" reload:"safe"`
-	BaseURL         string   `toml:"base_url" reload:"safe"`
-	EnvFile         string   `toml:"env_file" reload:"safe"`
-	SyncInterval    string   `toml:"sync_interval" reload:"safe"`
-	SyncFilters     bool     `toml:"sync_filters" reload:"safe"`
-	SyncCustomRules bool     `toml:"sync_custom_rules" reload:"safe"`
-	SyncAllowDeny   bool     `toml:"sync_allow_deny" reload:"safe"`
-	SyncQueryLog    bool     `toml:"sync_query_log" reload:"safe"`
-	FilterURLs      []string `toml:"filter_urls" reload:"safe"`
-	CustomRules     []string `toml:"custom_rules" reload:"safe"`
+	Enabled         bool        `toml:"enabled" reload:"safe"`
+	BaseURL         string      `toml:"base_url" reload:"safe"`
+	EnvFile         string      `toml:"env_file" reload:"safe"`
+	SyncInterval    string      `toml:"sync_interval" reload:"safe"`
+	SyncFilters     bool        `toml:"sync_filters" reload:"safe"`
+	SyncCustomRules bool        `toml:"sync_custom_rules" reload:"safe"`
+	SyncAllowDeny   bool        `toml:"sync_allow_deny" reload:"safe"`
+	SyncQueryLog    bool        `toml:"sync_query_log" reload:"safe"`
+	FilterURLs      []string    `toml:"filter_urls" reload:"safe"`
+	CustomRules     []string    `toml:"custom_rules" reload:"safe"`
+	CNAME           CNAMEConfig `toml:"cname" reload:"safe"`
+}
+
+// CNAMEConfig controls CNAME cloaking candidate metadata sync.
+type CNAMEConfig struct {
+	Enabled                bool     `toml:"enabled" reload:"safe"`
+	UseQueryLog            bool     `toml:"use_query_log" reload:"safe"`
+	KnownTrackerSources    []string `toml:"known_tracker_sources" reload:"safe"`
+	CandidateMinConfidence string   `toml:"candidate_min_confidence" reload:"safe"`
 }
 
 // RuleCatalogConfig controls the metadata catalog separate from HTTP responses.
@@ -212,13 +223,19 @@ func Defaults() Config {
 			CacheTTLHours:    168,
 			CacheDir:         "/var/lib/mirage-chaff/certcache",
 		},
-		Upstream:      UpstreamConfig{Resolvers: []string{"https://1.1.1.1/dns-query"}},
-		Mode:          "full",
-		Mimic:         MimicConfig{Enabled: true, MaxBytes: 8 << 20, CacheMax: 512, AllowVideo: false},
-		Resources:     ResourcesConfig{MaxConns: 1024, RateLimit: 0, BodyMaxBytes: 32 << 20},
-		Log:           LogConfig{Level: "info", Mode: "redacted", Retention: "7d", Redact: true},
-		Observability: ObservabilityConfig{Listen: "127.0.0.1:9256", Metrics: true, Catalog: ObservabilityCatalogConfig{Enabled: true}},
-		Admin:         AdminConfig{Enabled: false, Listen: "127.0.0.1:8443"},
+		Upstream:  UpstreamConfig{Resolvers: []string{"https://1.1.1.1/dns-query"}},
+		Mode:      "full",
+		Mimic:     MimicConfig{Enabled: true, MaxBytes: 8 << 20, CacheMax: 512, AllowVideo: false},
+		Resources: ResourcesConfig{MaxConns: 1024, RateLimit: 0, BodyMaxBytes: 32 << 20},
+		Log:       LogConfig{Level: "info", Mode: "redacted", Retention: "7d", Redact: true},
+		Observability: ObservabilityConfig{
+			Listen: "127.0.0.1:9256", Metrics: true,
+			Catalog: ObservabilityCatalogConfig{
+				Enabled: true, PrometheusLabels: []string{"category", "risk", "verified", "review_status", "source_type"},
+				EmitSIEMCatalogFields: true,
+			},
+		},
+		Admin: AdminConfig{Enabled: false, Listen: "127.0.0.1:8443"},
 		Paths: PathsConfig{
 			PolicyDir:  "/etc/mirage-chaff/policy.d",
 			CatalogDir: "/etc/mirage-chaff/catalog",
@@ -228,6 +245,7 @@ func Defaults() Config {
 		AGHSync: AGHSyncConfig{
 			Enabled: false, BaseURL: "http://127.0.0.1:3000", EnvFile: "/etc/mirage-chaff/agh.env",
 			SyncInterval: "1h", SyncFilters: true, SyncCustomRules: true, SyncAllowDeny: true,
+			CNAME: CNAMEConfig{Enabled: true, UseQueryLog: true, KnownTrackerSources: []string{"rule_catalog"}, CandidateMinConfidence: "medium"},
 		},
 		RuleCatalog: RuleCatalogConfig{Path: "/var/lib/mirage-chaff/rule-catalog.json", RefreshOnReload: true},
 		UnknownProfile: UnknownProfileConfig{

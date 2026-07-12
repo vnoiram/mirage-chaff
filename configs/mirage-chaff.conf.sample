@@ -75,6 +75,8 @@ metrics = true                  # restart (toggles /metrics only)
 
 [observability.catalog]
 enabled = true                  # low-cardinality catalog/risk/review metrics only
+prometheus_labels = ["category", "risk", "verified", "review_status", "source_type"]
+emit_siem_catalog_fields = true
 
 # AdGuard Home metadata sync. AGH remains the DNS enforcement point; mirage only
 # mirrors rule metadata for triage, unknown fallback, analytics, and review.
@@ -89,6 +91,12 @@ sync_allow_deny = true
 sync_query_log = false
 # filter_urls = ["https://example.invalid/easyprivacy.txt"]
 # custom_rules = ["||ads.example.net/sdk.js$script", "0.0.0.0 tracker.example.net"]
+
+[agh_sync.cname]
+enabled = true
+use_query_log = true
+known_tracker_sources = ["rule_catalog"]
+candidate_min_confidence = "medium"
 
 [rule_catalog]
 path = "/var/lib/mirage-chaff/rule-catalog.json"

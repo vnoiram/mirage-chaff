@@ -26,6 +26,7 @@ const (
 	ReviewApproved  = "approved"
 	ReviewRejected  = "rejected"
 	ReviewNeedsTest = "needs_test"
+	ReviewDisabled  = "disabled"
 )
 
 // Source identifies where an entry came from.
@@ -43,30 +44,37 @@ type Match struct {
 
 // Entry is one normalized rule-catalog item.
 type Entry struct {
-	ID               string    `json:"id" yaml:"id"`
-	Source           Source    `json:"source" yaml:"source"`
-	OriginalRule     string    `json:"original_rule,omitempty" yaml:"original_rule,omitempty"`
-	Match            Match     `json:"match" yaml:"match"`
-	Category         string    `json:"category,omitempty" yaml:"category,omitempty"`
-	Layer            string    `json:"layer,omitempty" yaml:"layer,omitempty"`
-	ResourceType     string    `json:"resource_type,omitempty" yaml:"resource_type,omitempty"`
-	Risk             string    `json:"risk,omitempty" yaml:"risk,omitempty"`
-	Confidence       string    `json:"confidence,omitempty" yaml:"confidence,omitempty"`
-	ReviewStatus     string    `json:"review_status,omitempty" yaml:"review_status,omitempty"`
-	Verified         bool      `json:"verified" yaml:"verified"`
-	ActionCandidates []string  `json:"action_candidates,omitempty" yaml:"action_candidates,omitempty"`
-	ExpectedCatalog  string    `json:"expected_catalog,omitempty" yaml:"expected_catalog,omitempty"`
-	RewriteState     string    `json:"rewrite_state,omitempty" yaml:"rewrite_state,omitempty"`
-	CNAMEChain       []string  `json:"cname_chain,omitempty" yaml:"cname_chain,omitempty"`
-	CNAMETarget      string    `json:"cname_target,omitempty" yaml:"cname_target,omitempty"`
-	CloakingDetected bool      `json:"cloaking_detected,omitempty" yaml:"cloaking_detected,omitempty"`
-	JSGlobals        []string  `json:"js_globals,omitempty" yaml:"js_globals,omitempty"`
-	JSAPIShape       string    `json:"js_api_shape,omitempty" yaml:"js_api_shape,omitempty"`
-	StubTemplate     string    `json:"stub_template,omitempty" yaml:"stub_template,omitempty"`
-	TestedSites      []string  `json:"tested_sites,omitempty" yaml:"tested_sites,omitempty"`
-	FailureMode      string    `json:"failure_mode,omitempty" yaml:"failure_mode,omitempty"`
-	Unsupported      bool      `json:"unsupported,omitempty" yaml:"unsupported"`
-	UpdatedAt        time.Time `json:"updated_at" yaml:"updated_at"`
+	ID                 string    `json:"id" yaml:"id"`
+	Source             Source    `json:"source" yaml:"source"`
+	OriginalRule       string    `json:"original_rule,omitempty" yaml:"original_rule,omitempty"`
+	Match              Match     `json:"match" yaml:"match"`
+	Category           string    `json:"category,omitempty" yaml:"category,omitempty"`
+	Layer              string    `json:"layer,omitempty" yaml:"layer,omitempty"`
+	ResourceType       string    `json:"resource_type,omitempty" yaml:"resource_type,omitempty"`
+	Risk               string    `json:"risk,omitempty" yaml:"risk,omitempty"`
+	Confidence         string    `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+	ReviewStatus       string    `json:"review_status,omitempty" yaml:"review_status,omitempty"`
+	Verified           bool      `json:"verified" yaml:"verified"`
+	ActionCandidates   []string  `json:"action_candidates,omitempty" yaml:"action_candidates,omitempty"`
+	ExpectedCatalog    string    `json:"expected_catalog,omitempty" yaml:"expected_catalog,omitempty"`
+	RewriteState       string    `json:"rewrite_state,omitempty" yaml:"rewrite_state,omitempty"`
+	CNAMEChain         []string  `json:"cname_chain,omitempty" yaml:"cname_chain,omitempty"`
+	CNAMETarget        string    `json:"cname_target,omitempty" yaml:"cname_target,omitempty"`
+	CloakingDetected   bool      `json:"cloaking_detected,omitempty" yaml:"cloaking_detected,omitempty"`
+	TrackerVendor      string    `json:"tracker_vendor,omitempty" yaml:"tracker_vendor,omitempty"`
+	CNAMEConfidence    string    `json:"cname_confidence,omitempty" yaml:"cname_confidence,omitempty"`
+	AGHQueryLogRef     string    `json:"agh_query_log_ref,omitempty" yaml:"agh_query_log_ref,omitempty"`
+	JSGlobals          []string  `json:"js_globals,omitempty" yaml:"js_globals,omitempty"`
+	JSAPIShape         string    `json:"js_api_shape,omitempty" yaml:"js_api_shape,omitempty"`
+	StubTemplate       string    `json:"stub_template,omitempty" yaml:"stub_template,omitempty"`
+	TestedSites        []string  `json:"tested_sites,omitempty" yaml:"tested_sites,omitempty"`
+	FailureMode        string    `json:"failure_mode,omitempty" yaml:"failure_mode,omitempty"`
+	PromotionCount     int       `json:"promotion_count,omitempty" yaml:"promotion_count,omitempty"`
+	DemotionCount      int       `json:"demotion_count,omitempty" yaml:"demotion_count,omitempty"`
+	TempAllowCount     int       `json:"temp_allow_count,omitempty" yaml:"temp_allow_count,omitempty"`
+	FalsePositiveCount int       `json:"false_positive_count,omitempty" yaml:"false_positive_count,omitempty"`
+	Unsupported        bool      `json:"unsupported,omitempty" yaml:"unsupported"`
+	UpdatedAt          time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 // Status describes the last sync attempt.
@@ -158,7 +166,7 @@ func (s *Store) Review(id, status string, verified *bool) (Entry, error) {
 		return Entry{}, os.ErrNotExist
 	}
 	switch status {
-	case "", ReviewCandidate, ReviewApproved, ReviewRejected, ReviewNeedsTest:
+	case "", ReviewCandidate, ReviewApproved, ReviewRejected, ReviewNeedsTest, ReviewDisabled:
 	default:
 		return Entry{}, fmt.Errorf("invalid review_status %q", status)
 	}
@@ -171,6 +179,85 @@ func (s *Store) Review(id, status string, verified *bool) (Entry, error) {
 	e.UpdatedAt = time.Now()
 	s.entries[id] = e
 	return e, s.saveLocked()
+}
+
+// Promote marks a candidate as verified and approved.
+func (s *Store) Promote(id string) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[id]
+	if !ok {
+		return Entry{}, os.ErrNotExist
+	}
+	e.Verified = true
+	e.ReviewStatus = ReviewApproved
+	e.PromotionCount++
+	e.UpdatedAt = time.Now()
+	s.entries[id] = e
+	return e, s.saveLocked()
+}
+
+// Downgrade disables or de-verifies a catalog entry after a false positive.
+func (s *Store) Downgrade(id string) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[id]
+	if !ok {
+		return Entry{}, os.ErrNotExist
+	}
+	e.Verified = false
+	e.ReviewStatus = ReviewDisabled
+	e.DemotionCount++
+	e.FalsePositiveCount++
+	e.UpdatedAt = time.Now()
+	s.entries[id] = e
+	return e, s.saveLocked()
+}
+
+// MarkCNAME records CNAME cloaking metadata on an entry without changing DNS.
+func (s *Store) MarkCNAME(id string, chain []string, target, vendor, confidence, queryRef string) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[id]
+	if !ok {
+		return Entry{}, os.ErrNotExist
+	}
+	e.CNAMEChain = cleanChain(chain)
+	e.CNAMETarget = strings.TrimSuffix(strings.ToLower(target), ".")
+	e.TrackerVendor = vendor
+	e.CNAMEConfidence = confidence
+	e.AGHQueryLogRef = queryRef
+	e.CloakingDetected = e.CNAMETarget != "" && !safeCNAMEHost(e.CNAMETarget)
+	if e.CloakingDetected && e.RewriteState == "" {
+		e.RewriteState = "agh_rewrite_candidate"
+	}
+	e.UpdatedAt = time.Now()
+	s.entries[id] = e
+	return e, s.saveLocked()
+}
+
+// RewriteCandidate returns a non-destructive AGH custom rule/rewrite suggestion.
+func (s *Store) RewriteCandidate(id string) (map[string]string, error) {
+	s.mu.RLock()
+	e, ok := s.entries[id]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	domain := e.Match.Domain
+	if domain == "" {
+		return nil, fmt.Errorf("entry has no domain")
+	}
+	rule := "||" + domain + "^"
+	if e.Category == "allow_exception" {
+		rule = "@@" + rule
+	}
+	return map[string]string{
+		"domain":            domain,
+		"custom_rule":       rule,
+		"rewrite_candidate": domain + " A <mirage-chaff-ip>",
+		"note":              "candidate only; mirage-chaff does not write AdGuard Home rewrites automatically",
+	}, nil
 }
 
 // List returns all entries, optionally filtered by query parameters.
@@ -266,17 +353,40 @@ func (s *Store) Analytics() map[string]any {
 		}
 	}
 	return map[string]any{
-		"total":              len(s.entries),
-		"by_category":        countBy(func(e Entry) string { return e.Category }),
-		"by_risk":            countBy(func(e Entry) string { return e.Risk }),
-		"by_verified":        map[string]int{"true": countBool(s.entries, true), "false": countBool(s.entries, false)},
-		"by_review_status":   countBy(func(e Entry) string { return e.ReviewStatus }),
-		"by_source_type":     countBy(func(e Entry) string { return e.Source.Type }),
-		"high_unverified":    limitEntries(highUnverified, 50),
-		"unsupported_dom":    limitEntries(unsupportedDOM, 50),
-		"cname_candidates":   limitEntries(cname, 50),
-		"js_stub_candidates": limitEntries(jsFailures, 50),
+		"total":               len(s.entries),
+		"by_category":         countBy(func(e Entry) string { return e.Category }),
+		"by_risk":             countBy(func(e Entry) string { return e.Risk }),
+		"by_verified":         map[string]int{"true": countBool(s.entries, true), "false": countBool(s.entries, false)},
+		"by_review_status":    countBy(func(e Entry) string { return e.ReviewStatus }),
+		"by_source_type":      countBy(func(e Entry) string { return e.Source.Type }),
+		"by_resource_type":    countBy(func(e Entry) string { return e.ResourceType }),
+		"by_expected_catalog": countBy(func(e Entry) string { return e.ExpectedCatalog }),
+		"high_unverified":     limitEntries(highUnverified, 50),
+		"unsupported_dom":     limitEntries(unsupportedDOM, 50),
+		"cname_candidates":    limitEntries(cname, 50),
+		"js_stub_candidates":  limitEntries(jsFailures, 50),
 	}
+}
+
+// VerifiedStubCatalog returns a catalog name only for verified script metadata.
+func (e Entry) VerifiedStubCatalog(site string) (string, bool) {
+	if !e.Verified || e.ResourceType != "script" || e.ExpectedCatalog == "" || e.ReviewStatus == ReviewDisabled {
+		return "", false
+	}
+	if len(e.TestedSites) == 0 {
+		return e.ExpectedCatalog, true
+	}
+	site = strings.ToLower(strings.TrimSuffix(site, "."))
+	for _, tested := range e.TestedSites {
+		tested = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(tested), "."))
+		if tested == "" {
+			continue
+		}
+		if site == tested || strings.HasSuffix(site, "."+tested) {
+			return e.ExpectedCatalog, true
+		}
+	}
+	return "", false
 }
 
 func (s *Store) saveLocked() error {
@@ -360,7 +470,31 @@ func normalize(e Entry) Entry {
 	if e.ExpectedCatalog == "" && e.ResourceType == "script" && e.Verified {
 		e.ExpectedCatalog = "noop-sdk"
 	}
+	if e.CNAMEConfidence == "" && e.CNAMETarget != "" {
+		e.CNAMEConfidence = e.Confidence
+	}
 	return e
+}
+
+func cleanChain(in []string) []string {
+	var out []string
+	for _, v := range in {
+		v = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(v)), ".")
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func safeCNAMEHost(host string) bool {
+	host = strings.ToLower(host)
+	for _, token := range []string{"cdn", "static", "assets", "login", "accounts", "auth"} {
+		if strings.Contains(host, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func stableID(e Entry) string {

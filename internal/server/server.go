@@ -556,7 +556,9 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		meta, hasMeta = s.rules.Lookup(domain, r.URL.Path)
 	}
 	if !d.Matched {
-		if fd, changed := s.unknownFallback(d, meta, hasMeta, r.URL.Path); changed {
+		if fd, changed := verifiedJSStubDecision(d, meta, hasMeta, domain, cat); changed {
+			d = fd
+		} else if fd, changed := s.unknownFallback(d, meta, hasMeta, r.URL.Path); changed {
 			d = fd
 		}
 	}
@@ -626,6 +628,20 @@ func stubOnlyGate(mode string, d policy.Decision) (policy.Decision, bool) {
 		d.Catalog = safeDefaultStub
 	}
 	return d, true
+}
+
+func verifiedJSStubDecision(d policy.Decision, meta rulecatalog.Entry, hasMeta bool, domain string, cat *catalog.Catalog) (policy.Decision, bool) {
+	if !hasMeta {
+		return d, false
+	}
+	name, ok := meta.VerifiedStubCatalog(domain)
+	if !ok {
+		return d, false
+	}
+	if _, exists := cat.Get(name); !exists {
+		name = safeDefaultStub
+	}
+	return policy.Decision{Action: policy.ActionStub, Catalog: name, Rule: "catalog:" + meta.ID, Matched: false}, true
 }
 
 // record logs a redacted request summary via the recorder.
@@ -922,7 +938,10 @@ func enrichRecord(rec *observability.Record, e rulecatalog.Entry) {
 	rec.Verified = e.Verified
 	rec.RewriteState = e.RewriteState
 	rec.CNAMETarget = e.CNAMETarget
+	rec.TrackerVendor = e.TrackerVendor
+	rec.CNAMEConfidence = e.CNAMEConfidence
 	rec.ExpectedCatalog = e.ExpectedCatalog
+	rec.StubTemplate = e.StubTemplate
 }
 
 func recorderOptions(cfg config.Config) observability.Options {
@@ -934,7 +953,14 @@ func recorderOptions(cfg config.Config) observability.Options {
 		}
 		scopes = append(scopes, observability.DebugScope{Domain: s.Domain, Client: s.Client, Expires: expires})
 	}
-	return observability.Options{Redact: cfg.Log.Redact, Mode: cfg.Log.Mode, Retention: cfg.Log.Retention, DebugScopes: scopes}
+	return observability.Options{
+		Redact:         cfg.Log.Redact,
+		Mode:           cfg.Log.Mode,
+		Retention:      cfg.Log.Retention,
+		DebugScopes:    scopes,
+		CatalogMetrics: cfg.Observability.Catalog.Enabled,
+		EmitCatalogLog: cfg.Observability.Catalog.EmitSIEMCatalogFields,
+	}
 }
 
 func syncConfig(cfg config.Config) rulecatalog.SyncConfig {

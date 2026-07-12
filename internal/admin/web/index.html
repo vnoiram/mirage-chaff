@@ -184,7 +184,12 @@ async function viewAnalytics(v){
     <tr><th>risk</th><td>${esc(JSON.stringify(cat.by_risk||{}))}</td></tr>
     <tr><th>review</th><td>${esc(JSON.stringify(cat.by_review_status||{}))}</td></tr>
     <tr><th>source</th><td>${esc(JSON.stringify(cat.by_source_type||{}))}</td></tr>
+    <tr><th>resource</th><td>${esc(JSON.stringify(cat.by_resource_type||{}))}</td></tr>
+    <tr><th>expected catalog</th><td>${esc(JSON.stringify(cat.by_expected_catalog||{}))}</td></tr>
   </tbody></table></div></div>`));
+  v.appendChild(el(`<div class="card"><h2>False-positive candidates</h2>${catalogRows(cat.high_unverified||[])}</div>`));
+  v.appendChild(el(`<div class="card"><h2>JS stub candidates</h2>${catalogRows(cat.js_stub_candidates||[])}</div>`));
+  v.appendChild(el(`<div class="card"><h2>CNAME candidates</h2>${catalogRows(cat.cname_candidates||[])}</div>`));
 }
 function rankTable(rows){
   rows=rows||[];
@@ -198,13 +203,34 @@ async function viewRuleCatalog(v){
     <span class="pill">${rows.length} entries</span><span class="pill">last sync ${esc(st.last_success?new Date(st.last_success).toLocaleString():'never')}</span>
     ${has('agh.manage')?'<button class="act" onclick="runSync()">Run AGH sync</button>':''}
   </div></div>`));
-  v.appendChild(el(`<div class="card"><div class="grid"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>risk</th><th>review</th><th>verified</th><th>source</th><th></th></tr></thead><tbody>
-    ${rows.slice(0,500).map(r=>`<tr><td>${esc(r.match?.domain)}</td><td>${esc(r.match?.path||'')}</td><td>${esc(r.category)}</td><td>${esc(r.risk)}</td><td>${esc(r.review_status)}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.source?.type)}</td>
-    <td>${has('catalog.edit')?`<button class="act" onclick="reviewRule('${esc(r.id)}','approved',true)">approve</button><button class="act" onclick="reviewRule('${esc(r.id)}','rejected',false)">reject</button>`:''}</td></tr>`).join('')}
+  v.appendChild(el(`<div class="card"><div class="grid"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>risk</th><th>review</th><th>verified</th><th>source</th><th>expected</th><th></th></tr></thead><tbody>
+    ${rows.slice(0,500).map(r=>`<tr><td>${esc(r.match?.domain)}</td><td>${esc(r.match?.path||'')}</td><td>${esc(r.category)}</td><td>${esc(r.risk)}</td><td>${esc(r.review_status)}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.source?.type)}</td><td>${esc(r.expected_catalog||'')}</td>
+    <td>${catalogActions(r)}</td></tr>`).join('')}
   </tbody></table></div></div>`));
 }
 async function runSync(){ try{ const r=await api('POST','/api/agh-sync/run'); alert(JSON.stringify(r,null,2)); render(); }catch(e){ alert(e.message);} }
 async function reviewRule(id,status,verified){ try{ await api('POST','/api/rule-catalog/'+id+'/review',{review_status:status,verified}); render(); }catch(e){ alert(e.message);} }
+async function promoteRule(id){ try{ await api('POST','/api/rule-catalog/'+id+'/promote'); render(); }catch(e){ alert(e.message);} }
+async function downgradeRule(id){ try{ await api('POST','/api/rule-catalog/'+id+'/downgrade'); render(); }catch(e){ alert(e.message);} }
+async function tempAllowDomain(domain){ try{ await api('POST','/api/triage/temp-allow',{domain,minutes:15}); render(); }catch(e){ alert(e.message);} }
+async function permanentAllowDomain(domain,path){ try{ const r=await api('POST','/api/triage/permanent-allow',{domain,path,action:'forward-asis'}); alert(r.note||'saved'); }catch(e){ alert(e.message);} }
+async function rewriteCandidate(id){ try{ const r=await api('POST','/api/agh/rewrite-candidate',{id}); alert(JSON.stringify(r,null,2)); }catch(e){ alert(e.message);} }
+function catalogActions(r){
+  if(!has('catalog.edit') && !has('allow.temp')) return '';
+  const id=esc(r.id), domain=esc(r.match?.domain||''), path=esc(r.match?.path||'');
+  let b='';
+  if(has('catalog.edit')) b+=`<button class="act" onclick="promoteRule('${id}')">promote</button><button class="act" onclick="downgradeRule('${id}')">downgrade</button>`;
+  if(has('allow.temp')) b+=`<button class="act" onclick="tempAllowDomain('${domain}')">temp allow</button>`;
+  if(has('policy.edit')) b+=`<button class="act" onclick="permanentAllowDomain('${domain}','${path}')">permanent</button>`;
+  if(has('agh.manage')) b+=`<button class="act" onclick="rewriteCandidate('${id}')">AGH candidate</button>`;
+  return b;
+}
+function catalogRows(rows){
+  rows=rows||[];
+  return `<div class="grid"><table><thead><tr><th>domain</th><th>resource</th><th>risk</th><th>review</th><th>expected</th><th>stub</th><th>cname</th><th></th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${esc(r.match?.domain)}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.risk||'')}</td><td>${esc(r.review_status||'')}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.stub_template||'')}</td><td>${esc(r.cname_target||'')}</td><td>${catalogActions(r)}</td></tr>`).join('')}
+  </tbody></table></div>`;
+}
 
 async function viewCuration(v){
   const rows=await api('GET','/api/curation');

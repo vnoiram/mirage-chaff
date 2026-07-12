@@ -2,9 +2,11 @@ package rulecatalog
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -16,6 +18,18 @@ func Build(cfg SyncConfig) ([]Entry, int, error) {
 	client := cfg.Client
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	if cfg.Enabled && cfg.BaseURL != "" {
+		filterURLs, customRules, err := fetchAGHFilteringStatus(client, cfg.BaseURL)
+		if err != nil {
+			return nil, sources, err
+		}
+		if cfg.SyncFilters {
+			cfg.FilterURLs = append(cfg.FilterURLs, filterURLs...)
+		}
+		if cfg.SyncCustomRules {
+			cfg.CustomRules = append(cfg.CustomRules, customRules...)
+		}
 	}
 	if cfg.SyncFilters {
 		for _, u := range cfg.FilterURLs {
@@ -46,6 +60,45 @@ func Build(cfg SyncConfig) ([]Entry, int, error) {
 		sources++
 	}
 	return mergePriority(out), sources, nil
+}
+
+type aghFilteringStatus struct {
+	Filters []struct {
+		Enabled bool   `json:"enabled"`
+		URL     string `json:"url"`
+		Name    string `json:"name"`
+	} `json:"filters"`
+	UserRules       []string `json:"user_rules"`
+	AllowlistRules  []string `json:"allowlist_rules"`
+	BlockedServices []string `json:"blocked_services"`
+}
+
+func fetchAGHFilteringStatus(client *http.Client, base string) ([]string, []string, error) {
+	u, err := url.Parse(strings.TrimRight(base, "/") + "/control/filtering/status")
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := client.Get(u.String())
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch AGH filtering status: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, nil, fmt.Errorf("fetch AGH filtering status: status %d", resp.StatusCode)
+	}
+	var st aghFilteringStatus
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&st); err != nil {
+		return nil, nil, fmt.Errorf("parse AGH filtering status: %w", err)
+	}
+	var urls []string
+	for _, f := range st.Filters {
+		if f.Enabled && f.URL != "" {
+			urls = append(urls, f.URL)
+		}
+	}
+	rules := append([]string{}, st.UserRules...)
+	rules = append(rules, st.AllowlistRules...)
+	return urls, rules, nil
 }
 
 func fetch(client *http.Client, rawurl string) (string, error) {

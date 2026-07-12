@@ -47,7 +47,7 @@ func TestRecorderRingAndCounters(t *testing.T) {
 }
 
 func TestRecorderLogModesAndCatalogMetrics(t *testing.T) {
-	stats := NewRecorderWithOptions(Options{Redact: true, Mode: "stats"}, 4)
+	stats := NewRecorderWithOptions(Options{Redact: true, Mode: "stats", CatalogMetrics: true, EmitCatalogLog: true}, 4)
 	stats.Log(Record{
 		Time: time.Now(), Domain: "ads.example", Path: "/collect?uid=1", Method: "GET",
 		Action: "stub", Status: 204, Category: "ad_sdk", Risk: "high",
@@ -74,5 +74,15 @@ func TestRecorderLogModesAndCatalogMetrics(t *testing.T) {
 	full.Log(Record{Time: time.Now(), Domain: "x", Path: "/p?token=secret", Action: "forward-asis", Status: 200})
 	if got := full.Snapshot(1)[0].Path; got != "/p?token=secret" {
 		t.Fatalf("full mode path = %q", got)
+	}
+}
+
+func TestCatalogMetricsCanBeDisabled(t *testing.T) {
+	r := NewRecorderWithOptions(Options{Redact: true, Mode: "redacted", CatalogMetrics: false}, 2)
+	r.Log(Record{Time: time.Now(), Domain: "ads.example", Path: "/x", Action: "stub", Status: 204, Category: "ad_sdk", Risk: "high"})
+	var sb strings.Builder
+	r.WriteMetrics(&sb)
+	if strings.Contains(sb.String(), "mirage_chaff_catalog_requests_total") {
+		t.Fatalf("catalog metric should be disabled:\n%s", sb.String())
 	}
 }

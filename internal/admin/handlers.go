@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vnoiram/mirage-chaff/internal/config"
+	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
 )
 
@@ -189,6 +190,80 @@ func (s *Server) handleRuleCatalogReview(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, e)
 }
 
+func (s *Server) handleRuleCatalogPromote(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	e, err := s.deps.RuleCatalog.Promote(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.promote", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleRuleCatalogDowngrade(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	e, err := s.deps.RuleCatalog.Downgrade(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.downgrade", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleRuleCatalogMarkCNAME(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Chain      []string `json:"cname_chain"`
+		Target     string   `json:"cname_target"`
+		Vendor     string   `json:"tracker_vendor"`
+		Confidence string   `json:"cname_confidence"`
+		QueryRef   string   `json:"agh_query_log_ref"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	e, err := s.deps.RuleCatalog.MarkCNAME(r.PathValue("id"), req.Chain, req.Target, req.Vendor, req.Confidence, req.QueryRef)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.mark_cname", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleAGHRewriteCandidate(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	c, err := s.deps.RuleCatalog.RewriteCandidate(req.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh.rewrite_candidate", req.ID)
+	writeJSON(w, c)
+}
+
 func (s *Server) handleAGHSyncStatus(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.RuleCatalog == nil {
 		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
@@ -215,9 +290,10 @@ func (s *Server) handleTriageContext(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 	resp := map[string]any{
-		"domain":      domain,
-		"path":        path,
-		"temp_allows": s.deps.Engine.TempRules(),
+		"domain":         domain,
+		"path":           path,
+		"temp_allows":    s.deps.Engine.TempRules(),
+		"recent_actions": recentByDomain(s.deps.Recorder.Snapshot(500), domain),
 	}
 	if s.deps.RuleCatalog != nil {
 		if e, ok := s.deps.RuleCatalog.Lookup(domain, path); ok {
@@ -226,6 +302,7 @@ func (s *Server) handleTriageContext(w http.ResponseWriter, r *http.Request, ses
 	}
 	rs := s.deps.Engine.Ruleset()
 	resp["decision"] = rs.Match(domain, path, http.MethodGet)
+	resp["suggestions"] = triageSuggestions(resp)
 	writeJSON(w, resp)
 }
 
@@ -271,6 +348,38 @@ func writeCatalogAnalyticsSlice(w http.ResponseWriter, s *Server, key string) {
 		return
 	}
 	writeJSON(w, s.deps.RuleCatalog.Analytics()[key])
+}
+
+func recentByDomain(records []observability.Record, domain string) []observability.Record {
+	cutoff := time.Now().Add(-5 * time.Minute)
+	var out []observability.Record
+	for i := len(records) - 1; i >= 0 && len(out) < 50; i-- {
+		rec := records[i]
+		if !rec.Time.IsZero() && rec.Time.Before(cutoff) {
+			continue
+		}
+		if rec.Domain == domain || strings.HasSuffix(rec.Domain, "."+domain) {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func triageSuggestions(ctx map[string]any) []string {
+	var out []string
+	if _, ok := ctx["rule_catalog"]; ok {
+		out = append(out, "review catalog entry before changing global policy")
+	}
+	if recs, ok := ctx["recent_actions"].([]observability.Record); ok {
+		for _, rec := range recs {
+			if rec.Action == policy.ActionStub || rec.Action == policy.ActionForwardMimic {
+				out = append(out, "try temporary allow; if it fixes the site, create a permanent allow or site override")
+				break
+			}
+		}
+	}
+	out = append(out, "use passthrough for pinned TLS domains")
+	return out
 }
 
 func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request, sess *session) {

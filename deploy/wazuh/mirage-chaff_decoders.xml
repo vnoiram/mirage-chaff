@@ -13,3 +13,15 @@
   <parent>mirage-chaff-audit</parent>
   <plugin_decoder>JSON_Decoder</plugin_decoder>
 </decoder>
+
+<!-- Request logs include catalog fields when available:
+     req {"catalog_id":"...","category":"ad_sdk","risk":"high","verified":false,
+          "review_status":"candidate","rewrite_state":"...","cname_target":"..."} -->
+<decoder name="mirage-chaff-request">
+  <prematch>req \{</prematch>
+</decoder>
+
+<decoder name="mirage-chaff-request-json">
+  <parent>mirage-chaff-request</parent>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>

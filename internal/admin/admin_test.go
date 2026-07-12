@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"io/fs"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -108,5 +110,27 @@ func TestSessionLockout(t *testing.T) {
 	m.recordSuccess("u")
 	if m.locked("u") {
 		t.Error("success should clear the lock")
+	}
+}
+
+func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
+	b, err := fs.ReadFile(webFS, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(b)
+	for _, want := range []string{
+		"Analytics",
+		"Rule Catalog",
+		"/api/analytics/summary",
+		"/api/rule-catalog/",
+		"promoteRule",
+		"downgradeRule",
+		"rewriteCandidate",
+		"permanentAllowDomain",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin UI missing %q", want)
+		}
 	}
 }

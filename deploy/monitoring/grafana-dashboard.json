@@ -69,6 +69,19 @@
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "targets": [ { "expr": "{job=\"mirage-chaff\"} |= \"req \"", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Catalog classifications (rate)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum by (category,risk,verified,review_status,source_type) (rate(mirage_chaff_catalog_requests_total[5m]))",
+          "legendFormat": "{{category}} {{risk}} verified={{verified}} {{review_status}} {{source_type}}",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

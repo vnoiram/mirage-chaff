@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vnoiram/mirage-chaff/internal/catalog"
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
 	"github.com/vnoiram/mirage-chaff/internal/rulecatalog"
@@ -80,5 +81,29 @@ func TestUnknownFallbackBalancedPixelStubs(t *testing.T) {
 	}
 	if d.Action != policy.ActionStub || d.Catalog != "pixel" {
 		t.Fatalf("balanced pixel should use pixel stub, got %+v", d)
+	}
+}
+
+func TestVerifiedJSStubDecisionOnlyForVerifiedMetadata(t *testing.T) {
+	cat := &catalog.Catalog{}
+	// Build a tiny catalog through Load would need files; this checks fallback
+	// when the expected SDK catalog is not installed.
+	meta := rulecatalog.Entry{
+		ID:              "rc_test",
+		ResourceType:    "script",
+		ExpectedCatalog: "noop-advendor-v1",
+		Verified:        true,
+		TestedSites:     []string{"news.example"},
+	}
+	d, changed := verifiedJSStubDecision(policy.Decision{}, meta, true, "www.news.example", cat)
+	if !changed {
+		t.Fatal("expected verified JS stub decision")
+	}
+	if d.Action != policy.ActionStub || d.Catalog != safeDefaultStub || d.Rule != "catalog:rc_test" {
+		t.Fatalf("decision = %+v", d)
+	}
+	meta.Verified = false
+	if _, changed := verifiedJSStubDecision(policy.Decision{}, meta, true, "www.news.example", cat); changed {
+		t.Fatal("unverified JS metadata must not auto-stub")
 	}
 }

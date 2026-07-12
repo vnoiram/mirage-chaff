@@ -37,7 +37,10 @@ type Record struct {
 	Verified        bool   `json:"verified,omitempty"`
 	RewriteState    string `json:"rewrite_state,omitempty"`
 	CNAMETarget     string `json:"cname_target,omitempty"`
+	TrackerVendor   string `json:"tracker_vendor,omitempty"`
+	CNAMEConfidence string `json:"cname_confidence,omitempty"`
 	ExpectedCatalog string `json:"expected_catalog,omitempty"`
+	StubTemplate    string `json:"stub_template,omitempty"`
 	UnknownProfile  string `json:"unknown_profile,omitempty"`
 	FallbackReason  string `json:"fallback_reason,omitempty"`
 	RedactionMode   string `json:"redaction_mode,omitempty"`
@@ -45,10 +48,12 @@ type Record struct {
 
 // Options controls record retention/redaction behavior.
 type Options struct {
-	Redact      bool
-	Mode        string
-	Retention   string
-	DebugScopes []DebugScope
+	Redact         bool
+	Mode           string
+	Retention      string
+	DebugScopes    []DebugScope
+	CatalogMetrics bool
+	EmitCatalogLog bool
 }
 
 // DebugScope enables full detail for matching traffic while log.mode=debug.
@@ -61,9 +66,11 @@ type DebugScope struct {
 // Recorder aggregates request records: it emits a redacted structured log line,
 // bumps counters, and keeps a bounded ring buffer of recent records.
 type Recorder struct {
-	redact      bool
-	mode        string
-	debugScopes []DebugScope
+	redact         bool
+	mode           string
+	debugScopes    []DebugScope
+	catalogMetrics bool
+	emitCatalogLog bool
 
 	mu             sync.Mutex
 	ring           []Record
@@ -105,6 +112,8 @@ func NewRecorderWithOptions(opts Options, ringSize int) *Recorder {
 		redact:         opts.Redact,
 		mode:           mode,
 		debugScopes:    opts.DebugScopes,
+		catalogMetrics: opts.CatalogMetrics,
+		emitCatalogLog: opts.EmitCatalogLog,
 		ring:           make([]Record, ringSize),
 		byAction:       make(map[string]int64),
 		byStatus:       make(map[int]int64),
@@ -132,6 +141,8 @@ func (r *Recorder) SetOptions(opts Options) {
 		r.mode = opts.Mode
 	}
 	r.debugScopes = opts.DebugScopes
+	r.catalogMetrics = opts.CatalogMetrics
+	r.emitCatalogLog = opts.EmitCatalogLog
 	r.mu.Unlock()
 }
 
@@ -142,6 +153,7 @@ func (r *Recorder) Log(rec Record) {
 	r.mu.Lock()
 	redact := r.redact
 	mode := r.mode
+	emitCatalogLog := r.emitCatalogLog
 	stored := r.applyPolicyLocked(rec)
 	r.ring[r.next] = stored
 	r.next = (r.next + 1) % len(r.ring)
@@ -159,7 +171,7 @@ func (r *Recorder) Log(rec Record) {
 	if rec.CatalogID != "" {
 		r.byCatalog[rec.CatalogID]++
 	}
-	if hasCatalogClass(rec) {
+	if r.catalogMetrics && hasCatalogClass(rec) {
 		r.byCatalogClass[catalogMetricKey{
 			Category:     nonempty(rec.Category, "unknown"),
 			Risk:         nonempty(rec.Risk, "unknown"),
@@ -176,6 +188,9 @@ func (r *Recorder) Log(rec Record) {
 		return
 	}
 	logged := stored
+	if !emitCatalogLog {
+		clearCatalogFields(&logged)
+	}
 	if redact && (mode == "" || mode == "redacted") {
 		logged.Path = RedactURL(logged.Path)
 	}
@@ -282,19 +297,21 @@ func (r *Recorder) WriteMetrics(sb *strings.Builder) {
 	sb.WriteString("# TYPE mirage_chaff_response_bytes_total counter\n")
 	sb.WriteString("mirage_chaff_response_bytes_total " + itoa(r.bytesTotal) + "\n")
 
-	sb.WriteString("# HELP mirage_chaff_catalog_requests_total Requests by low-cardinality catalog classification.\n")
-	sb.WriteString("# TYPE mirage_chaff_catalog_requests_total counter\n")
-	keys := make([]catalogMetricKey, 0, len(r.byCatalogClass))
-	for k := range r.byCatalogClass {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].Category+keys[i].Risk+keys[i].ReviewStatus < keys[j].Category+keys[j].Risk+keys[j].ReviewStatus
-	})
-	for _, k := range keys {
-		sb.WriteString(`mirage_chaff_catalog_requests_total{category="` + prom(k.Category) + `",risk="` + prom(k.Risk) + `",verified="` + prom(k.Verified) + `",review_status="` + prom(k.ReviewStatus) + `",source_type="` + prom(k.SourceType) + `"}`)
-		sb.WriteByte(' ')
-		sb.WriteString(itoa(r.byCatalogClass[k]) + "\n")
+	if r.catalogMetrics {
+		sb.WriteString("# HELP mirage_chaff_catalog_requests_total Requests by low-cardinality catalog classification.\n")
+		sb.WriteString("# TYPE mirage_chaff_catalog_requests_total counter\n")
+		keys := make([]catalogMetricKey, 0, len(r.byCatalogClass))
+		for k := range r.byCatalogClass {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			return keys[i].Category+keys[i].Risk+keys[i].ReviewStatus < keys[j].Category+keys[j].Risk+keys[j].ReviewStatus
+		})
+		for _, k := range keys {
+			sb.WriteString(`mirage_chaff_catalog_requests_total{category="` + prom(k.Category) + `",risk="` + prom(k.Risk) + `",verified="` + prom(k.Verified) + `",review_status="` + prom(k.ReviewStatus) + `",source_type="` + prom(k.SourceType) + `"}`)
+			sb.WriteByte(' ')
+			sb.WriteString(itoa(r.byCatalogClass[k]) + "\n")
+		}
 	}
 }
 
@@ -448,6 +465,24 @@ func boolString(v bool) string {
 func prom(v string) string {
 	v = strings.ReplaceAll(v, "\\", "\\\\")
 	return strings.ReplaceAll(v, `"`, `\"`)
+}
+
+func clearCatalogFields(rec *Record) {
+	rec.CatalogID = ""
+	rec.CatalogSource = ""
+	rec.Category = ""
+	rec.Layer = ""
+	rec.ResourceType = ""
+	rec.Risk = ""
+	rec.Confidence = ""
+	rec.ReviewStatus = ""
+	rec.Verified = false
+	rec.RewriteState = ""
+	rec.CNAMETarget = ""
+	rec.TrackerVendor = ""
+	rec.CNAMEConfidence = ""
+	rec.ExpectedCatalog = ""
+	rec.StubTemplate = ""
 }
 
 func itoa(n int64) string {
