@@ -20,6 +20,7 @@ agh.env
 # --- Build artifacts ---
 /bin/
 /dist/
+/docs/
 mirage-chaff
 !cmd/mirage-chaff/
 

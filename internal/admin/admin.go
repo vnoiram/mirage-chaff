@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vnoiram/mirage-chaff/internal/aghmanaged"
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
@@ -50,6 +51,7 @@ type Deps struct {
 	SecureCookies   bool
 	RuleCatalog     *rulecatalog.Store
 	AGHSync         func() rulecatalog.Status
+	AGHManaged      *aghmanaged.Manager
 }
 
 // Server is the admin HTTP backend.
@@ -112,6 +114,13 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/oidc/login", s.handleOIDCLogin)
 		mux.HandleFunc("GET /api/oidc/callback", s.handleOIDCCallback)
 	}
+	if s.deps.AGHManaged != nil {
+		path := s.deps.AGHManaged.Config().FeedPath
+		if path == "" {
+			path = "/agh/managed-rewrites.txt"
+		}
+		mux.HandleFunc("GET "+path, s.handleAGHManagedFeed)
+	}
 
 	// Read views.
 	mux.HandleFunc("GET /api/dashboard", s.withAuth("dashboard.view", s.handleDashboard))
@@ -125,6 +134,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/rule-catalog/{id}", s.withAuth("catalog.view", s.handleRuleCatalogGet))
 	mux.HandleFunc("GET /api/rule-catalog/cname-candidates", s.withAuth("catalog.view", s.handleAnalyticsCNAMECandidates))
 	mux.HandleFunc("GET /api/agh-sync/status", s.withAuth("catalog.view", s.handleAGHSyncStatus))
+	mux.HandleFunc("GET /api/agh/sources", s.withAuth("catalog.view", s.handleAGHManagedSources))
+	mux.HandleFunc("GET /api/agh/rewrite-feed/status", s.withAuth("catalog.view", s.handleAGHManagedFeedStatus))
+	mux.HandleFunc("GET /api/agh/rewrite-feed/preview", s.withAuth("catalog.view", s.handleAGHManagedFeedPreview))
+	mux.HandleFunc("GET /api/agh/managed-catalog", s.withAuth("catalog.view", s.handleAGHManagedCatalog))
 	mux.HandleFunc("GET /api/triage/context", s.withAuth("traffic.view", s.handleTriageContext))
 	mux.HandleFunc("GET /api/analytics/summary", s.withAuth("traffic.view", s.handleAnalyticsSummary))
 	mux.HandleFunc("GET /api/analytics/domains", s.withAuth("traffic.view", s.handleAnalyticsDomains))
@@ -150,6 +163,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/rule-catalog/{id}/mark-cname", s.withAuth("catalog.edit", s.handleRuleCatalogMarkCNAME))
 	mux.HandleFunc("POST /api/agh/rewrite-candidate", s.withAuth("agh.manage", s.handleAGHRewriteCandidate))
 	mux.HandleFunc("POST /api/agh-sync/run", s.withAuth("agh.manage", s.handleAGHSyncRun))
+	mux.HandleFunc("POST /api/agh/sources", s.withAuth("agh.manage", s.handleAGHManagedSourceUpsert))
+	mux.HandleFunc("POST /api/agh/sources/preview", s.withAuth("agh.manage", s.handleAGHManagedSourcePreview))
+	mux.HandleFunc("PUT /api/agh/sources/{id}", s.withAuth("agh.manage", s.handleAGHManagedSourceUpsert))
+	mux.HandleFunc("DELETE /api/agh/sources/{id}", s.withAuth("agh.manage", s.handleAGHManagedSourceDelete))
+	mux.HandleFunc("POST /api/agh/sources/{id}/sync", s.withAuth("agh.manage", s.handleAGHManagedSourceSync))
+	mux.HandleFunc("PATCH /api/agh/managed-catalog/{id}", s.withAuth("agh.manage", s.handleAGHManagedCatalogPatch))
+	mux.HandleFunc("POST /api/agh/rewrite-feed/emergency-empty", s.withAuth("agh.manage", s.handleAGHManagedEmergencyEmpty))
 	mux.HandleFunc("POST /api/allow/permanent", s.withAuth("policy.edit", s.handlePermanentAllow))
 	mux.HandleFunc("POST /api/site-override", s.withAuth("policy.edit", s.handleSiteOverride))
 	mux.HandleFunc("POST /api/killswitch", s.withAuth("killswitch.execute", s.handleKillSwitch))

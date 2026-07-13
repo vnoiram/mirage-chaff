@@ -98,6 +98,28 @@ use_query_log = true
 known_tracker_sources = ["rule_catalog"]
 candidate_min_confidence = "medium"
 
+[agh_managed_rewrites]
+enabled = false
+feed_path = "/agh/managed-rewrites.txt"
+target_name = "mirage-chaff.lan"
+target_mode = "resolved_ip" # resolved_ip | cname | static_ip
+static_ipv4 = []
+static_ipv6 = []
+emergency_empty = false
+default_preset = "balanced" # conservative | balanced | aggressive
+stale_target_ttl = "24h"
+
+[agh_managed_rewrites.scheduler]
+enabled = true
+default_sync_interval = "12h"
+sync_timeout = "30s"
+max_parallel_syncs = 2
+jitter = "10m"
+stale_source_ttl = "72h"
+large_change_threshold_percent = 25
+large_change_threshold_count = 500
+large_change_requires_review = true
+
 [rule_catalog]
 path = "/var/lib/mirage-chaff/rule-catalog.json"
 refresh_on_reload = true

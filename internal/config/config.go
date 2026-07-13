@@ -43,6 +43,7 @@ type Config struct {
 	Log            LogConfig            `toml:"log" reload:"safe"`
 	Observability  ObservabilityConfig  `toml:"observability"`
 	Admin          AdminConfig          `toml:"admin"`
+	AGHManaged     AGHManagedConfig     `toml:"agh_managed_rewrites" reload:"safe"`
 	Paths          PathsConfig          `toml:"paths"`
 	AGHSync        AGHSyncConfig        `toml:"agh_sync" reload:"safe"`
 	RuleCatalog    RuleCatalogConfig    `toml:"rule_catalog" reload:"safe"`
@@ -175,6 +176,34 @@ type AGHSyncConfig struct {
 	CNAME           CNAMEConfig `toml:"cname" reload:"safe"`
 }
 
+// AGHManagedConfig controls the managed rewrite feed that AdGuard Home can
+// subscribe to as a normal DNS blocklist/filter list.
+type AGHManagedConfig struct {
+	Enabled        bool                `toml:"enabled" reload:"safe"`
+	FeedPath       string              `toml:"feed_path" reload:"safe"`
+	TargetName     string              `toml:"target_name" reload:"safe"`
+	TargetMode     string              `toml:"target_mode" reload:"safe"` // resolved_ip|cname|static_ip
+	StaticIPv4     []string            `toml:"static_ipv4" reload:"safe"`
+	StaticIPv6     []string            `toml:"static_ipv6" reload:"safe"`
+	EmergencyEmpty bool                `toml:"emergency_empty" reload:"safe"`
+	DefaultPreset  string              `toml:"default_preset" reload:"safe"` // conservative|balanced|aggressive
+	StaleTargetTTL string              `toml:"stale_target_ttl" reload:"safe"`
+	Scheduler      AGHManagedScheduler `toml:"scheduler" reload:"safe"`
+}
+
+// AGHManagedScheduler controls periodic import of managed rewrite sources.
+type AGHManagedScheduler struct {
+	Enabled                     bool   `toml:"enabled" reload:"safe"`
+	DefaultSyncInterval         string `toml:"default_sync_interval" reload:"safe"`
+	SyncTimeout                 string `toml:"sync_timeout" reload:"safe"`
+	MaxParallelSyncs            int    `toml:"max_parallel_syncs" reload:"safe"`
+	Jitter                      string `toml:"jitter" reload:"safe"`
+	StaleSourceTTL              string `toml:"stale_source_ttl" reload:"safe"`
+	LargeChangeThresholdPercent int    `toml:"large_change_threshold_percent" reload:"safe"`
+	LargeChangeThresholdCount   int    `toml:"large_change_threshold_count" reload:"safe"`
+	LargeChangeRequiresReview   bool   `toml:"large_change_requires_review" reload:"safe"`
+}
+
 // CNAMEConfig controls CNAME cloaking candidate metadata sync.
 type CNAMEConfig struct {
 	Enabled                bool     `toml:"enabled" reload:"safe"`
@@ -247,6 +276,15 @@ func Defaults() Config {
 			Enabled: false, BaseURL: "http://127.0.0.1:3000", EnvFile: "/etc/mirage-chaff/agh.env",
 			SyncInterval: "1h", SyncFilters: true, SyncCustomRules: true, SyncAllowDeny: true,
 			CNAME: CNAMEConfig{Enabled: true, UseQueryLog: true, KnownTrackerSources: []string{"rule_catalog"}, CandidateMinConfidence: "medium"},
+		},
+		AGHManaged: AGHManagedConfig{
+			Enabled: false, FeedPath: "/agh/managed-rewrites.txt", TargetName: "mirage-chaff.lan",
+			TargetMode: "resolved_ip", DefaultPreset: "balanced", StaleTargetTTL: "24h",
+			Scheduler: AGHManagedScheduler{
+				Enabled: true, DefaultSyncInterval: "12h", SyncTimeout: "30s", MaxParallelSyncs: 2,
+				Jitter: "10m", StaleSourceTTL: "72h", LargeChangeThresholdPercent: 25,
+				LargeChangeThresholdCount: 500, LargeChangeRequiresReview: true,
+			},
 		},
 		RuleCatalog: RuleCatalogConfig{Path: "/var/lib/mirage-chaff/rule-catalog.json", RefreshOnReload: true},
 		UnknownProfile: UnknownProfileConfig{
@@ -323,6 +361,19 @@ func (c Config) Check() error {
 	}
 	if c.RuleCatalog.Path == "" {
 		return errors.New("rule_catalog.path must be set")
+	}
+	if c.AGHManaged.FeedPath == "" {
+		return errors.New("agh_managed_rewrites.feed_path must be set")
+	}
+	switch c.AGHManaged.TargetMode {
+	case "", "resolved_ip", "cname", "static_ip":
+	default:
+		return fmt.Errorf("agh_managed_rewrites.target_mode: must be resolved_ip|cname|static_ip, got %q", c.AGHManaged.TargetMode)
+	}
+	switch c.AGHManaged.DefaultPreset {
+	case "", "conservative", "balanced", "aggressive":
+	default:
+		return fmt.Errorf("agh_managed_rewrites.default_preset: must be conservative|balanced|aggressive, got %q", c.AGHManaged.DefaultPreset)
 	}
 	if c.Observability.Listen == "" {
 		// A-3: health/metrics must be independent of admin and always available.

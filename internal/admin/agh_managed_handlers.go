@@ -1,0 +1,179 @@
+package admin
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/vnoiram/mirage-chaff/internal/aghmanaged"
+)
+
+func (s *Server) handleAGHManagedFeed(w http.ResponseWriter, r *http.Request) {
+	if s.deps.AGHManaged == nil {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := s.deps.AGHManaged.Generate(r.Context(), false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(p.Lines))
+}
+
+func (s *Server) handleAGHManagedSources(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{"sources": s.deps.AGHManaged.ListSources()})
+}
+
+func (s *Server) handleAGHManagedSourceUpsert(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req aghmanaged.Source
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if id := r.PathValue("id"); id != "" {
+		req.ID = id
+	}
+	src, err := s.deps.AGHManaged.UpsertSource(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.source.upsert", src.ID)
+	writeJSON(w, src)
+}
+
+func (s *Server) handleAGHManagedSourcePreview(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req aghmanaged.Source
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	src, entries, err := s.deps.AGHManaged.PreviewSource(ctx, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"source": src, "entries": entries})
+}
+
+func (s *Server) handleAGHManagedSourceDelete(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "source id required", http.StatusBadRequest)
+		return
+	}
+	if err := s.deps.AGHManaged.DeleteSource(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.source.delete", id)
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleAGHManagedSourceSync(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	src, err := s.deps.AGHManaged.SyncSource(ctx, r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.source.sync", src.ID)
+	writeJSON(w, src)
+}
+
+func (s *Server) handleAGHManagedCatalog(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{"entries": s.deps.AGHManaged.CatalogRows()})
+}
+
+func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req aghmanaged.CatalogOverride
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	row, err := s.deps.AGHManaged.PatchEntry(r.PathValue("id"), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.catalog.patch", row.ID)
+	writeJSON(w, row)
+}
+
+func (s *Server) handleAGHManagedFeedStatus(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, s.deps.AGHManaged.Status(r.Context()))
+}
+
+func (s *Server) handleAGHManagedFeedPreview(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	p, err := s.deps.AGHManaged.Generate(r.Context(), true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, p)
+}
+
+func (s *Server) handleAGHManagedEmergencyEmpty(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if err := s.deps.AGHManaged.SetEmergencyEmpty(req.Enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.emergency_empty", mapBool(req.Enabled))
+	writeJSON(w, map[string]any{"status": "ok", "emergency_empty": req.Enabled})
+}
+
+func mapBool(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}

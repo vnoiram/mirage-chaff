@@ -30,6 +30,7 @@ import (
 	"golang.org/x/net/netutil"
 
 	"github.com/vnoiram/mirage-chaff/internal/admin"
+	"github.com/vnoiram/mirage-chaff/internal/aghmanaged"
 	"github.com/vnoiram/mirage-chaff/internal/catalog"
 	"github.com/vnoiram/mirage-chaff/internal/certgen"
 	"github.com/vnoiram/mirage-chaff/internal/config"
@@ -61,6 +62,7 @@ type Server struct {
 	resolver *resolver.Resolver
 	recorder *observability.Recorder
 	rules    *rulecatalog.Store
+	managed  *aghmanaged.Manager
 
 	breaker *breaker
 	limiter atomic.Pointer[rateLimiter]
@@ -121,6 +123,11 @@ func (s *Server) Run(ctx context.Context) error {
 	s.recorder = observability.NewRecorderWithOptions(recorderOptions(s.cfg), 4096)
 	s.breaker = newBreaker(5, 30*time.Second)
 	s.limiter.Store(newRateLimiter(s.cfg.Resources.RateLimit))
+	managed, err := aghmanaged.Open(filepath.Join(s.cfg.Paths.StateDir, "agh-managed-rewrites.json"), s.cfg.AGHManaged, res)
+	if err != nil {
+		return err
+	}
+	s.managed = managed
 
 	// Load intermediate CA. If it is missing, run without TLS interception so
 	// health/monitoring still work before CA setup (logged prominently).
@@ -203,6 +210,13 @@ func (s *Server) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	if s.cfg.AGHManaged.Scheduler.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.runManagedRewriteScheduler(ctx)
+		}()
+	}
 
 	s.health.SetReady(true)
 	_ = sdnotify.Ready()
@@ -265,6 +279,7 @@ func (s *Server) startAdmin(ctx context.Context, wg *sync.WaitGroup, fatal chan<
 		SecureCookies: s.cfg.Admin.SecureCookies,
 		RuleCatalog:   s.rules,
 		AGHSync:       func() rulecatalog.Status { return s.rules.Sync(syncConfig(s.cfg)) },
+		AGHManaged:    s.managed,
 	})
 	srv := &http.Server{
 		Handler:           a.Handler(),
@@ -814,7 +829,11 @@ func (s *Server) reload() {
 	s.cfg.UnknownProfile = newCfg.UnknownProfile
 	s.cfg.RuleCatalog = newCfg.RuleCatalog
 	s.cfg.AGHSync = newCfg.AGHSync
+	s.cfg.AGHManaged = newCfg.AGHManaged
 	s.cfg.Mimic = newCfg.Mimic
+	if s.managed != nil {
+		s.managed.SetConfig(newCfg.AGHManaged)
+	}
 
 	// Resource guards: rate_limit and body_max_bytes apply live; max_conns only
 	// affects newly-bound listeners (restart-required), so it is left in place.
@@ -985,6 +1004,30 @@ func syncConfig(cfg config.Config) rulecatalog.SyncConfig {
 	}
 }
 
+func (s *Server) runManagedRewriteScheduler(ctx context.Context) {
+	if s.managed == nil {
+		return
+	}
+	interval := parseDurationDefault(s.cfg.AGHManaged.Scheduler.DefaultSyncInterval, 12*time.Hour)
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	s.managed.SyncDue(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.managed.SyncDue(ctx)
+		}
+	}
+}
+
 func parseDuration(raw string) (time.Duration, error) {
 	if raw == "" {
 		return 0, nil
@@ -997,6 +1040,14 @@ func parseDuration(raw string) (time.Duration, error) {
 		return time.Duration(n) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(raw)
+}
+
+func parseDurationDefault(raw string, fallback time.Duration) time.Duration {
+	d, err := parseDuration(raw)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }
 
 // logUnmatched surfaces the top unmatched (domain, path) pairs as curation
