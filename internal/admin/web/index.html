@@ -74,6 +74,20 @@ const api = async (method, path, body) => {
 const el = (h) => { const d=document.createElement('div'); d.innerHTML=h; return d; };
 const esc = (s) => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+document.addEventListener('click', (e) => {
+  const b=e.target.closest('button[data-cmd]');
+  if(!b) return;
+  const d=b.dataset;
+  if(d.cmd==='triage') triage(d.domain||'',d.path||'');
+  if(d.cmd==='promoteRule') promoteRule(d.id||'');
+  if(d.cmd==='downgradeRule') downgradeRule(d.id||'');
+  if(d.cmd==='tempAllowDomain') tempAllowDomain(d.domain||'');
+  if(d.cmd==='permanentAllowDomain') permanentAllowDomain(d.domain||'',d.path||'');
+  if(d.cmd==='rewriteCandidate') rewriteCandidate(d.id||'');
+  if(d.cmd==='resetPw') resetPw(d.username||'');
+  if(d.cmd==='delUser') delUser(d.username||'');
+});
+
 async function doLogin(){
   try {
     const u=document.getElementById('lu').value, p=document.getElementById('lp').value;
@@ -152,7 +166,11 @@ async function viewTraffic(v){
   const add=(r)=>{ const tr=document.createElement('tr');
     tr.innerHTML=`<td>${esc(new Date(r.time).toLocaleTimeString())}</td><td>${esc(r.domain)}</td><td>${esc(r.path)}</td>
       <td>${esc(r.method)}</td><td class="a-${esc(r.action)}">${esc(r.action)}</td><td>${esc(r.rule||'')}</td><td>${esc(r.category||r.catalog_id||'')}</td><td>${r.status}</td><td>${r.bytes}</td>
-      <td><button class="act" onclick="triage('${esc(r.domain)}','${esc(r.path||'')}')">triage</button></td>`;
+      <td></td>`;
+    const b=document.createElement('button');
+    b.className='act'; b.textContent='triage'; b.dataset.cmd='triage';
+    b.dataset.domain=r.domain||''; b.dataset.path=r.path||'';
+    tr.lastElementChild.appendChild(b);
     tb.prepend(tr); while(tb.children.length>300) tb.removeChild(tb.lastChild); };
   (await api('GET','/api/traffic')).slice(-100).forEach(add);
   const es=new EventSource('/api/traffic/stream');
@@ -219,10 +237,10 @@ function catalogActions(r){
   if(!has('catalog.edit') && !has('allow.temp')) return '';
   const id=esc(r.id), domain=esc(r.match?.domain||''), path=esc(r.match?.path||'');
   let b='';
-  if(has('catalog.edit')) b+=`<button class="act" onclick="promoteRule('${id}')">promote</button><button class="act" onclick="downgradeRule('${id}')">downgrade</button>`;
-  if(has('allow.temp')) b+=`<button class="act" onclick="tempAllowDomain('${domain}')">temp allow</button>`;
-  if(has('policy.edit')) b+=`<button class="act" onclick="permanentAllowDomain('${domain}','${path}')">permanent</button>`;
-  if(has('agh.manage')) b+=`<button class="act" onclick="rewriteCandidate('${id}')">AGH candidate</button>`;
+  if(has('catalog.edit')) b+=`<button class="act" data-cmd="promoteRule" data-id="${id}">promote</button><button class="act" data-cmd="downgradeRule" data-id="${id}">downgrade</button>`;
+  if(has('allow.temp')) b+=`<button class="act" data-cmd="tempAllowDomain" data-domain="${domain}">temp allow</button>`;
+  if(has('policy.edit')) b+=`<button class="act" data-cmd="permanentAllowDomain" data-domain="${domain}" data-path="${path}">permanent</button>`;
+  if(has('agh.manage')) b+=`<button class="act" data-cmd="rewriteCandidate" data-id="${id}">AGH candidate</button>`;
   return b;
 }
 function catalogRows(rows){
@@ -272,8 +290,8 @@ async function viewUsers(v){
   v.appendChild(el(`<div class="card"><h2>Users</h2>
     <div class="grid"><table><thead><tr><th>username</th><th>role</th><th>disabled</th><th></th></tr></thead><tbody>
     ${users.map(u=>`<tr><td>${esc(u.username)}</td><td>${esc(u.role)}</td><td>${u.disabled?'yes':''}</td>
-      <td><button class="act" onclick="resetPw('${esc(u.username)}')">reset pw</button>
-      <button class="act danger" onclick="delUser('${esc(u.username)}')">delete</button></td></tr>`).join('')}
+      <td><button class="act" data-cmd="resetPw" data-username="${esc(u.username)}">reset pw</button>
+      <button class="act danger" data-cmd="delUser" data-username="${esc(u.username)}">delete</button></td></tr>`).join('')}
     </tbody></table></div>
     <h2 style="margin-top:16px">Add user</h2>
     <div class="row"><input id="nu" placeholder="username"><input id="np" type="password" placeholder="password (>=8)">

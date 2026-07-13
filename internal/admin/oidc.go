@@ -77,11 +77,11 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	nonce := randToken()
 	http.SetCookie(w, &http.Cookie{
 		Name: oidcStateCookie, Value: state, Path: "/", HttpOnly: true,
-		Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: 300,
+		Secure: s.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: 300,
 	})
 	http.SetCookie(w, &http.Cookie{
 		Name: oidcNonceCookie, Value: nonce, Path: "/", HttpOnly: true,
-		Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: 300,
+		Secure: s.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: 300,
 	})
 	http.Redirect(w, r, s.oidc.oauth.AuthCodeURL(state, oidc.Nonce(nonce)), http.StatusFound)
 }
@@ -135,7 +135,15 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	sess := s.sess.create(username, role)
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: sess.id, Path: "/", HttpOnly: true,
-		Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode,
+		Secure: s.secureCookie(r), SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name: oidcStateCookie, Value: "", Path: "/", HttpOnly: true,
+		Secure: s.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name: oidcNonceCookie, Value: "", Path: "/", HttpOnly: true,
+		Secure: s.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: -1,
 	})
 	s.store.Audit(username, "oidc.login", "role="+string(role))
 	http.Redirect(w, r, "/", http.StatusFound)

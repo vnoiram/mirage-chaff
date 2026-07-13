@@ -111,8 +111,7 @@ func (s *Server) handlePolicyPut(w http.ResponseWriter, r *http.Request, sess *s
 		return
 	}
 	var req struct{ Content string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	// Validate before writing (design doc D-2: never persist a broken ruleset).
@@ -177,8 +176,7 @@ func (s *Server) handleRuleCatalogReview(w http.ResponseWriter, r *http.Request,
 		ReviewStatus string `json:"review_status"`
 		Verified     *bool  `json:"verified"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	e, err := s.deps.RuleCatalog.Review(r.PathValue("id"), req.ReviewStatus, req.Verified)
@@ -230,8 +228,7 @@ func (s *Server) handleRuleCatalogMarkCNAME(w http.ResponseWriter, r *http.Reque
 		Confidence string   `json:"cname_confidence"`
 		QueryRef   string   `json:"agh_query_log_ref"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	e, err := s.deps.RuleCatalog.MarkCNAME(r.PathValue("id"), req.Chain, req.Target, req.Vendor, req.Confidence, req.QueryRef)
@@ -251,7 +248,10 @@ func (s *Server) handleAGHRewriteCandidate(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.ID == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -393,8 +393,7 @@ func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request, sess *s
 
 func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request, sess *session) {
 	var req struct{ Content string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	// Validate by loading into a temp file and running Check().
@@ -445,7 +444,10 @@ func (s *Server) handleTempAllow(w http.ResponseWriter, r *http.Request, sess *s
 		Minutes int    `json:"minutes"`
 		Action  string `json:"action"` // default forward-asis
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Domain == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -467,7 +469,10 @@ func (s *Server) handlePermanentAllow(w http.ResponseWriter, r *http.Request, se
 		Path   string `json:"path"`
 		Action string `json:"action"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Domain == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -496,7 +501,10 @@ func (s *Server) handleSiteOverride(w http.ResponseWriter, r *http.Request, sess
 		Action  string `json:"action"`
 		Catalog string `json:"catalog"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Domain == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -575,7 +583,10 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request, sess *
 		Username, Password string
 		Role               Role
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Username == "" || len(req.Password) < 8 {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Username == "" || len(req.Password) < 8 {
 		http.Error(w, "username and password (>=8 chars) required", http.StatusBadRequest)
 		return
 	}
@@ -613,7 +624,10 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request, sess *
 func (s *Server) handleUserSetPassword(w http.ResponseWriter, r *http.Request, sess *session) {
 	name := r.PathValue("name")
 	var req struct{ Password string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Password) < 8 {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if len(req.Password) < 8 {
 		http.Error(w, "password must be at least 8 chars", http.StatusBadRequest)
 		return
 	}

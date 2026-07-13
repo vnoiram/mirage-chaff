@@ -1,10 +1,21 @@
 package admin
 
 import (
+	"bytes"
+	"encoding/json"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/vnoiram/mirage-chaff/internal/config"
+	"github.com/vnoiram/mirage-chaff/internal/observability"
+	"github.com/vnoiram/mirage-chaff/internal/policy"
+	"golang.org/x/oauth2"
 )
 
 func TestArgon2RoundTrip(t *testing.T) {
@@ -133,4 +144,168 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 			t.Fatalf("admin UI missing %q", want)
 		}
 	}
+	for _, bad := range []string{
+		`onclick="triage('${`,
+		`onclick="tempAllowDomain('${`,
+		`onclick="permanentAllowDomain('${`,
+		`onclick="resetPw('${`,
+		`onclick="delUser('${`,
+	} {
+		if strings.Contains(html, bad) {
+			t.Fatalf("admin UI still contains vulnerable dynamic action pattern %q", bad)
+		}
+	}
+}
+
+func TestAdminOversizedLoginBodyReturns413(t *testing.T) {
+	s := newTestAdminServer(t, false)
+	body := bytes.Repeat([]byte("x"), adminMaxBodyBytes+1)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(body))
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized login status = %d, want %d", rr.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestMustChangeUserBlockedExceptPasswordFlow(t *testing.T) {
+	s := newTestAdminServer(t, false)
+	if err := s.store.Upsert(User{
+		Username:   "must",
+		Hash:       HashPassword("oldpassword"),
+		Role:       RoleAdmin,
+		MustChange: true,
+		Created:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := s.Handler()
+	cookie, csrf := loginForTest(t, h, "must", "oldpassword")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/api/me status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("/api/dashboard status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/me/password", strings.NewReader(`{"old":"oldpassword","new":"newpassword"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/api/me/password status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestSecureCookiesConfig(t *testing.T) {
+	insecure := newTestAdminServer(t, false)
+	cookie, _ := loginForTest(t, insecure.Handler(), "admin", "password123")
+	if cookie.Secure {
+		t.Fatal("login cookie should not be Secure when secure_cookies=false over plain HTTP")
+	}
+
+	secure := newTestAdminServer(t, true)
+	cookie, _ = loginForTest(t, secure.Handler(), "admin", "password123")
+	if !cookie.Secure {
+		t.Fatal("login cookie should be Secure when secure_cookies=true")
+	}
+
+	secure.oidc = &oidcAuth{oauth: &oauth2.Config{
+		ClientID:    "client",
+		RedirectURL: "http://127.0.0.1/callback",
+		Endpoint:    oauth2.Endpoint{AuthURL: "https://idp.example.test/auth"},
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/oidc/login", nil)
+	secure.handleOIDCLogin(rr, req)
+	var stateSecure, nonceSecure bool
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == oidcStateCookie {
+			stateSecure = c.Secure
+		}
+		if c.Name == oidcNonceCookie {
+			nonceSecure = c.Secure
+		}
+	}
+	if !stateSecure || !nonceSecure {
+		t.Fatal("OIDC state and nonce cookies should be Secure when secure_cookies=true")
+	}
+}
+
+func newTestAdminServer(t *testing.T, secureCookies bool) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policy")
+	catalogDir := filepath.Join(dir, "catalog")
+	if err := os.MkdirAll(policyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(catalogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := policy.Load(policyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	return New(store, Deps{
+		Version:       "test",
+		ConfigPath:    filepath.Join(dir, "mirage-chaff.conf"),
+		Paths:         config.PathsConfig{PolicyDir: policyDir, CatalogDir: catalogDir, StateDir: dir},
+		Recorder:      observability.NewRecorder(true, 8),
+		Engine:        policy.NewEngine(rs),
+		SecureCookies: secureCookies,
+	})
+}
+
+func loginForTest(t *testing.T, h http.Handler, username, password string) (*http.Cookie, string) {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	bodyBytes, err := json.Marshal(map[string]string{"username": username, "password": password})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var cookie *http.Cookie
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == sessionCookie {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("login response did not set session cookie")
+	}
+	var resp struct {
+		CSRF string `json:"csrf"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.CSRF == "" {
+		t.Fatal("login response missing csrf")
+	}
+	return cookie, resp.CSRF
 }

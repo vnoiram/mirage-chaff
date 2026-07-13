@@ -129,8 +129,9 @@ api_json = "forward"
 
 # Web admin UI (MITM control plane). Localhost + auth by default; off = lightest.
 [admin]
-enabled = false                 # restart
-listen  = "127.0.0.1:8443"      # restart
+enabled = false                  # restart
+listen  = "127.0.0.1:8443"       # restart
+secure_cookies = false           # restart; set true for TLS/HTTPS proxy deployments
 
 # Optional OIDC SSO for the admin UI (maps OIDC groups -> RBAC roles). Local
 # accounts remain a fallback. Leave enabled=false to use local accounts only.

@@ -11,6 +11,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -30,6 +31,8 @@ var webFS embed.FS
 
 const sessionCookie = "mc_admin_session"
 
+const adminMaxBodyBytes = 4 << 20
+
 // Deps is what the admin backend needs from the running server. Passing
 // functions/refs avoids an import cycle (server imports admin, not vice-versa).
 type Deps struct {
@@ -44,6 +47,7 @@ type Deps struct {
 	KillSwitch      func() error
 	Listeners       func() map[string]string
 	OIDC            config.OIDCConfig
+	SecureCookies   bool
 	RuleCatalog     *rulecatalog.Store
 	AGHSync         func() rulecatalog.Status
 }
@@ -159,7 +163,7 @@ func (s *Server) Handler() http.Handler {
 	// Embedded SPA.
 	sub, _ := fs.Sub(webFS, "web")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
-	return mux
+	return s.limitBody(mux)
 }
 
 // --- middleware ---
@@ -185,11 +189,49 @@ func (s *Server) withAuth(capability string, h func(http.ResponseWriter, *http.R
 				return
 			}
 		}
+		if s.mustChangeBlocked(sess, r) {
+			http.Error(w, "password change required", http.StatusForbidden)
+			return
+		}
 		if capability != "" && !Can(sess.role, capability) {
 			http.Error(w, "forbidden: missing capability "+capability, http.StatusForbidden)
 			return
 		}
 		h(w, r, sess)
+	}
+}
+
+func (s *Server) limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if r.ContentLength > adminMaxBodyBytes {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, adminMaxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) secureCookie(r *http.Request) bool {
+	return s.deps.SecureCookies || r.TLS != nil
+}
+
+func (s *Server) mustChangeBlocked(sess *session, r *http.Request) bool {
+	u, ok := s.store.Get(sess.username)
+	if !ok || !u.MustChange {
+		return false
+	}
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/me":
+		return false
+	case r.Method == http.MethodPost && r.URL.Path == "/api/me/password":
+		return false
+	case r.Method == http.MethodPost && r.URL.Path == "/api/logout":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -202,8 +244,7 @@ func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	if s.sess.locked(req.Username) {
@@ -234,7 +275,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    sess.id,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   s.secureCookie(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	s.store.Audit(u.Username, "login", "success")
@@ -245,7 +286,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, sess *session) {
 	s.sess.destroy(sess.id)
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secureCookie(r),
+		SameSite: http.SameSiteStrictMode,
+	})
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -259,7 +308,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, sess *session)
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, sess *session) {
 	var req struct{ Old, New string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.New) < 8 {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if len(req.New) < 8 {
 		http.Error(w, "new password must be at least 8 chars", http.StatusBadRequest)
 		return
 	}
@@ -291,6 +343,19 @@ func unauthorized(w http.ResponseWriter) { http.Error(w, "unauthorized", http.St
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}
+		return err
+	}
+	return nil
 }
 
 // safeName rejects path separators so a policy filename can't escape the dir.

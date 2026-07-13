@@ -134,9 +134,10 @@ type ObservabilityCatalogConfig struct {
 
 // AdminConfig controls the web admin UI (MITM control plane; localhost default).
 type AdminConfig struct {
-	Enabled bool       `toml:"enabled" reload:"restart"`
-	Listen  string     `toml:"listen" reload:"restart"` // e.g. "127.0.0.1:8443"
-	OIDC    OIDCConfig `toml:"oidc"`
+	Enabled       bool       `toml:"enabled" reload:"restart"`
+	Listen        string     `toml:"listen" reload:"restart"`         // e.g. "127.0.0.1:8443"
+	SecureCookies bool       `toml:"secure_cookies" reload:"restart"` // true behind TLS/HTTPS proxy deployments
+	OIDC          OIDCConfig `toml:"oidc"`
 }
 
 // OIDCConfig enables SSO login mapping OIDC groups to RBAC roles (design doc §7).
@@ -235,7 +236,7 @@ func Defaults() Config {
 				EmitSIEMCatalogFields: true,
 			},
 		},
-		Admin: AdminConfig{Enabled: false, Listen: "127.0.0.1:8443"},
+		Admin: AdminConfig{Enabled: false, Listen: "127.0.0.1:8443", SecureCookies: false},
 		Paths: PathsConfig{
 			PolicyDir:  "/etc/mirage-chaff/policy.d",
 			CatalogDir: "/etc/mirage-chaff/catalog",

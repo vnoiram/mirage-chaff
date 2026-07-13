@@ -257,15 +257,22 @@ func (s *Server) startAdmin(ctx context.Context, wg *sync.WaitGroup, fatal chan<
 			}
 			return ""
 		},
-		CertKeyType: s.cfg.Cert.KeyType,
-		Reload:      func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
-		KillSwitch:  s.runKillSwitch,
-		Listeners:   s.listenersInfo,
-		OIDC:        s.cfg.Admin.OIDC,
-		RuleCatalog: s.rules,
-		AGHSync:     func() rulecatalog.Status { return s.rules.Sync(syncConfig(s.cfg)) },
+		CertKeyType:   s.cfg.Cert.KeyType,
+		Reload:        func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
+		KillSwitch:    s.runKillSwitch,
+		Listeners:     s.listenersInfo,
+		OIDC:          s.cfg.Admin.OIDC,
+		SecureCookies: s.cfg.Admin.SecureCookies,
+		RuleCatalog:   s.rules,
+		AGHSync:       func() rulecatalog.Status { return s.rules.Sync(syncConfig(s.cfg)) },
 	})
-	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Handler:           a.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	*servers = append(*servers, srv)
 	if err := s.serve(ctx, wg, fatal, srv, s.cfg.Admin.Listen, false); err != nil {
 		return err
