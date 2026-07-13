@@ -58,7 +58,14 @@ body_max_bytes = 33554432       # 32 MiB; reload-safe
 # Structured logging + redaction (reload-safe).
 [log]
 level  = "info"                 # debug|info|warn|error
+mode   = "redacted"             # off|redacted|stats|debug|full
+retention = "7d"
 redact = true                   # mask URL/query/header sensitive values BEFORE Loki
+
+[[log.debug_scope]]
+domain = ""
+client = ""
+ttl    = "1h"
 
 # Health/metrics — INDEPENDENT of the admin UI so watchdog/monitoring survive
 # admin.enabled = false. Serves /-/healthy, /ready, and /metrics.
@@ -66,10 +73,65 @@ redact = true                   # mask URL/query/header sensitive values BEFORE 
 listen  = "127.0.0.1:9256"      # restart
 metrics = true                  # restart (toggles /metrics only)
 
+[observability.catalog]
+enabled = true                  # low-cardinality catalog/risk/review metrics only
+prometheus_labels = ["category", "risk", "verified", "review_status", "source_type"]
+emit_siem_catalog_fields = true
+
+# AdGuard Home metadata sync. AGH remains the DNS enforcement point; mirage only
+# mirrors rule metadata for triage, unknown fallback, analytics, and review.
+[agh_sync]
+enabled = false
+base_url = "http://127.0.0.1:3000"
+env_file = "/etc/mirage-chaff/agh.env"
+sync_interval = "1h"
+sync_filters = true
+sync_custom_rules = true
+sync_allow_deny = true
+sync_query_log = false
+# filter_urls = ["https://example.invalid/easyprivacy.txt"]
+# custom_rules = ["||ads.example.net/sdk.js$script", "0.0.0.0 tracker.example.net"]
+
+[agh_sync.cname]
+enabled = true
+use_query_log = true
+known_tracker_sources = ["rule_catalog"]
+candidate_min_confidence = "medium"
+
+[rule_catalog]
+path = "/var/lib/mirage-chaff/rule-catalog.json"
+refresh_on_reload = true
+
+[unknown_profile]
+enabled = true
+default = "safe"                # safe|balanced|aggressive
+
+[unknown_profile.safe]
+suspicious_domain = "observe"
+tracking_pixel = "forward"
+beacon = "forward"
+javascript = "forward"
+api_json = "forward"
+
+[unknown_profile.balanced]
+suspicious_domain = "observe"
+tracking_pixel = "stub:pixel"
+beacon = "stub:beacon-204"
+javascript = "forward"
+api_json = "forward"
+
+[unknown_profile.aggressive]
+suspicious_domain = "stub:beacon-204"
+tracking_pixel = "stub:pixel"
+beacon = "stub:beacon-204"
+javascript = "candidate-log"
+api_json = "forward"
+
 # Web admin UI (MITM control plane). Localhost + auth by default; off = lightest.
 [admin]
-enabled = false                 # restart
-listen  = "127.0.0.1:8443"      # restart
+enabled = false                  # restart
+listen  = "127.0.0.1:8443"       # restart
+secure_cookies = false           # restart; set true for TLS/HTTPS proxy deployments
 
 # Optional OIDC SSO for the admin UI (maps OIDC groups -> RBAC roles). Local
 # accounts remain a fallback. Leave enabled=false to use local accounts only.

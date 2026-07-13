@@ -41,6 +41,7 @@ import (
 	"github.com/vnoiram/mirage-chaff/internal/policy"
 	quicpkg "github.com/vnoiram/mirage-chaff/internal/quic"
 	"github.com/vnoiram/mirage-chaff/internal/resolver"
+	"github.com/vnoiram/mirage-chaff/internal/rulecatalog"
 	"github.com/vnoiram/mirage-chaff/internal/sdnotify"
 	"github.com/vnoiram/mirage-chaff/internal/stub"
 )
@@ -59,6 +60,7 @@ type Server struct {
 	engine   *policy.Engine
 	resolver *resolver.Resolver
 	recorder *observability.Recorder
+	rules    *rulecatalog.Store
 
 	breaker *breaker
 	limiter atomic.Pointer[rateLimiter]
@@ -92,6 +94,19 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.cat.Store(cat)
 	s.engine = policy.NewEngine(rs)
+	rules, err := rulecatalog.Open(s.cfg.RuleCatalog.Path)
+	if err != nil {
+		return err
+	}
+	s.rules = rules
+	if s.cfg.AGHSync.Enabled {
+		st := s.rules.Sync(syncConfig(s.cfg))
+		if st.LastError != "" {
+			log.Printf("rule catalog sync failed: %s", st.LastError)
+		} else {
+			log.Printf("rule catalog synced: %d entries from %d sources", st.Entries, st.Sources)
+		}
+	}
 	log.Printf("catalog loaded: %d entries; policy loaded: %d rules from %s",
 		len(cat.Names()), len(rs.Rules()), s.cfg.Paths.PolicyDir)
 
@@ -103,7 +118,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.resolver = res
 	s.mimic.Store(mimic.New(res, mimic.Options{MaxBytes: s.cfg.Mimic.MaxBytes, AllowVideo: s.cfg.Mimic.AllowVideo, CacheMax: s.cfg.Mimic.CacheMax}))
 	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes}))
-	s.recorder = observability.NewRecorder(s.cfg.Log.Redact, 4096)
+	s.recorder = observability.NewRecorderWithOptions(recorderOptions(s.cfg), 4096)
 	s.breaker = newBreaker(5, 30*time.Second)
 	s.limiter.Store(newRateLimiter(s.cfg.Resources.RateLimit))
 
@@ -242,13 +257,22 @@ func (s *Server) startAdmin(ctx context.Context, wg *sync.WaitGroup, fatal chan<
 			}
 			return ""
 		},
-		CertKeyType: s.cfg.Cert.KeyType,
-		Reload:      func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
-		KillSwitch:  s.runKillSwitch,
-		Listeners:   s.listenersInfo,
-		OIDC:        s.cfg.Admin.OIDC,
+		CertKeyType:   s.cfg.Cert.KeyType,
+		Reload:        func() error { return syscall.Kill(os.Getpid(), syscall.SIGHUP) },
+		KillSwitch:    s.runKillSwitch,
+		Listeners:     s.listenersInfo,
+		OIDC:          s.cfg.Admin.OIDC,
+		SecureCookies: s.cfg.Admin.SecureCookies,
+		RuleCatalog:   s.rules,
+		AGHSync:       func() rulecatalog.Status { return s.rules.Sync(syncConfig(s.cfg)) },
 	})
-	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Handler:           a.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	*servers = append(*servers, srv)
 	if err := s.serve(ctx, wg, fatal, srv, s.cfg.Admin.Listen, false); err != nil {
 		return err
@@ -534,6 +558,17 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	cat := s.cat.Load()
 	domain := hostname(r)
 	d := s.engine.Decide(domain, r.URL.Path, r.Method)
+	meta, hasMeta := rulecatalog.Entry{}, false
+	if s.rules != nil {
+		meta, hasMeta = s.rules.Lookup(domain, r.URL.Path)
+	}
+	if !d.Matched {
+		if fd, changed := verifiedJSStubDecision(d, meta, hasMeta, domain, cat); changed {
+			d = fd
+		} else if fd, changed := s.unknownFallback(d, meta, hasMeta, r.URL.Path); changed {
+			d = fd
+		}
+	}
 
 	// stub-only mode (design doc: safety mode that never contacts an upstream):
 	// downgrade every non-stub action to a safe stub so no origin is reached.
@@ -602,9 +637,23 @@ func stubOnlyGate(mode string, d policy.Decision) (policy.Decision, bool) {
 	return d, true
 }
 
+func verifiedJSStubDecision(d policy.Decision, meta rulecatalog.Entry, hasMeta bool, domain string, cat *catalog.Catalog) (policy.Decision, bool) {
+	if !hasMeta {
+		return d, false
+	}
+	name, ok := meta.VerifiedStubCatalog(domain)
+	if !ok {
+		return d, false
+	}
+	if _, exists := cat.Get(name); !exists {
+		name = safeDefaultStub
+	}
+	return policy.Decision{Action: policy.ActionStub, Catalog: name, Rule: "catalog:" + meta.ID, Matched: false}, true
+}
+
 // record logs a redacted request summary via the recorder.
 func (s *Server) record(domain string, r *http.Request, d policy.Decision, rw *respRecorder) {
-	s.recorder.Log(observability.Record{
+	rec := observability.Record{
 		Time:        time.Now(),
 		Domain:      domain,
 		Path:        r.URL.RequestURI(),
@@ -614,7 +663,17 @@ func (s *Server) record(domain string, r *http.Request, d policy.Decision, rw *r
 		Status:      rw.status,
 		Bytes:       rw.n,
 		ContentType: rw.Header().Get("Content-Type"),
-	})
+	}
+	if s.rules != nil {
+		if e, ok := s.rules.Lookup(domain, r.URL.Path); ok {
+			enrichRecord(&rec, e)
+		}
+	}
+	if strings.HasPrefix(d.Rule, "unknown:") {
+		rec.FallbackReason = d.Rule
+		rec.UnknownProfile = s.cfg.UnknownProfile.Default
+	}
+	s.recorder.Log(rec)
 }
 
 func (s *Server) noteOnce(action, rule, msg string) {
@@ -752,6 +811,9 @@ func (s *Server) reload() {
 	s.engine.Swap(newRules)
 	s.cfg.Mode = newCfg.Mode
 	s.cfg.Log = newCfg.Log
+	s.cfg.UnknownProfile = newCfg.UnknownProfile
+	s.cfg.RuleCatalog = newCfg.RuleCatalog
+	s.cfg.AGHSync = newCfg.AGHSync
 	s.cfg.Mimic = newCfg.Mimic
 
 	// Resource guards: rate_limit and body_max_bytes apply live; max_conns only
@@ -775,9 +837,166 @@ func (s *Server) reload() {
 			log.Printf("reload: resolver updated")
 		}
 	}
-	s.recorder.SetRedact(newCfg.Log.Redact)
+	if s.rules != nil && newCfg.RuleCatalog.RefreshOnReload {
+		if opened, err := rulecatalog.Open(newCfg.RuleCatalog.Path); err != nil {
+			log.Printf("reload: keeping current rule catalog (open failed: %v)", err)
+		} else {
+			s.rules = opened
+			if newCfg.AGHSync.Enabled {
+				st := s.rules.Sync(syncConfig(newCfg))
+				if st.LastError != "" {
+					log.Printf("reload: rule catalog sync failed: %s", st.LastError)
+				}
+			}
+		}
+	}
+	s.recorder.SetOptions(recorderOptions(newCfg))
 	log.Printf("reload complete: %d catalog entries, %d rules", len(newCat.Names()), len(newRules.Rules()))
 	s.logUnmatched()
+}
+
+func (s *Server) unknownFallback(d policy.Decision, meta rulecatalog.Entry, hasMeta bool, path string) (policy.Decision, bool) {
+	cfg := s.cfg.UnknownProfile
+	if !cfg.Enabled {
+		return d, false
+	}
+	profile := cfg.Default
+	if profile == "" {
+		profile = "safe"
+	}
+	rt := inferResourceType(path)
+	if hasMeta && meta.ResourceType != "" {
+		rt = meta.ResourceType
+	}
+	directive := profileDirective(cfg, profile, rt, meta)
+	if directive == "" {
+		return d, false
+	}
+	action, catalog := directiveDecision(directive)
+	if action == "" {
+		return d, false
+	}
+	return policy.Decision{Action: action, Catalog: catalog, Rule: "unknown:" + profile + ":" + rt, Matched: false}, true
+}
+
+func profileDirective(cfg config.UnknownProfileConfig, profile, resource string, meta rulecatalog.Entry) string {
+	var actions config.UnknownProfileActions
+	switch profile {
+	case "balanced":
+		actions = cfg.Balanced
+	case "aggressive":
+		actions = cfg.Aggressive
+	default:
+		actions = cfg.Safe
+	}
+	if meta.Risk == "high" && resource == "domain" {
+		return actions.SuspiciousDomain
+	}
+	switch resource {
+	case "image", "tracking_pixel", "pixel":
+		return actions.TrackingPixel
+	case "beacon":
+		return actions.Beacon
+	case "script", "javascript":
+		return actions.Javascript
+	case "json", "api_json":
+		return actions.APIJSON
+	default:
+		return actions.SuspiciousDomain
+	}
+}
+
+func directiveDecision(directive string) (action, catalog string) {
+	switch {
+	case directive == "observe", directive == "forward", directive == "candidate-log":
+		return policy.ActionForwardAsis, ""
+	case strings.HasPrefix(directive, "stub:"):
+		return policy.ActionStub, strings.TrimPrefix(directive, "stub:")
+	default:
+		return "", ""
+	}
+}
+
+func inferResourceType(path string) string {
+	p := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(p, ".js"):
+		return "script"
+	case strings.HasSuffix(p, ".gif") || strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".jpg") || strings.HasSuffix(p, ".jpeg") || strings.Contains(p, "pixel"):
+		return "tracking_pixel"
+	case strings.Contains(p, "beacon") || strings.Contains(p, "collect") || strings.Contains(p, "ping"):
+		return "beacon"
+	case strings.HasSuffix(p, ".json") || strings.Contains(p, "/api/"):
+		return "api_json"
+	default:
+		return "domain"
+	}
+}
+
+func enrichRecord(rec *observability.Record, e rulecatalog.Entry) {
+	rec.CatalogID = e.ID
+	rec.CatalogSource = e.Source.Type
+	rec.Category = e.Category
+	rec.Layer = e.Layer
+	rec.ResourceType = e.ResourceType
+	rec.Risk = e.Risk
+	rec.Confidence = e.Confidence
+	rec.ReviewStatus = e.ReviewStatus
+	rec.Verified = e.Verified
+	rec.RewriteState = e.RewriteState
+	rec.CNAMETarget = e.CNAMETarget
+	rec.TrackerVendor = e.TrackerVendor
+	rec.CNAMEConfidence = e.CNAMEConfidence
+	rec.ExpectedCatalog = e.ExpectedCatalog
+	rec.StubTemplate = e.StubTemplate
+}
+
+func recorderOptions(cfg config.Config) observability.Options {
+	scopes := make([]observability.DebugScope, 0, len(cfg.Log.DebugScope))
+	for _, s := range cfg.Log.DebugScope {
+		var expires time.Time
+		if d, err := parseDuration(s.TTL); err == nil && d > 0 {
+			expires = time.Now().Add(d)
+		}
+		scopes = append(scopes, observability.DebugScope{Domain: s.Domain, Client: s.Client, Expires: expires})
+	}
+	return observability.Options{
+		Redact:         cfg.Log.Redact,
+		Mode:           cfg.Log.Mode,
+		Retention:      cfg.Log.Retention,
+		DebugScopes:    scopes,
+		CatalogMetrics: cfg.Observability.Catalog.Enabled,
+		EmitCatalogLog: cfg.Observability.Catalog.EmitSIEMCatalogFields,
+	}
+}
+
+func syncConfig(cfg config.Config) rulecatalog.SyncConfig {
+	return rulecatalog.SyncConfig{
+		Enabled:          cfg.AGHSync.Enabled,
+		BaseURL:          cfg.AGHSync.BaseURL,
+		SyncFilters:      cfg.AGHSync.SyncFilters,
+		SyncCustomRules:  cfg.AGHSync.SyncCustomRules,
+		SyncAllowDeny:    cfg.AGHSync.SyncAllowDeny,
+		SyncQueryLog:     cfg.AGHSync.SyncQueryLog,
+		CNAMEEnabled:     cfg.AGHSync.CNAME.Enabled,
+		CNAMEUseQueryLog: cfg.AGHSync.CNAME.UseQueryLog,
+		FilterURLs:       cfg.AGHSync.FilterURLs,
+		CustomRules:      cfg.AGHSync.CustomRules,
+	}
+}
+
+func parseDuration(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	if strings.HasSuffix(raw, "d") {
+		n, err := strconv.Atoi(strings.TrimSuffix(raw, "d"))
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(raw)
 }
 
 // logUnmatched surfaces the top unmatched (domain, path) pairs as curation

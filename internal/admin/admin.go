@@ -11,6 +11,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -22,12 +23,15 @@ import (
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
+	"github.com/vnoiram/mirage-chaff/internal/rulecatalog"
 )
 
 //go:embed web
 var webFS embed.FS
 
 const sessionCookie = "mc_admin_session"
+
+const adminMaxBodyBytes = 4 << 20
 
 // Deps is what the admin backend needs from the running server. Passing
 // functions/refs avoids an import cycle (server imports admin, not vice-versa).
@@ -43,6 +47,9 @@ type Deps struct {
 	KillSwitch      func() error
 	Listeners       func() map[string]string
 	OIDC            config.OIDCConfig
+	SecureCookies   bool
+	RuleCatalog     *rulecatalog.Store
+	AGHSync         func() rulecatalog.Status
 }
 
 // Server is the admin HTTP backend.
@@ -114,6 +121,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/policy", s.withAuth("policy.view", s.handlePolicyList))
 	mux.HandleFunc("GET /api/policy/{name}", s.withAuth("policy.view", s.handlePolicyGet))
 	mux.HandleFunc("GET /api/catalog", s.withAuth("catalog.view", s.handleCatalogList))
+	mux.HandleFunc("GET /api/rule-catalog", s.withAuth("catalog.view", s.handleRuleCatalogList))
+	mux.HandleFunc("GET /api/rule-catalog/{id}", s.withAuth("catalog.view", s.handleRuleCatalogGet))
+	mux.HandleFunc("GET /api/rule-catalog/cname-candidates", s.withAuth("catalog.view", s.handleAnalyticsCNAMECandidates))
+	mux.HandleFunc("GET /api/agh-sync/status", s.withAuth("catalog.view", s.handleAGHSyncStatus))
+	mux.HandleFunc("GET /api/triage/context", s.withAuth("traffic.view", s.handleTriageContext))
+	mux.HandleFunc("GET /api/analytics/summary", s.withAuth("traffic.view", s.handleAnalyticsSummary))
+	mux.HandleFunc("GET /api/analytics/domains", s.withAuth("traffic.view", s.handleAnalyticsDomains))
+	mux.HandleFunc("GET /api/analytics/rules", s.withAuth("traffic.view", s.handleAnalyticsRules))
+	mux.HandleFunc("GET /api/analytics/catalog", s.withAuth("catalog.view", s.handleAnalyticsCatalog))
+	mux.HandleFunc("GET /api/analytics/js-stubs", s.withAuth("catalog.view", s.handleAnalyticsJSStubs))
+	mux.HandleFunc("GET /api/analytics/false-positive-candidates", s.withAuth("catalog.view", s.handleAnalyticsFalsePositiveCandidates))
+	mux.HandleFunc("GET /api/analytics/cname-candidates", s.withAuth("catalog.view", s.handleAnalyticsCNAMECandidates))
 	mux.HandleFunc("GET /api/config", s.withAuth("config.view", s.handleConfigGet))
 	mux.HandleFunc("GET /api/audit", s.withAuth("audit.view", s.handleAudit))
 
@@ -122,6 +141,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.withAuth("config.edit", s.handleConfigPut))
 	mux.HandleFunc("POST /api/reload", s.withAuth("apply.reload", s.handleReload))
 	mux.HandleFunc("POST /api/allow", s.withAuth("allow.temp", s.handleTempAllow))
+	mux.HandleFunc("POST /api/triage/temp-allow", s.withAuth("allow.temp", s.handleTempAllow))
+	mux.HandleFunc("POST /api/triage/permanent-allow", s.withAuth("policy.edit", s.handlePermanentAllow))
+	mux.HandleFunc("POST /api/triage/site-override", s.withAuth("policy.edit", s.handleSiteOverride))
+	mux.HandleFunc("POST /api/rule-catalog/{id}/review", s.withAuth("catalog.edit", s.handleRuleCatalogReview))
+	mux.HandleFunc("POST /api/rule-catalog/{id}/promote", s.withAuth("catalog.edit", s.handleRuleCatalogPromote))
+	mux.HandleFunc("POST /api/rule-catalog/{id}/downgrade", s.withAuth("catalog.edit", s.handleRuleCatalogDowngrade))
+	mux.HandleFunc("POST /api/rule-catalog/{id}/mark-cname", s.withAuth("catalog.edit", s.handleRuleCatalogMarkCNAME))
+	mux.HandleFunc("POST /api/agh/rewrite-candidate", s.withAuth("agh.manage", s.handleAGHRewriteCandidate))
+	mux.HandleFunc("POST /api/agh-sync/run", s.withAuth("agh.manage", s.handleAGHSyncRun))
+	mux.HandleFunc("POST /api/allow/permanent", s.withAuth("policy.edit", s.handlePermanentAllow))
+	mux.HandleFunc("POST /api/site-override", s.withAuth("policy.edit", s.handleSiteOverride))
 	mux.HandleFunc("POST /api/killswitch", s.withAuth("killswitch.execute", s.handleKillSwitch))
 
 	// User management.
@@ -133,7 +163,7 @@ func (s *Server) Handler() http.Handler {
 	// Embedded SPA.
 	sub, _ := fs.Sub(webFS, "web")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
-	return mux
+	return s.limitBody(mux)
 }
 
 // --- middleware ---
@@ -159,11 +189,49 @@ func (s *Server) withAuth(capability string, h func(http.ResponseWriter, *http.R
 				return
 			}
 		}
+		if s.mustChangeBlocked(sess, r) {
+			http.Error(w, "password change required", http.StatusForbidden)
+			return
+		}
 		if capability != "" && !Can(sess.role, capability) {
 			http.Error(w, "forbidden: missing capability "+capability, http.StatusForbidden)
 			return
 		}
 		h(w, r, sess)
+	}
+}
+
+func (s *Server) limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if r.ContentLength > adminMaxBodyBytes {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, adminMaxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) secureCookie(r *http.Request) bool {
+	return s.deps.SecureCookies || r.TLS != nil
+}
+
+func (s *Server) mustChangeBlocked(sess *session, r *http.Request) bool {
+	u, ok := s.store.Get(sess.username)
+	if !ok || !u.MustChange {
+		return false
+	}
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/me":
+		return false
+	case r.Method == http.MethodPost && r.URL.Path == "/api/me/password":
+		return false
+	case r.Method == http.MethodPost && r.URL.Path == "/api/logout":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -176,8 +244,7 @@ func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	if s.sess.locked(req.Username) {
@@ -208,7 +275,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    sess.id,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   s.secureCookie(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	s.store.Audit(u.Username, "login", "success")
@@ -219,7 +286,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, sess *session) {
 	s.sess.destroy(sess.id)
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secureCookie(r),
+		SameSite: http.SameSiteStrictMode,
+	})
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -233,7 +308,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, sess *session)
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, sess *session) {
 	var req struct{ Old, New string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.New) < 8 {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if len(req.New) < 8 {
 		http.Error(w, "new password must be at least 8 chars", http.StatusBadRequest)
 		return
 	}
@@ -265,6 +343,19 @@ func unauthorized(w http.ResponseWriter) { http.Error(w, "unauthorized", http.St
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}
+		return err
+	}
+	return nil
 }
 
 // safeName rejects path separators so a policy filename can't escape the dir.

@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/vnoiram/mirage-chaff/internal/config"
+	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
 )
 
@@ -109,8 +111,7 @@ func (s *Server) handlePolicyPut(w http.ResponseWriter, r *http.Request, sess *s
 		return
 	}
 	var req struct{ Content string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	// Validate before writing (design doc D-2: never persist a broken ruleset).
@@ -141,6 +142,246 @@ func (s *Server) handleCatalogList(w http.ResponseWriter, r *http.Request, sess 
 	writeJSON(w, map[string]any{"files": names})
 }
 
+func (s *Server) handleRuleCatalogList(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		writeJSON(w, map[string]any{"entries": []any{}})
+		return
+	}
+	filter := map[string]string{}
+	for _, k := range []string{"domain", "category", "risk", "verified", "review_status", "source_type"} {
+		filter[k] = r.URL.Query().Get(k)
+	}
+	writeJSON(w, map[string]any{"entries": s.deps.RuleCatalog.List(filter)})
+}
+
+func (s *Server) handleRuleCatalogGet(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	e, ok := s.deps.RuleCatalog.Get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, e)
+}
+
+func (s *Server) handleRuleCatalogReview(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		ReviewStatus string `json:"review_status"`
+		Verified     *bool  `json:"verified"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	e, err := s.deps.RuleCatalog.Review(r.PathValue("id"), req.ReviewStatus, req.Verified)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.review", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleRuleCatalogPromote(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	e, err := s.deps.RuleCatalog.Promote(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.promote", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleRuleCatalogDowngrade(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	e, err := s.deps.RuleCatalog.Downgrade(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.downgrade", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleRuleCatalogMarkCNAME(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Chain      []string `json:"cname_chain"`
+		Target     string   `json:"cname_target"`
+		Vendor     string   `json:"tracker_vendor"`
+		Confidence string   `json:"cname_confidence"`
+		QueryRef   string   `json:"agh_query_log_ref"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	e, err := s.deps.RuleCatalog.MarkCNAME(r.PathValue("id"), req.Chain, req.Target, req.Vendor, req.Confidence, req.QueryRef)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "rule_catalog.mark_cname", e.ID)
+	writeJSON(w, e)
+}
+
+func (s *Server) handleAGHRewriteCandidate(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.ID == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	c, err := s.deps.RuleCatalog.RewriteCandidate(req.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh.rewrite_candidate", req.ID)
+	writeJSON(w, c)
+}
+
+func (s *Server) handleAGHSyncStatus(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		http.Error(w, "rule catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, s.deps.RuleCatalog.Status())
+}
+
+func (s *Server) handleAGHSyncRun(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHSync == nil {
+		http.Error(w, "AGH sync unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	st := s.deps.AGHSync()
+	s.store.Audit(sess.username, "agh_sync.run", st.LastError)
+	writeJSON(w, st)
+}
+
+func (s *Server) handleTriageContext(w http.ResponseWriter, r *http.Request, sess *session) {
+	domain := r.URL.Query().Get("domain")
+	path := r.URL.Query().Get("path")
+	if domain == "" {
+		http.Error(w, "domain required", http.StatusBadRequest)
+		return
+	}
+	resp := map[string]any{
+		"domain":         domain,
+		"path":           path,
+		"temp_allows":    s.deps.Engine.TempRules(),
+		"recent_actions": recentByDomain(s.deps.Recorder.Snapshot(500), domain),
+	}
+	if s.deps.RuleCatalog != nil {
+		if e, ok := s.deps.RuleCatalog.Lookup(domain, path); ok {
+			resp["rule_catalog"] = e
+		}
+	}
+	rs := s.deps.Engine.Ruleset()
+	resp["decision"] = rs.Match(domain, path, http.MethodGet)
+	resp["suggestions"] = triageSuggestions(resp)
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request, sess *session) {
+	out := s.deps.Recorder.Analytics()
+	if s.deps.RuleCatalog != nil {
+		out["catalog"] = s.deps.RuleCatalog.Analytics()
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleAnalyticsDomains(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeJSON(w, s.deps.Recorder.Analytics()["top_domains"])
+}
+
+func (s *Server) handleAnalyticsRules(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeJSON(w, s.deps.Recorder.Analytics()["top_rules"])
+}
+
+func (s *Server) handleAnalyticsCatalog(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.RuleCatalog == nil {
+		writeJSON(w, map[string]any{"total": 0})
+		return
+	}
+	writeJSON(w, s.deps.RuleCatalog.Analytics())
+}
+
+func (s *Server) handleAnalyticsJSStubs(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeCatalogAnalyticsSlice(w, s, "js_stub_candidates")
+}
+
+func (s *Server) handleAnalyticsFalsePositiveCandidates(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeCatalogAnalyticsSlice(w, s, "high_unverified")
+}
+
+func (s *Server) handleAnalyticsCNAMECandidates(w http.ResponseWriter, r *http.Request, sess *session) {
+	writeCatalogAnalyticsSlice(w, s, "cname_candidates")
+}
+
+func writeCatalogAnalyticsSlice(w http.ResponseWriter, s *Server, key string) {
+	if s.deps.RuleCatalog == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, s.deps.RuleCatalog.Analytics()[key])
+}
+
+func recentByDomain(records []observability.Record, domain string) []observability.Record {
+	cutoff := time.Now().Add(-5 * time.Minute)
+	var out []observability.Record
+	for i := len(records) - 1; i >= 0 && len(out) < 50; i-- {
+		rec := records[i]
+		if !rec.Time.IsZero() && rec.Time.Before(cutoff) {
+			continue
+		}
+		if rec.Domain == domain || strings.HasSuffix(rec.Domain, "."+domain) {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func triageSuggestions(ctx map[string]any) []string {
+	var out []string
+	if _, ok := ctx["rule_catalog"]; ok {
+		out = append(out, "review catalog entry before changing global policy")
+	}
+	if recs, ok := ctx["recent_actions"].([]observability.Record); ok {
+		for _, rec := range recs {
+			if rec.Action == policy.ActionStub || rec.Action == policy.ActionForwardMimic {
+				out = append(out, "try temporary allow; if it fixes the site, create a permanent allow or site override")
+				break
+			}
+		}
+	}
+	out = append(out, "use passthrough for pinned TLS domains")
+	return out
+}
+
 func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request, sess *session) {
 	b, err := os.ReadFile(s.deps.ConfigPath)
 	if err != nil {
@@ -152,8 +393,7 @@ func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request, sess *s
 
 func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request, sess *session) {
 	var req struct{ Content string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
 	// Validate by loading into a temp file and running Check().
@@ -204,7 +444,10 @@ func (s *Server) handleTempAllow(w http.ResponseWriter, r *http.Request, sess *s
 		Minutes int    `json:"minutes"`
 		Action  string `json:"action"` // default forward-asis
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Domain == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -218,6 +461,72 @@ func (s *Server) handleTempAllow(w http.ResponseWriter, r *http.Request, sess *s
 	s.deps.Engine.AddTempRule(req.Domain, action, "", time.Duration(req.Minutes)*time.Minute)
 	s.store.Audit(sess.username, "allow.temp", fmt.Sprintf("%s for %dm (%s)", req.Domain, req.Minutes, action))
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handlePermanentAllow(w http.ResponseWriter, r *http.Request, sess *session) {
+	var req struct {
+		Domain string `json:"domain"`
+		Path   string `json:"path"`
+		Action string `json:"action"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Domain == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	action := req.Action
+	if action == "" {
+		action = policy.ActionForwardAsis
+	}
+	name := "allow-" + safeSlug(req.Domain) + ".yaml"
+	content := allowPolicyYAML(req.Domain, req.Path, action)
+	if err := policy.ValidateBytes([]byte(content)); err != nil {
+		http.Error(w, "invalid generated policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(s.deps.Paths.PolicyDir, name), []byte(content), 0o640); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.Audit(sess.username, "allow.permanent", req.Domain)
+	writeJSON(w, map[string]string{"status": "ok", "file": name, "note": "call /api/reload to apply"})
+}
+
+func (s *Server) handleSiteOverride(w http.ResponseWriter, r *http.Request, sess *session) {
+	var req struct {
+		Domain  string `json:"domain"`
+		Profile string `json:"profile"`
+		Action  string `json:"action"`
+		Catalog string `json:"catalog"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Domain == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	action := req.Action
+	if action == "" {
+		action = policy.ActionForwardAsis
+	}
+	name := "site-override-" + safeSlug(req.Domain) + ".yaml"
+	content := fmt.Sprintf("rules:\n  - name: site-override-%s\n    priority: 5\n    match:\n      domain: %q\n    action: %q\n", safeSlug(req.Domain), req.Domain, action)
+	if action == policy.ActionStub && req.Catalog != "" {
+		content += fmt.Sprintf("    catalog: %q\n", req.Catalog)
+	}
+	if err := policy.ValidateBytes([]byte(content)); err != nil {
+		http.Error(w, "invalid generated policy: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(s.deps.Paths.PolicyDir, name), []byte(content), 0o640); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.Audit(sess.username, "site_override.write", req.Domain+" "+req.Profile)
+	writeJSON(w, map[string]string{"status": "ok", "file": name, "note": "call /api/reload to apply"})
 }
 
 func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -237,6 +546,32 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, sess *sessi
 	writeJSON(w, s.store.AuditLog(500))
 }
 
+func safeSlug(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "rule"
+	}
+	return out
+}
+
+func allowPolicyYAML(domain, path, action string) string {
+	content := fmt.Sprintf("rules:\n  - name: allow-%s\n    priority: 1\n    match:\n      domain: %q\n", safeSlug(domain), domain)
+	if path != "" {
+		content += fmt.Sprintf("      path: %q\n", path)
+	}
+	content += fmt.Sprintf("    action: %q\n", action)
+	return content
+}
+
 // --- user management ---
 
 func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -248,7 +583,10 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request, sess *
 		Username, Password string
 		Role               Role
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Username == "" || len(req.Password) < 8 {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Username == "" || len(req.Password) < 8 {
 		http.Error(w, "username and password (>=8 chars) required", http.StatusBadRequest)
 		return
 	}
@@ -286,7 +624,10 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request, sess *
 func (s *Server) handleUserSetPassword(w http.ResponseWriter, r *http.Request, sess *session) {
 	name := r.PathValue("name")
 	var req struct{ Password string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Password) < 8 {
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if len(req.Password) < 8 {
 		http.Error(w, "password must be at least 8 chars", http.StatusBadRequest)
 		return
 	}

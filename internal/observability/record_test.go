@@ -45,3 +45,44 @@ func TestRecorderRingAndCounters(t *testing.T) {
 		t.Errorf("metrics missing forward-scrubbed counter:\n%s", out)
 	}
 }
+
+func TestRecorderLogModesAndCatalogMetrics(t *testing.T) {
+	stats := NewRecorderWithOptions(Options{Redact: true, Mode: "stats", CatalogMetrics: true, EmitCatalogLog: true}, 4)
+	stats.Log(Record{
+		Time: time.Now(), Domain: "ads.example", Path: "/collect?uid=1", Method: "GET",
+		Action: "stub", Status: 204, Category: "ad_sdk", Risk: "high",
+		ReviewStatus: "candidate", CatalogSource: "adguard_filter",
+	})
+	snap := stats.Snapshot(1)
+	if len(snap) != 1 {
+		t.Fatal("missing snapshot")
+	}
+	if snap[0].Path != "" || snap[0].Method != "" {
+		t.Fatalf("stats mode should not retain per-request path/method: %+v", snap[0])
+	}
+	var sb strings.Builder
+	stats.WriteMetrics(&sb)
+	out := sb.String()
+	if strings.Contains(out, "ads.example") || strings.Contains(out, "/collect") {
+		t.Fatalf("metrics leaked high-cardinality fields:\n%s", out)
+	}
+	if !strings.Contains(out, `mirage_chaff_catalog_requests_total{category="ad_sdk",risk="high",verified="false",review_status="candidate",source_type="adguard_filter"} 1`) {
+		t.Fatalf("missing catalog metric:\n%s", out)
+	}
+
+	full := NewRecorderWithOptions(Options{Redact: true, Mode: "full"}, 2)
+	full.Log(Record{Time: time.Now(), Domain: "x", Path: "/p?token=secret", Action: "forward-asis", Status: 200})
+	if got := full.Snapshot(1)[0].Path; got != "/p?token=secret" {
+		t.Fatalf("full mode path = %q", got)
+	}
+}
+
+func TestCatalogMetricsCanBeDisabled(t *testing.T) {
+	r := NewRecorderWithOptions(Options{Redact: true, Mode: "redacted", CatalogMetrics: false}, 2)
+	r.Log(Record{Time: time.Now(), Domain: "ads.example", Path: "/x", Action: "stub", Status: 204, Category: "ad_sdk", Risk: "high"})
+	var sb strings.Builder
+	r.WriteMetrics(&sb)
+	if strings.Contains(sb.String(), "mirage_chaff_catalog_requests_total") {
+		t.Fatalf("catalog metric should be disabled:\n%s", sb.String())
+	}
+}

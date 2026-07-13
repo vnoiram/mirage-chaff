@@ -10,12 +10,15 @@ func TestDefaultsAreValid(t *testing.T) {
 
 func TestCheckRejectsBadValues(t *testing.T) {
 	tests := map[string]func(*Config){
-		"bad mode":           func(c *Config) { c.Mode = "nope" },
-		"bad key_type":       func(c *Config) { c.Cert.KeyType = "dsa" },
-		"http3 without quic": func(c *Config) { c.Protocols.HTTP3 = true; c.Protocols.QUIC = false },
-		"empty https":        func(c *Config) { c.Listen.HTTPS = "" },
-		"no resolvers":       func(c *Config) { c.Upstream.Resolvers = nil },
-		"no obs listen":      func(c *Config) { c.Observability.Listen = "" },
+		"bad mode":            func(c *Config) { c.Mode = "nope" },
+		"bad key_type":        func(c *Config) { c.Cert.KeyType = "dsa" },
+		"http3 without quic":  func(c *Config) { c.Protocols.HTTP3 = true; c.Protocols.QUIC = false },
+		"empty https":         func(c *Config) { c.Listen.HTTPS = "" },
+		"no resolvers":        func(c *Config) { c.Upstream.Resolvers = nil },
+		"no obs listen":       func(c *Config) { c.Observability.Listen = "" },
+		"bad log mode":        func(c *Config) { c.Log.Mode = "raw-ish" },
+		"bad unknown profile": func(c *Config) { c.UnknownProfile.Default = "reckless" },
+		"empty rule catalog":  func(c *Config) { c.RuleCatalog.Path = "" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

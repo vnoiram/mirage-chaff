@@ -33,17 +33,20 @@ const SchemaVersion = 1
 type Config struct {
 	Version int `toml:"version" reload:"safe"`
 
-	Listen        ListenConfig        `toml:"listen"`
-	Protocols     ProtocolsConfig     `toml:"protocols"`
-	Cert          CertConfig          `toml:"cert"`
-	Upstream      UpstreamConfig      `toml:"upstream"`
-	Mode          string              `toml:"mode" reload:"safe"` // "full" | "stub-only"
-	Mimic         MimicConfig         `toml:"mimic"`
-	Resources     ResourcesConfig     `toml:"resources"`
-	Log           LogConfig           `toml:"log" reload:"safe"`
-	Observability ObservabilityConfig `toml:"observability"`
-	Admin         AdminConfig         `toml:"admin"`
-	Paths         PathsConfig         `toml:"paths"`
+	Listen         ListenConfig         `toml:"listen"`
+	Protocols      ProtocolsConfig      `toml:"protocols"`
+	Cert           CertConfig           `toml:"cert"`
+	Upstream       UpstreamConfig       `toml:"upstream"`
+	Mode           string               `toml:"mode" reload:"safe"` // "full" | "stub-only"
+	Mimic          MimicConfig          `toml:"mimic"`
+	Resources      ResourcesConfig      `toml:"resources"`
+	Log            LogConfig            `toml:"log" reload:"safe"`
+	Observability  ObservabilityConfig  `toml:"observability"`
+	Admin          AdminConfig          `toml:"admin"`
+	Paths          PathsConfig          `toml:"paths"`
+	AGHSync        AGHSyncConfig        `toml:"agh_sync" reload:"safe"`
+	RuleCatalog    RuleCatalogConfig    `toml:"rule_catalog" reload:"safe"`
+	UnknownProfile UnknownProfileConfig `toml:"unknown_profile" reload:"safe"`
 
 	// path is the file this config was loaded from (empty if defaults-only).
 	path string
@@ -99,23 +102,42 @@ type ResourcesConfig struct {
 
 // LogConfig controls structured logging and redaction (reload-safe).
 type LogConfig struct {
-	Level  string `toml:"level" reload:"safe"`  // "debug"|"info"|"warn"|"error"
-	Redact bool   `toml:"redact" reload:"safe"` // mask sensitive URL/query/header values
+	Level      string       `toml:"level" reload:"safe"`     // "debug"|"info"|"warn"|"error"
+	Mode       string       `toml:"mode" reload:"safe"`      // off|redacted|stats|debug|full
+	Retention  string       `toml:"retention" reload:"safe"` // informational TTL, e.g. "7d"
+	Redact     bool         `toml:"redact" reload:"safe"`    // mask sensitive URL/query/header values
+	DebugScope []DebugScope `toml:"debug_scope" reload:"safe"`
+}
+
+// DebugScope enables detailed logging for a bounded domain/client scope.
+type DebugScope struct {
+	Domain string `toml:"domain" reload:"safe"`
+	Client string `toml:"client" reload:"safe"`
+	TTL    string `toml:"ttl" reload:"safe"`
 }
 
 // ObservabilityConfig is the admin-INDEPENDENT health/metrics listener (A-3).
 // It must keep serving /-/healthy, /ready (and optionally /metrics) even when
 // Admin.Enabled is false, so systemd watchdog + Uptime Kuma + Prometheus survive.
 type ObservabilityConfig struct {
-	Listen  string `toml:"listen" reload:"restart"` // e.g. "127.0.0.1:9256"
-	Metrics bool   `toml:"metrics" reload:"restart"`
+	Listen  string                     `toml:"listen" reload:"restart"` // e.g. "127.0.0.1:9256"
+	Metrics bool                       `toml:"metrics" reload:"restart"`
+	Catalog ObservabilityCatalogConfig `toml:"catalog" reload:"safe"`
+}
+
+// ObservabilityCatalogConfig controls catalog-derived metric/log enrichment.
+type ObservabilityCatalogConfig struct {
+	Enabled               bool     `toml:"enabled" reload:"safe"`
+	PrometheusLabels      []string `toml:"prometheus_labels" reload:"safe"`
+	EmitSIEMCatalogFields bool     `toml:"emit_siem_catalog_fields" reload:"safe"`
 }
 
 // AdminConfig controls the web admin UI (MITM control plane; localhost default).
 type AdminConfig struct {
-	Enabled bool       `toml:"enabled" reload:"restart"`
-	Listen  string     `toml:"listen" reload:"restart"` // e.g. "127.0.0.1:8443"
-	OIDC    OIDCConfig `toml:"oidc"`
+	Enabled       bool       `toml:"enabled" reload:"restart"`
+	Listen        string     `toml:"listen" reload:"restart"`         // e.g. "127.0.0.1:8443"
+	SecureCookies bool       `toml:"secure_cookies" reload:"restart"` // true behind TLS/HTTPS proxy deployments
+	OIDC          OIDCConfig `toml:"oidc"`
 }
 
 // OIDCConfig enables SSO login mapping OIDC groups to RBAC roles (design doc §7).
@@ -138,6 +160,53 @@ type PathsConfig struct {
 	AGHEnv     string `toml:"agh_env" reload:"safe"` // /etc/mirage-chaff/agh.env (kill-switch creds)
 }
 
+// AGHSyncConfig mirrors AdGuard Home rule sources into the local rule catalog.
+type AGHSyncConfig struct {
+	Enabled         bool        `toml:"enabled" reload:"safe"`
+	BaseURL         string      `toml:"base_url" reload:"safe"`
+	EnvFile         string      `toml:"env_file" reload:"safe"`
+	SyncInterval    string      `toml:"sync_interval" reload:"safe"`
+	SyncFilters     bool        `toml:"sync_filters" reload:"safe"`
+	SyncCustomRules bool        `toml:"sync_custom_rules" reload:"safe"`
+	SyncAllowDeny   bool        `toml:"sync_allow_deny" reload:"safe"`
+	SyncQueryLog    bool        `toml:"sync_query_log" reload:"safe"`
+	FilterURLs      []string    `toml:"filter_urls" reload:"safe"`
+	CustomRules     []string    `toml:"custom_rules" reload:"safe"`
+	CNAME           CNAMEConfig `toml:"cname" reload:"safe"`
+}
+
+// CNAMEConfig controls CNAME cloaking candidate metadata sync.
+type CNAMEConfig struct {
+	Enabled                bool     `toml:"enabled" reload:"safe"`
+	UseQueryLog            bool     `toml:"use_query_log" reload:"safe"`
+	KnownTrackerSources    []string `toml:"known_tracker_sources" reload:"safe"`
+	CandidateMinConfidence string   `toml:"candidate_min_confidence" reload:"safe"`
+}
+
+// RuleCatalogConfig controls the metadata catalog separate from HTTP responses.
+type RuleCatalogConfig struct {
+	Path            string `toml:"path" reload:"safe"`
+	RefreshOnReload bool   `toml:"refresh_on_reload" reload:"safe"`
+}
+
+// UnknownProfileConfig controls fallback behavior only for unmatched URLs.
+type UnknownProfileConfig struct {
+	Enabled    bool                  `toml:"enabled" reload:"safe"`
+	Default    string                `toml:"default" reload:"safe"` // safe|balanced|aggressive
+	Safe       UnknownProfileActions `toml:"safe" reload:"safe"`
+	Balanced   UnknownProfileActions `toml:"balanced" reload:"safe"`
+	Aggressive UnknownProfileActions `toml:"aggressive" reload:"safe"`
+}
+
+// UnknownProfileActions maps resource classes to fallback directives.
+type UnknownProfileActions struct {
+	SuspiciousDomain string `toml:"suspicious_domain" reload:"safe"`
+	TrackingPixel    string `toml:"tracking_pixel" reload:"safe"`
+	Beacon           string `toml:"beacon" reload:"safe"`
+	Javascript       string `toml:"javascript" reload:"safe"`
+	APIJSON          string `toml:"api_json" reload:"safe"`
+}
+
 // Defaults returns a Config with production-sane defaults. Initial defaults enable
 // full functionality; constrained VMs pare back via the sample config.
 func Defaults() Config {
@@ -155,18 +224,36 @@ func Defaults() Config {
 			CacheTTLHours:    168,
 			CacheDir:         "/var/lib/mirage-chaff/certcache",
 		},
-		Upstream:      UpstreamConfig{Resolvers: []string{"https://1.1.1.1/dns-query"}},
-		Mode:          "full",
-		Mimic:         MimicConfig{Enabled: true, MaxBytes: 8 << 20, CacheMax: 512, AllowVideo: false},
-		Resources:     ResourcesConfig{MaxConns: 1024, RateLimit: 0, BodyMaxBytes: 32 << 20},
-		Log:           LogConfig{Level: "info", Redact: true},
-		Observability: ObservabilityConfig{Listen: "127.0.0.1:9256", Metrics: true},
-		Admin:         AdminConfig{Enabled: false, Listen: "127.0.0.1:8443"},
+		Upstream:  UpstreamConfig{Resolvers: []string{"https://1.1.1.1/dns-query"}},
+		Mode:      "full",
+		Mimic:     MimicConfig{Enabled: true, MaxBytes: 8 << 20, CacheMax: 512, AllowVideo: false},
+		Resources: ResourcesConfig{MaxConns: 1024, RateLimit: 0, BodyMaxBytes: 32 << 20},
+		Log:       LogConfig{Level: "info", Mode: "redacted", Retention: "7d", Redact: true},
+		Observability: ObservabilityConfig{
+			Listen: "127.0.0.1:9256", Metrics: true,
+			Catalog: ObservabilityCatalogConfig{
+				Enabled: true, PrometheusLabels: []string{"category", "risk", "verified", "review_status", "source_type"},
+				EmitSIEMCatalogFields: true,
+			},
+		},
+		Admin: AdminConfig{Enabled: false, Listen: "127.0.0.1:8443", SecureCookies: false},
 		Paths: PathsConfig{
 			PolicyDir:  "/etc/mirage-chaff/policy.d",
 			CatalogDir: "/etc/mirage-chaff/catalog",
 			StateDir:   "/var/lib/mirage-chaff",
 			AGHEnv:     "/etc/mirage-chaff/agh.env",
+		},
+		AGHSync: AGHSyncConfig{
+			Enabled: false, BaseURL: "http://127.0.0.1:3000", EnvFile: "/etc/mirage-chaff/agh.env",
+			SyncInterval: "1h", SyncFilters: true, SyncCustomRules: true, SyncAllowDeny: true,
+			CNAME: CNAMEConfig{Enabled: true, UseQueryLog: true, KnownTrackerSources: []string{"rule_catalog"}, CandidateMinConfidence: "medium"},
+		},
+		RuleCatalog: RuleCatalogConfig{Path: "/var/lib/mirage-chaff/rule-catalog.json", RefreshOnReload: true},
+		UnknownProfile: UnknownProfileConfig{
+			Enabled: true, Default: "safe",
+			Safe:       UnknownProfileActions{SuspiciousDomain: "observe", TrackingPixel: "forward", Beacon: "forward", Javascript: "forward", APIJSON: "forward"},
+			Balanced:   UnknownProfileActions{SuspiciousDomain: "observe", TrackingPixel: "stub:pixel", Beacon: "stub:beacon-204", Javascript: "forward", APIJSON: "forward"},
+			Aggressive: UnknownProfileActions{SuspiciousDomain: "stub:beacon-204", TrackingPixel: "stub:pixel", Beacon: "stub:beacon-204", Javascript: "candidate-log", APIJSON: "forward"},
 		},
 	}
 }
@@ -223,6 +310,19 @@ func (c Config) Check() error {
 	}
 	if len(c.Upstream.Resolvers) == 0 {
 		return errors.New("upstream.resolvers must not be empty (must NOT point at AdGuard Home)")
+	}
+	switch c.Log.Mode {
+	case "", "off", "redacted", "stats", "debug", "full":
+	default:
+		return fmt.Errorf("log.mode: must be off|redacted|stats|debug|full, got %q", c.Log.Mode)
+	}
+	switch c.UnknownProfile.Default {
+	case "", "safe", "balanced", "aggressive":
+	default:
+		return fmt.Errorf("unknown_profile.default: must be safe|balanced|aggressive, got %q", c.UnknownProfile.Default)
+	}
+	if c.RuleCatalog.Path == "" {
+		return errors.New("rule_catalog.path must be set")
 	}
 	if c.Observability.Listen == "" {
 		// A-3: health/metrics must be independent of admin and always available.
