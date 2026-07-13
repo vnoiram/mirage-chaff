@@ -85,6 +85,8 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='permanentAllowDomain') permanentAllowDomain(d.domain||'',d.path||'');
   if(d.cmd==='rewriteCandidate') rewriteCandidate(d.id||'');
   if(d.cmd==='syncManagedSource') syncManagedSource(d.id||'');
+  if(d.cmd==='approveManagedSource') approveManagedSource(d.id||'');
+  if(d.cmd==='rejectManagedSource') rejectManagedSource(d.id||'');
   if(d.cmd==='deleteManagedSource') deleteManagedSource(d.id||'');
   if(d.cmd==='managedRewrite') setManagedRewrite(d.id||'', d.enabled==='true');
   if(d.cmd==='resetPw') resetPw(d.username||'');
@@ -282,7 +284,7 @@ async function viewAGHManaged(v){
     </div>`:''}
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>enabled</th><th>entries</th><th>diff</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
     ${sources.map(s=>`<tr><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${s.enabled?'yes':'no'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
-    <td>${has('agh.manage')?`<button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
+    <td>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="grid"><table><thead><tr><th>domain</th><th>source</th><th>category</th><th>resource</th><th>review</th><th>rewrite</th><th>reason</th><th></th></tr></thead><tbody>
     ${rows.slice(0,500).map(r=>`<tr><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.review_status)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
@@ -294,6 +296,8 @@ async function addManagedSource(){ try{
   render();
 }catch(e){ alert(e.message);} }
 async function syncManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/sync'); render(); }catch(e){ alert(e.message);} }
+async function approveManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/approve'); render(); }catch(e){ alert(e.message);} }
+async function rejectManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/reject'); render(); }catch(e){ alert(e.message);} }
 async function deleteManagedSource(id){ if(!confirm('Delete source '+id+'?'))return; try{ await api('DELETE','/api/agh/sources/'+id); render(); }catch(e){ alert(e.message);} }
 async function setManagedRewrite(id,on){ try{ await api('PATCH','/api/agh/managed-catalog/'+id,{rewrite_enabled:on,rewrite_reason:on?'manual enable':'manual disable'}); render(); }catch(e){ alert(e.message);} }
 async function setEmergencyEmpty(on){ try{ await api('POST','/api/agh/rewrite-feed/emergency-empty',{enabled:on}); render(); }catch(e){ alert(e.message);} }

@@ -2,6 +2,7 @@ package aghmanaged
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -116,6 +117,183 @@ func TestSourceURLSync(t *testing.T) {
 	rows := m.CatalogRows()
 	if len(rows) != 1 || rows[0].Match.Domain != "ads.example.net" || rows[0].ResourceType != "script" {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestPendingReviewApproveRejectAndReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "managed.json")
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	cfg.Scheduler.LargeChangeThresholdCount = 1
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||old.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rows := m.CatalogRows(); len(rows) != 1 || rows[0].Match.Domain != "old.example.net" {
+		t.Fatalf("initial rows = %+v", rows)
+	}
+
+	src.Content = "||new.example.net^\n"
+	if _, err := m.UpsertSource(src); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := m.SyncSource(context.Background(), src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending.PendingReview {
+		t.Fatalf("source should require review: %+v", pending)
+	}
+	if rows := m.CatalogRows(); len(rows) != 1 || rows[0].Match.Domain != "old.example.net" {
+		t.Fatalf("pending sync should not replace active rows: %+v", rows)
+	}
+
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.pending[src.ID]) != 1 {
+		t.Fatalf("pending entries were not restored: %+v", reopened.pending)
+	}
+	approved, err := reopened.ApproveSource(src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.PendingReview || approved.Entries != 1 {
+		t.Fatalf("approved source = %+v", approved)
+	}
+	if rows := reopened.CatalogRows(); len(rows) != 1 || rows[0].Match.Domain != "new.example.net" {
+		t.Fatalf("approved rows = %+v", rows)
+	}
+	if len(reopened.pending) != 0 {
+		t.Fatalf("pending not cleared after approve: %+v", reopened.pending)
+	}
+
+	src.Content = "||third.example.net^\n"
+	if _, err := reopened.UpsertSource(src); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reopened.SyncSource(context.Background(), src.ID); err != nil || !got.PendingReview {
+		t.Fatalf("second pending sync source=%+v err=%v", got, err)
+	}
+	rejected, err := reopened.RejectSource(src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.PendingReview {
+		t.Fatalf("rejected source still pending: %+v", rejected)
+	}
+	if rows := reopened.CatalogRows(); len(rows) != 1 || rows[0].Match.Domain != "new.example.net" {
+		t.Fatalf("reject should keep active rows: %+v", rows)
+	}
+	if len(reopened.pending) != 0 {
+		t.Fatalf("pending not cleared after reject: %+v", reopened.pending)
+	}
+}
+
+func TestStaleTargetTTLRejectsExpiredCachedIPs(t *testing.T) {
+	cfg := testConfig()
+	cfg.StaleTargetTTL = "1h"
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, fakeResolver{err: errors.New("dns down")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.targetIPs = []net.IP{net.ParseIP("192.0.2.10")}
+	m.lastResolve = time.Now().Add(-2 * time.Hour)
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||ads.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.Generate(context.Background(), false)
+	if err == nil {
+		t.Fatalf("Generate should fail with expired cached IPs: status=%+v lines=\n%s", p.Status, p.Lines)
+	}
+	if strings.Contains(p.Lines, "192.0.2.10") {
+		t.Fatalf("expired cached IP should not be used:\n%s", p.Lines)
+	}
+}
+
+func TestStaleSourceTTLExcludesOnlyRemoteSources(t *testing.T) {
+	filter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("||remote.example.net^\n"))
+	}))
+	defer filter.Close()
+
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	cfg.Scheduler.StaleSourceTTL = "1h"
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := m.UpsertSource(Source{Type: SourceFilterURL, Name: "remote", URL: filter.URL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||manual.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), remote.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), manual.ID); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	src := m.sources[remote.ID]
+	src.LastSuccess = time.Now().Add(-2 * time.Hour)
+	m.sources[remote.ID] = src
+	src = m.sources[manual.ID]
+	src.LastSuccess = time.Now().Add(-2 * time.Hour)
+	m.sources[manual.ID] = src
+	m.mu.Unlock()
+
+	p, err := m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p.Lines, "remote.example.net") {
+		t.Fatalf("stale remote source should be excluded:\n%s", p.Lines)
+	}
+	if !strings.Contains(p.Lines, "manual.example.net") {
+		t.Fatalf("manual source should not be stale-excluded:\n%s", p.Lines)
+	}
+	if p.Status.ItemCount != 1 || p.Status.ExcludedCount != 1 {
+		t.Fatalf("status = %+v", p.Status)
+	}
+}
+
+func TestManualSourceIDIncludesContent(t *testing.T) {
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), testConfig(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := m.UpsertSource(Source{Type: SourceManual, Enabled: true, Content: "||a.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.UpsertSource(Source{Type: SourceManual, Enabled: true, Content: "||b.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == b.ID {
+		t.Fatalf("manual source IDs collided: %s", a.ID)
+	}
+	if got := m.ListSources(); len(got) != 2 {
+		t.Fatalf("sources = %+v", got)
 	}
 }
 

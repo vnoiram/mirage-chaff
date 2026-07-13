@@ -168,6 +168,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/agh/sources/{id}", s.withAuth("agh.manage", s.handleAGHManagedSourceUpsert))
 	mux.HandleFunc("DELETE /api/agh/sources/{id}", s.withAuth("agh.manage", s.handleAGHManagedSourceDelete))
 	mux.HandleFunc("POST /api/agh/sources/{id}/sync", s.withAuth("agh.manage", s.handleAGHManagedSourceSync))
+	mux.HandleFunc("POST /api/agh/sources/{id}/approve", s.withAuth("agh.manage", s.handleAGHManagedSourceApprove))
+	mux.HandleFunc("POST /api/agh/sources/{id}/reject", s.withAuth("agh.manage", s.handleAGHManagedSourceReject))
 	mux.HandleFunc("PATCH /api/agh/managed-catalog/{id}", s.withAuth("agh.manage", s.handleAGHManagedCatalogPatch))
 	mux.HandleFunc("POST /api/agh/rewrite-feed/emergency-empty", s.withAuth("agh.manage", s.handleAGHManagedEmergencyEmpty))
 	mux.HandleFunc("POST /api/allow/permanent", s.withAuth("policy.edit", s.handlePermanentAllow))

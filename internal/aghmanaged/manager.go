@@ -108,10 +108,11 @@ type CatalogRow struct {
 }
 
 type state struct {
-	Sources        []Source                   `json:"sources"`
-	Entries        []rulecatalog.Entry        `json:"entries"`
-	Overrides      map[string]CatalogOverride `json:"overrides,omitempty"`
-	EmergencyEmpty *bool                      `json:"emergency_empty,omitempty"`
+	Sources        []Source                       `json:"sources"`
+	Entries        []rulecatalog.Entry            `json:"entries"`
+	Pending        map[string][]rulecatalog.Entry `json:"pending,omitempty"`
+	Overrides      map[string]CatalogOverride     `json:"overrides,omitempty"`
+	EmergencyEmpty *bool                          `json:"emergency_empty,omitempty"`
 }
 
 // CatalogOverride holds admin-owned state over imported entries.
@@ -139,6 +140,7 @@ type Manager struct {
 	mu        sync.RWMutex
 	sources   map[string]Source
 	entries   map[string]rulecatalog.Entry
+	pending   map[string][]rulecatalog.Entry
 	overrides map[string]CatalogOverride
 
 	targetIPs      []net.IP
@@ -156,6 +158,7 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		client:    &http.Client{Timeout: durationOr(cfg.Scheduler.SyncTimeout, 30*time.Second)},
 		sources:   map[string]Source{},
 		entries:   map[string]rulecatalog.Entry{},
+		pending:   map[string][]rulecatalog.Entry{},
 		overrides: map[string]CatalogOverride{},
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -172,6 +175,9 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		}
 		for _, e := range st.Entries {
 			m.entries[e.ID] = e
+		}
+		if st.Pending != nil {
+			m.pending = st.Pending
 		}
 		if st.Overrides != nil {
 			m.overrides = st.Overrides
@@ -258,6 +264,7 @@ func (m *Manager) UpsertSource(src Source) (Source, error) {
 func (m *Manager) DeleteSource(id string) error {
 	m.mu.Lock()
 	delete(m.sources, id)
+	delete(m.pending, id)
 	for eid, e := range m.entries {
 		if e.Source.Name == id {
 			delete(m.entries, eid)
@@ -303,19 +310,58 @@ func (m *Manager) SyncSource(ctx context.Context, id string) (Source, error) {
 	src.PendingReview = largeChange(src, m.cfg.Scheduler)
 	m.sources[id] = src
 	if !src.PendingReview {
-		for eid, e := range m.entries {
-			if e.Source.Name == id {
-				delete(m.entries, eid)
-			}
-		}
-		for _, e := range entries {
-			e.Source.Name = id
-			m.entries[e.ID] = e
-		}
+		m.applyEntriesLocked(id, entries)
+		delete(m.pending, id)
+	} else {
+		m.pending[id] = entries
 	}
 	err = m.saveLocked()
 	m.mu.Unlock()
 	return src, err
+}
+
+func (m *Manager) ApproveSource(id string) (Source, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src, ok := m.sources[id]
+	if !ok {
+		return Source{}, os.ErrNotExist
+	}
+	entries, ok := m.pending[id]
+	if !ok {
+		return Source{}, os.ErrNotExist
+	}
+	prev := entriesForSource(m.entries, id)
+	src.Added, src.Removed, src.Changed = diffEntries(prev, entries)
+	src.Entries = len(entries)
+	src.Unsupported, src.AllowExceptions = countImported(entries)
+	src.PendingReview = false
+	m.applyEntriesLocked(id, entries)
+	delete(m.pending, id)
+	m.sources[id] = src
+	if err := m.saveLocked(); err != nil {
+		return Source{}, err
+	}
+	return src, nil
+}
+
+func (m *Manager) RejectSource(id string) (Source, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src, ok := m.sources[id]
+	if !ok {
+		return Source{}, os.ErrNotExist
+	}
+	if _, ok := m.pending[id]; !ok {
+		return Source{}, os.ErrNotExist
+	}
+	src.PendingReview = false
+	delete(m.pending, id)
+	m.sources[id] = src
+	if err := m.saveLocked(); err != nil {
+		return Source{}, err
+	}
+	return src, nil
 }
 
 func (m *Manager) PreviewSource(ctx context.Context, src Source) (Source, []rulecatalog.Entry, error) {
@@ -471,7 +517,8 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 			m.mu.Unlock()
 		} else {
 			lastResolveErr = resolveErr.Error()
-			if len(cachedIPs) > 0 {
+			staleTargetTTL := durationOr(cfg.StaleTargetTTL, 24*time.Hour)
+			if len(cachedIPs) > 0 && !lastResolve.IsZero() && time.Since(lastResolve) <= staleTargetTTL {
 				ips = cachedIPs
 			}
 		}
@@ -493,6 +540,11 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	if (cfg.TargetMode == "" || cfg.TargetMode == "resolved_ip") && len(ips) == 0 {
 		return Preview{Status: status, Lines: b.String(), Sources: sources}, fmt.Errorf("target resolution failed: %s", lastResolveErr)
 	}
+	sourceByID := make(map[string]Source, len(sources))
+	for _, src := range sources {
+		sourceByID[src.ID] = src
+	}
+	staleSourceTTL := durationOr(cfg.Scheduler.StaleSourceTTL, 0)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Match.Domain != entries[j].Match.Domain {
 			return entries[i].Match.Domain < entries[j].Match.Domain
@@ -503,6 +555,12 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	for _, e := range entries {
 		ov := overrides[e.ID]
 		item := m.feedItem(e, ov, cfg, ips)
+		if staleSourceTTL > 0 {
+			if src, ok := sourceByID[e.Source.Name]; ok && src.Type == SourceFilterURL && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > staleSourceTTL {
+				item.Included = false
+				item.Reason = "stale source"
+			}
+		}
 		if item.Included {
 			for _, line := range item.Lines {
 				fmt.Fprintf(&b, "! entry_id=%s source=%s category=%s confidence=%s\n%s\n", item.EntryID, strings.Join(item.SourceIDs, ","), item.Category, item.Confidence, line)
@@ -672,6 +730,9 @@ func (m *Manager) applyOverrideLocked(e rulecatalog.Entry) rulecatalog.Entry {
 func (m *Manager) saveLocked() error {
 	emergency := m.cfg.EmergencyEmpty
 	st := state{Overrides: m.overrides, EmergencyEmpty: &emergency}
+	if len(m.pending) > 0 {
+		st.Pending = m.pending
+	}
 	for _, src := range m.sources {
 		st.Sources = append(st.Sources, src)
 	}
@@ -691,8 +752,24 @@ func (m *Manager) saveLocked() error {
 	return os.Rename(tmp, m.path)
 }
 
+func (m *Manager) applyEntriesLocked(sourceID string, entries []rulecatalog.Entry) {
+	for eid, e := range m.entries {
+		if e.Source.Name == sourceID {
+			delete(m.entries, eid)
+		}
+	}
+	for _, e := range entries {
+		e.Source.Name = sourceID
+		m.entries[e.ID] = e
+	}
+}
+
 func sourceID(src Source) string {
-	h := sha1.Sum([]byte(src.Type + "\x00" + src.Name + "\x00" + src.URL))
+	material := src.Type + "\x00" + src.Name + "\x00" + src.URL
+	if src.Type == SourceManual {
+		material = src.Type + "\x00" + src.Name + "\x00" + src.Content
+	}
+	h := sha1.Sum([]byte(material))
 	return "src_" + hex.EncodeToString(h[:])[:12]
 }
 

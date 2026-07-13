@@ -139,6 +139,10 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"downgradeRule",
 		"rewriteCandidate",
 		"permanentAllowDomain",
+		"approveManagedSource",
+		"rejectManagedSource",
+		"/api/agh/sources/'+id+'/approve",
+		"/api/agh/sources/'+id+'/reject",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin UI missing %q", want)

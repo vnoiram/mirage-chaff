@@ -105,6 +105,34 @@ func (s *Server) handleAGHManagedSourceSync(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, src)
 }
 
+func (s *Server) handleAGHManagedSourceApprove(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	src, err := s.deps.AGHManaged.ApproveSource(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.source.approve", src.ID)
+	writeJSON(w, src)
+}
+
+func (s *Server) handleAGHManagedSourceReject(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	src, err := s.deps.AGHManaged.RejectSource(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.source.reject", src.ID)
+	writeJSON(w, src)
+}
+
 func (s *Server) handleAGHManagedCatalog(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
