@@ -187,7 +187,9 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 
 func (m *Manager) SetConfig(cfg config.AGHManagedConfig) {
 	m.mu.Lock()
+	emergency := m.cfg.EmergencyEmpty
 	m.cfg = cfg
+	m.cfg.EmergencyEmpty = emergency
 	m.client.Timeout = durationOr(cfg.Scheduler.SyncTimeout, 30*time.Second)
 	m.mu.Unlock()
 }
@@ -339,10 +341,12 @@ func (m *Manager) PreviewSource(ctx context.Context, src Source) (Source, []rule
 }
 
 func (m *Manager) SyncDue(ctx context.Context) {
-	if !m.Config().Scheduler.Enabled {
+	cfg := m.Config()
+	if !cfg.Scheduler.Enabled {
 		return
 	}
 	now := time.Now()
+	var due []string
 	for _, src := range m.ListSources() {
 		if !src.Enabled {
 			continue
@@ -350,8 +354,35 @@ func (m *Manager) SyncDue(ctx context.Context) {
 		if !src.NextSync.IsZero() && now.Before(src.NextSync) {
 			continue
 		}
-		_, _ = m.SyncSource(ctx, src.ID)
+		due = append(due, src.ID)
 	}
+	if len(due) == 0 {
+		return
+	}
+	maxParallel := cfg.Scheduler.MaxParallelSyncs
+	if maxParallel <= 1 {
+		for _, id := range due {
+			_, _ = m.SyncSource(ctx, id)
+		}
+		return
+	}
+	sem := make(chan struct{}, maxParallel)
+	var wg sync.WaitGroup
+	for _, id := range due {
+		id := id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			_, _ = m.SyncSource(ctx, id)
+		}()
+	}
+	wg.Wait()
 }
 
 func (m *Manager) CatalogRows() []CatalogRow {

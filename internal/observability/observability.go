@@ -34,6 +34,7 @@ type Server struct {
 	health     *Health
 	rec        *Recorder
 	extra      func(*strings.Builder)
+	routes     map[string]http.Handler
 	httpServer *http.Server
 }
 
@@ -41,13 +42,26 @@ type Server struct {
 // (e.g. server-level gauges) to /metrics. Must be set before Start.
 func (s *Server) SetExtraMetrics(f func(*strings.Builder)) { s.extra = f }
 
+// Handle registers an additional public route on the admin-independent listener.
+// It must be called before Start.
+func (s *Server) Handle(pattern string, h http.Handler) {
+	if pattern == "" || h == nil {
+		return
+	}
+	if s.routes == nil {
+		s.routes = map[string]http.Handler{}
+	}
+	s.routes[pattern] = h
+}
+
 // New builds the observability server. addr is e.g. "127.0.0.1:9256". rec may be
 // nil (then /metrics reports only the up gauge).
 func New(addr string, metricsOn bool, h *Health, rec *Recorder) *Server {
 	return &Server{addr: addr, metricsOn: metricsOn, health: h, rec: rec}
 }
 
-func (s *Server) handler() http.Handler {
+// Handler returns the composed observability handler. Start uses the same handler.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Liveness: process is up.
@@ -84,6 +98,9 @@ func (s *Server) handler() http.Handler {
 			_, _ = io.WriteString(w, sb.String())
 		})
 	}
+	for pattern, h := range s.routes {
+		mux.Handle(pattern, h)
+	}
 	return mux
 }
 
@@ -93,7 +110,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("observability listen %s: %w", s.addr, err)
 	}
-	s.httpServer = &http.Server{Handler: s.handler(), ReadHeaderTimeout: 5 * time.Second}
+	s.httpServer = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.httpServer.Serve(ln) }()

@@ -148,6 +148,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Health/metrics — independent of admin (A-3).
 	obs := observability.New(s.cfg.Observability.Listen, s.cfg.Observability.Metrics, s.health, s.recorder)
 	obs.SetExtraMetrics(s.extraMetrics)
+	s.registerManagedRewriteFeed(obs)
 	wg.Add(1)
 	go func() { defer wg.Done(); fatal <- obs.Start(ctx) }()
 	log.Printf("health/metrics listening on %s (independent of admin.enabled=%v)",
@@ -294,6 +295,32 @@ func (s *Server) startAdmin(ctx context.Context, wg *sync.WaitGroup, fatal chan<
 	}
 	log.Printf("admin UI listening on %s (RBAC; localhost by default)", s.cfg.Admin.Listen)
 	return nil
+}
+
+func (s *Server) registerManagedRewriteFeed(obs *observability.Server) {
+	if obs == nil || s.managed == nil || !s.cfg.AGHManaged.Enabled {
+		return
+	}
+	path := s.managed.Config().FeedPath
+	if path == "" {
+		path = "/agh/managed-rewrites.txt"
+	}
+	obs.Handle("GET "+path, http.HandlerFunc(s.handleManagedRewriteFeed))
+}
+
+func (s *Server) handleManagedRewriteFeed(w http.ResponseWriter, r *http.Request) {
+	if s.managed == nil {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := s.managed.Generate(r.Context(), false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(p.Lines))
 }
 
 // runKillSwitch executes the kill-switch script (design doc A-4). Its path comes
