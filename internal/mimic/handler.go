@@ -3,6 +3,7 @@ package mimic
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
@@ -167,7 +168,7 @@ func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		return false // e.g. ErrUnsupported
 	}
-	sum, _ := Hash(seed, shape)
+	sum := sha256.Sum256(full)
 	h.storeDecoy(urlKey, CachedDecoy{Shape: shape, Seed: seed, Hash: sum})
 
 	h.write(w, r, shape, full)

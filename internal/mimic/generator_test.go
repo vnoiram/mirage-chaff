@@ -108,3 +108,35 @@ func TestServeGeneratesJSWithoutProbe(t *testing.T) {
 		t.Error("expected Accept-Ranges: bytes")
 	}
 }
+
+func BenchmarkGenerateBinary1MiB(b *testing.B) {
+	shape := Shape{ContentType: "application/octet-stream", Length: 1 << 20, Media: MediaBinary}
+	for i := 0; i < b.N; i++ {
+		if _, err := Generate("https://example.test/asset.bin", shape); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkGenerateJS1MiB(b *testing.B) {
+	shape := Shape{ContentType: "application/javascript", Length: 1 << 20, Media: MediaJS}
+	for i := 0; i < b.N; i++ {
+		if _, err := Generate("https://example.test/app.js", shape); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkServeBinary1MiB(b *testing.B) {
+	h := New(nil, Options{MaxBytes: 2 << 20})
+	urlKey := "/asset.bin"
+	h.storeDecoy(urlKey, CachedDecoy{Shape: Shape{ContentType: "application/octet-stream", Length: 1 << 20, Media: MediaBinary}})
+	req := httptest.NewRequest(http.MethodGet, urlKey, nil)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		if !h.Serve(rec, req) {
+			b.Fatal("Serve returned false")
+		}
+	}
+}

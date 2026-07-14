@@ -189,10 +189,11 @@ func keystream(seed string, n int64) []byte {
 	out := make([]byte, 0, n)
 	base := sha256.Sum256([]byte(seed))
 	var counter uint64
-	var ctr [8]byte
+	var blockSeed [sha256.Size + 8]byte
+	copy(blockSeed[:sha256.Size], base[:])
 	for int64(len(out)) < n {
-		binary.BigEndian.PutUint64(ctr[:], counter)
-		block := sha256.Sum256(append(base[:], ctr[:]...))
+		binary.BigEndian.PutUint64(blockSeed[sha256.Size:], counter)
+		block := sha256.Sum256(blockSeed[:])
 		out = append(out, block[:]...)
 		counter++
 	}
