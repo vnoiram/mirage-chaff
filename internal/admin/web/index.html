@@ -355,7 +355,7 @@ async function viewAGHManaged(v){
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>enabled</th><th>entries</th><th>diff</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
     ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
     <td><button class="act" data-cmd="toggleManagedSourceEntries" data-id="${esc(s.id)}">entries</button>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
-    </tbody></table></div><pre id="agh-source-detail" style="white-space:pre-wrap;max-height:220px;overflow:auto"></pre></div>`));
+    </tbody></table></div><div id="agh-source-detail" style="white-space:pre-wrap;max-height:260px;overflow:auto"></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="row"><input id="agh-cat-filter" oninput="filterManagedCatalog()" placeholder="filter domain/source/category/review"></div>
     ${has('agh.manage')?`<div class="row" style="margin-top:10px">
       <button class="act" data-cmd="selectManagedCatalogVisible">select visible</button><button class="act" data-cmd="clearManagedCatalogSelection">clear</button>
@@ -379,7 +379,16 @@ async function addManagedSource(){ try{
 }catch(e){ alert(e.message);} }
 async function syncManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/sync'); render(); }catch(e){ alert(e.message);} }
 async function previewManagedSource(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); const r=await api('POST','/api/agh/sources/preview',s); document.getElementById('agh-source-detail').textContent=JSON.stringify({source:r.source,entries:(r.entries||[]).slice(0,50)},null,2); }catch(e){ alert(e.message);} }
-async function pendingManagedSource(id){ try{ const r=await api('GET','/api/agh/sources/'+id+'/pending-diff'); document.getElementById('agh-source-detail').textContent=JSON.stringify(r,null,2); }catch(e){ alert(e.message);} }
+async function pendingManagedSource(id){ try{ const r=await api('GET','/api/agh/sources/'+id+'/pending-diff'); document.getElementById('agh-source-detail').innerHTML=managedSourcePendingDiff(r); }catch(e){ alert(e.message);} }
+function managedSourcePendingDiff(diff){
+  const source=diff.source||{};
+  return `<div><h3>pending diff: ${esc(source.name||source.id||'source')}</h3><div class="kv"><div>added</div><div>${(diff.added||[]).length}</div><div>removed</div><div>${(diff.removed||[]).length}</div><div>changed</div><div>${(diff.changed||[]).length}</div></div>${managedPendingDiffTable('added',diff.added||[])}${managedPendingDiffTable('removed',diff.removed||[])}${managedPendingDiffTable('changed',diff.changed||[])}</div>`;
+}
+function managedPendingDiffTable(kind,entries){
+  const shown=(entries||[]).slice(0,100);
+  const note=(entries||[]).length>100?` <span class="muted">showing 100 of ${(entries||[]).length}</span>`:'';
+  return `<h3>${esc(kind)}${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="6" class="muted">none</td></tr>`}</tbody></table></div>`;
+}
 async function toggleManagedSourceEntries(id){ try{
   const existing=document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`);
   if(existing){ existing.remove(); const b=document.querySelector(`button[data-cmd="toggleManagedSourceEntries"][data-id="${CSS.escape(id)}"]`); if(b) b.textContent='entries'; return; }
