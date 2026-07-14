@@ -299,6 +299,82 @@ func TestAGHManagedFeedExportHandler(t *testing.T) {
 	}
 }
 
+func TestAGHManagedSourceSyncAuditDetail(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policy")
+	catalogDir := filepath.Join(dir, "catalog")
+	if err := os.MkdirAll(policyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(catalogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := policy.Load(policyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||one.example.net^\n@@||allow.example.net^\n! unsupported\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{
+		Version:    "test",
+		ConfigPath: filepath.Join(dir, "mirage-chaff.conf"),
+		Paths:      config.PathsConfig{PolicyDir: policyDir, CatalogDir: catalogDir, StateDir: dir},
+		Recorder:   observability.NewRecorder(true, 8),
+		Engine:     policy.NewEngine(rs),
+		AGHManaged: managed,
+	})
+	h := s.Handler()
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agh/sources/"+src.ID+"/sync", nil)
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin sync status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.source.sync")
+	if !ok {
+		t.Fatalf("source sync audit missing: %+v", store.AuditLog(20))
+	}
+	for _, want := range []string{
+		"id=" + src.ID,
+		"entries=",
+		"added=",
+		"removed=",
+		"changed=",
+		"pending=",
+		"unsupported=",
+		"allow_exceptions=",
+	} {
+		if !strings.Contains(entry.Detail, want) {
+			t.Fatalf("source sync audit detail %q missing %q", entry.Detail, want)
+		}
+	}
+}
+
 func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "policy")
@@ -402,6 +478,13 @@ func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	if got := managed.ListConflicts(); len(got) != 0 {
 		t.Fatalf("conflict still listed after admin resolve: %+v", got)
 	}
+	entry, ok := auditEntryForAction(store, "agh_managed.conflict.resolve")
+	if !ok {
+		t.Fatalf("conflict resolve audit missing: %+v", store.AuditLog(20))
+	}
+	if !strings.Contains(entry.Detail, "id=") || !strings.Contains(entry.Detail, "fields=rewrite_enabled") {
+		t.Fatalf("conflict resolve audit detail = %q", entry.Detail)
+	}
 }
 
 func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
@@ -504,6 +587,15 @@ func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
 	for _, row := range managed.CatalogRows() {
 		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
 			t.Fatalf("row after bulk handler = %+v", row)
+		}
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.catalog.bulk_patch")
+	if !ok {
+		t.Fatalf("bulk patch audit missing: %+v", store.AuditLog(20))
+	}
+	for _, want := range []string{"updated=2", "rewrite_enabled", "rewrite_reason"} {
+		if !strings.Contains(entry.Detail, want) {
+			t.Fatalf("bulk patch audit detail %q missing %q", entry.Detail, want)
 		}
 	}
 }
@@ -716,6 +808,13 @@ func TestAGHManagedRollbackHandlersRBAC(t *testing.T) {
 	if !row.RewriteEnabled || row.RewriteReason != "" {
 		t.Fatalf("row after rollback = %+v", row)
 	}
+	entry, ok := auditEntryForAction(store, "agh_managed.rollback")
+	if !ok {
+		t.Fatalf("rollback audit missing: %+v", store.AuditLog(20))
+	}
+	if !strings.Contains(entry.Detail, "rollback_id="+listed.Rollbacks[0].ID) || !strings.Contains(entry.Detail, "updated=1") {
+		t.Fatalf("rollback audit detail = %q", entry.Detail)
+	}
 }
 
 func TestAdminOversizedLoginBodyReturns413(t *testing.T) {
@@ -869,4 +968,13 @@ func loginForTest(t *testing.T, h http.Handler, username, password string) (*htt
 		t.Fatal("login response missing csrf")
 	}
 	return cookie, resp.CSRF
+}
+
+func auditEntryForAction(store *Store, action string) (AuditEntry, bool) {
+	for _, entry := range store.AuditLog(50) {
+		if entry.Action == action {
+			return entry, true
+		}
+	}
+	return AuditEntry{}, false
 }

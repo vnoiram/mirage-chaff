@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/vnoiram/mirage-chaff/internal/aghmanaged"
@@ -51,7 +52,7 @@ func (s *Server) handleAGHManagedSourceUpsert(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.source.upsert", src.ID)
+	s.store.Audit(sess.username, "agh_managed.source.upsert", aghManagedSourceAuditDetail(src))
 	writeJSON(w, src)
 }
 
@@ -88,7 +89,7 @@ func (s *Server) handleAGHManagedSourceDelete(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.source.delete", id)
+	s.store.Audit(sess.username, "agh_managed.source.delete", "id="+id)
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -104,7 +105,7 @@ func (s *Server) handleAGHManagedSourceSync(w http.ResponseWriter, r *http.Reque
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.source.sync", src.ID)
+	s.store.Audit(sess.username, "agh_managed.source.sync", aghManagedSourceSyncAuditDetail(src))
 	writeJSON(w, src)
 }
 
@@ -118,7 +119,7 @@ func (s *Server) handleAGHManagedSourceApprove(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.source.approve", src.ID)
+	s.store.Audit(sess.username, "agh_managed.source.approve", aghManagedSourceAuditDetail(src))
 	writeJSON(w, src)
 }
 
@@ -132,7 +133,7 @@ func (s *Server) handleAGHManagedSourceReject(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.source.reject", src.ID)
+	s.store.Audit(sess.username, "agh_managed.source.reject", aghManagedSourceAuditDetail(src))
 	writeJSON(w, src)
 }
 
@@ -211,7 +212,7 @@ func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.catalog.patch", row.ID)
+	s.store.Audit(sess.username, "agh_managed.catalog.patch", aghManagedCatalogAuditDetail(row.ID, req))
 	writeJSON(w, row)
 }
 
@@ -238,7 +239,7 @@ func (s *Server) handleAGHManagedCatalogBulkPatch(w http.ResponseWriter, r *http
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.catalog.bulk_patch", fmt.Sprintf("updated=%d", len(rows)))
+	s.store.Audit(sess.username, "agh_managed.catalog.bulk_patch", aghManagedBulkAuditDetail(len(rows), ov))
 	writeJSON(w, map[string]any{"updated": len(rows), "entries": rows})
 }
 
@@ -256,7 +257,7 @@ func (s *Server) handleAGHManagedConflictResolve(w http.ResponseWriter, r *http.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.conflict.resolve", row.ID)
+	s.store.Audit(sess.username, "agh_managed.conflict.resolve", aghManagedCatalogAuditDetail(row.ID, req))
 	writeJSON(w, row)
 }
 
@@ -270,7 +271,7 @@ func (s *Server) handleAGHManagedRollbackApply(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.rollback", fmt.Sprintf("updated=%d", len(rows)))
+	s.store.Audit(sess.username, "agh_managed.rollback", fmt.Sprintf("rollback_id=%s updated=%d", r.PathValue("id"), len(rows)))
 	writeJSON(w, map[string]any{"updated": len(rows), "entries": rows})
 }
 
@@ -360,4 +361,85 @@ func mapErr(err error) string {
 		return "ok"
 	}
 	return err.Error()
+}
+
+func aghManagedSourceAuditDetail(src aghmanaged.Source) string {
+	return fmt.Sprintf(
+		"id=%s type=%s enabled=%s pending=%s entries=%d unsupported=%d allow_exceptions=%d",
+		src.ID,
+		src.Type,
+		mapBool(src.Enabled),
+		mapBool(src.PendingReview),
+		src.Entries,
+		src.Unsupported,
+		src.AllowExceptions,
+	)
+}
+
+func aghManagedSourceSyncAuditDetail(src aghmanaged.Source) string {
+	return fmt.Sprintf(
+		"id=%s entries=%d added=%d removed=%d changed=%d pending=%s unsupported=%d allow_exceptions=%d",
+		src.ID,
+		src.Entries,
+		src.Added,
+		src.Removed,
+		src.Changed,
+		mapBool(src.PendingReview),
+		src.Unsupported,
+		src.AllowExceptions,
+	)
+}
+
+func aghManagedCatalogAuditDetail(id string, ov aghmanaged.CatalogOverride) string {
+	fields := aghManagedOverrideFields(ov)
+	if len(fields) == 0 {
+		return "id=" + id
+	}
+	return fmt.Sprintf("id=%s fields=%s", id, strings.Join(fields, ","))
+}
+
+func aghManagedBulkAuditDetail(updated int, ov aghmanaged.CatalogOverride) string {
+	fields := aghManagedOverrideFields(ov)
+	if len(fields) == 0 {
+		return fmt.Sprintf("updated=%d", updated)
+	}
+	return fmt.Sprintf("updated=%d fields=%s", updated, strings.Join(fields, ","))
+}
+
+func aghManagedOverrideFields(ov aghmanaged.CatalogOverride) []string {
+	var fields []string
+	if ov.Category != "" {
+		fields = append(fields, "category")
+	}
+	if ov.ResourceType != "" {
+		fields = append(fields, "resource_type")
+	}
+	if ov.Risk != "" {
+		fields = append(fields, "risk")
+	}
+	if ov.Confidence != "" {
+		fields = append(fields, "confidence")
+	}
+	if ov.ReviewStatus != "" {
+		fields = append(fields, "review_status")
+	}
+	if ov.Verified != nil {
+		fields = append(fields, "verified")
+	}
+	if ov.ExpectedCatalog != "" {
+		fields = append(fields, "expected_catalog")
+	}
+	if ov.Action != "" {
+		fields = append(fields, "action")
+	}
+	if ov.RewriteEnabled != nil {
+		fields = append(fields, "rewrite_enabled")
+	}
+	if ov.RewriteReason != "" {
+		fields = append(fields, "rewrite_reason")
+	}
+	if ov.Notes != "" {
+		fields = append(fields, "notes")
+	}
+	return fields
 }
