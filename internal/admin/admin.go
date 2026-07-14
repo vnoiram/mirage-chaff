@@ -135,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/rule-catalog/cname-candidates", s.withAuth("catalog.view", s.handleAnalyticsCNAMECandidates))
 	mux.HandleFunc("GET /api/agh-sync/status", s.withAuth("catalog.view", s.handleAGHSyncStatus))
 	mux.HandleFunc("GET /api/agh/sources", s.withAuth("catalog.view", s.handleAGHManagedSources))
+	mux.HandleFunc("GET /api/agh/sources/{id}/entries", s.withAuth("catalog.view", s.handleAGHManagedSourceEntries))
 	mux.HandleFunc("GET /api/agh/sources/{id}/pending-diff", s.withAuth("catalog.view", s.handleAGHManagedSourcePendingDiff))
 	mux.HandleFunc("GET /api/agh/rewrite-feed/status", s.withAuth("catalog.view", s.handleAGHManagedFeedStatus))
 	mux.HandleFunc("GET /api/agh/rewrite-feed/preview", s.withAuth("catalog.view", s.handleAGHManagedFeedPreview))

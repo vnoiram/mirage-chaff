@@ -492,21 +492,46 @@ func (m *Manager) CatalogRows() []CatalogRow {
 	defer m.mu.RUnlock()
 	rows := make([]CatalogRow, 0, len(m.entries))
 	for _, e := range m.entries {
-		e = m.applyOverrideLocked(e)
-		rows = append(rows, CatalogRow{
-			Entry:          e,
-			SourceIDs:      []string{e.Source.Name},
-			RewriteEnabled: rewriteEnabled(e, m.overrides[e.ID], m.cfg),
-			RewriteReason:  m.overrides[e.ID].RewriteReason,
-		})
+		rows = append(rows, m.catalogRowLocked(e))
 	}
+	sortCatalogRows(rows)
+	return rows
+}
+
+func (m *Manager) SourceEntries(id string) ([]CatalogRow, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.sources[id]; !ok {
+		return nil, os.ErrNotExist
+	}
+	rows := make([]CatalogRow, 0)
+	for _, e := range m.entries {
+		if e.Source.Name != id {
+			continue
+		}
+		rows = append(rows, m.catalogRowLocked(e))
+	}
+	sortCatalogRows(rows)
+	return rows, nil
+}
+
+func (m *Manager) catalogRowLocked(e rulecatalog.Entry) CatalogRow {
+	e = m.applyOverrideLocked(e)
+	return CatalogRow{
+		Entry:          e,
+		SourceIDs:      []string{e.Source.Name},
+		RewriteEnabled: rewriteEnabled(e, m.overrides[e.ID], m.cfg),
+		RewriteReason:  m.overrides[e.ID].RewriteReason,
+	}
+}
+
+func sortCatalogRows(rows []CatalogRow) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Match.Domain != rows[j].Match.Domain {
 			return rows[i].Match.Domain < rows[j].Match.Domain
 		}
 		return rows[i].ID < rows[j].ID
 	})
-	return rows
 }
 
 func (m *Manager) ListConflicts() []Conflict {

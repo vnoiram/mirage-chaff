@@ -2,8 +2,10 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/vnoiram/mirage-chaff/internal/aghmanaged"
@@ -145,6 +147,30 @@ func (s *Server) handleAGHManagedSourcePendingDiff(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, diff)
+}
+
+func (s *Server) handleAGHManagedSourceEntries(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	id := r.PathValue("id")
+	entries, err := s.deps.AGHManaged.SourceEntries(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for _, src := range s.deps.AGHManaged.ListSources() {
+		if src.ID == id {
+			writeJSON(w, map[string]any{"source": src, "entries": entries})
+			return
+		}
+	}
+	http.Error(w, os.ErrNotExist.Error(), http.StatusNotFound)
 }
 
 func (s *Server) handleAGHManagedCatalog(w http.ResponseWriter, r *http.Request, sess *session) {

@@ -87,6 +87,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='syncManagedSource') syncManagedSource(d.id||'');
   if(d.cmd==='previewManagedSource') previewManagedSource(d.id||'');
   if(d.cmd==='pendingManagedSource') pendingManagedSource(d.id||'');
+  if(d.cmd==='toggleManagedSourceEntries') toggleManagedSourceEntries(d.id||'');
   if(d.cmd==='toggleManagedSource') toggleManagedSource(d.id||'', d.enabled==='true');
   if(d.cmd==='approveManagedSource') approveManagedSource(d.id||'');
   if(d.cmd==='rejectManagedSource') rejectManagedSource(d.id||'');
@@ -352,8 +353,8 @@ async function viewAGHManaged(v){
       <button class="act" onclick="addManagedSource()">Add source</button>
     </div>`:''}
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>enabled</th><th>entries</th><th>diff</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
-    ${sources.map(s=>`<tr><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
-    <td>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
+    ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
+    <td><button class="act" data-cmd="toggleManagedSourceEntries" data-id="${esc(s.id)}">entries</button>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
     </tbody></table></div><pre id="agh-source-detail" style="white-space:pre-wrap;max-height:220px;overflow:auto"></pre></div>`));
   v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="row"><input id="agh-cat-filter" oninput="filterManagedCatalog()" placeholder="filter domain/source/category/review"></div>
     ${has('agh.manage')?`<div class="row" style="margin-top:10px">
@@ -379,6 +380,21 @@ async function addManagedSource(){ try{
 async function syncManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/sync'); render(); }catch(e){ alert(e.message);} }
 async function previewManagedSource(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); const r=await api('POST','/api/agh/sources/preview',s); document.getElementById('agh-source-detail').textContent=JSON.stringify({source:r.source,entries:(r.entries||[]).slice(0,50)},null,2); }catch(e){ alert(e.message);} }
 async function pendingManagedSource(id){ try{ const r=await api('GET','/api/agh/sources/'+id+'/pending-diff'); document.getElementById('agh-source-detail').textContent=JSON.stringify(r,null,2); }catch(e){ alert(e.message);} }
+async function toggleManagedSourceEntries(id){ try{
+  const existing=document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`);
+  if(existing){ existing.remove(); const b=document.querySelector(`button[data-cmd="toggleManagedSourceEntries"][data-id="${CSS.escape(id)}"]`); if(b) b.textContent='entries'; return; }
+  const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
+  if(!tr) throw new Error('source row not found');
+  const r=await api('GET','/api/agh/sources/'+id+'/entries');
+  tr.insertAdjacentHTML('afterend',managedSourceEntriesRow(id,r.entries||[]));
+  const b=tr.querySelector(`button[data-cmd="toggleManagedSourceEntries"]`);
+  if(b) b.textContent='hide';
+}catch(e){ alert(e.message);} }
+function managedSourceEntriesRow(id,entries){
+  const shown=(entries||[]).slice(0,100);
+  const note=(entries||[]).length>100?`<div class="muted">showing 100 of ${(entries||[]).length}</div>`:'';
+  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="9">${note}<div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>original_rule</th></tr></thead><tbody>${shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')}</tbody></table></div></td></tr>`;
+}
 async function toggleManagedSource(id,on){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); s.enabled=on; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
 async function approveManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/approve'); render(); }catch(e){ alert(e.message);} }
 async function rejectManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/reject'); render(); }catch(e){ alert(e.message);} }

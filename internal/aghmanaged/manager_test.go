@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -564,6 +565,66 @@ func TestBulkPatchEntriesAppliesOverridesAtomically(t *testing.T) {
 		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
 			t.Fatalf("bulk patch was not atomic: %+v", row)
 		}
+	}
+}
+
+func TestSourceEntriesFiltersAndAppliesOverrides(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceA, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual-a", Enabled: true, Content: "||b.example.net^\n||a.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceB, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual-b", Enabled: true, Content: "||c.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), sourceA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), sourceB.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := m.SourceEntries(sourceA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("sourceA rows = %+v", rows)
+	}
+	if rows[0].Match.Domain != "a.example.net" || rows[1].Match.Domain != "b.example.net" {
+		t.Fatalf("sourceA rows not sorted by domain: %+v", rows)
+	}
+	for _, row := range rows {
+		if row.Source.Name != sourceA.ID || len(row.SourceIDs) != 1 || row.SourceIDs[0] != sourceA.ID {
+			t.Fatalf("sourceA row has wrong source: %+v", row)
+		}
+	}
+	off := false
+	if _, err := m.PatchEntry(rows[0].ID, CatalogOverride{RewriteEnabled: &off, RewriteReason: "source override"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = m.SourceEntries(sourceA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].RewriteEnabled || rows[0].RewriteReason != "source override" {
+		t.Fatalf("override not reflected in source entries: %+v", rows[0])
+	}
+	sourceBRows, err := m.SourceEntries(sourceB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sourceBRows) != 1 || sourceBRows[0].Match.Domain != "c.example.net" {
+		t.Fatalf("sourceB rows = %+v", sourceBRows)
+	}
+	if _, err := m.SourceEntries("missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing source error = %v, want os.ErrNotExist", err)
 	}
 }
 
