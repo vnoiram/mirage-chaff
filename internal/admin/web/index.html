@@ -98,6 +98,9 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='bulkManagedCatalog') bulkManagedCatalog();
   if(d.cmd==='exportManagedFeedSnapshot') exportManagedFeedSnapshot();
   if(d.cmd==='applyManagedRollback') applyManagedRollback(d.id||'');
+  if(d.cmd==='editManagedCatalogRow') editManagedCatalogRow(d.id||'');
+  if(d.cmd==='saveManagedCatalogRow') saveManagedCatalogRow(d.id||'');
+  if(d.cmd==='cancelManagedCatalogRow') cancelManagedCatalogRow(d.id||'');
   if(d.cmd==='resetPw') resetPw(d.username||'');
   if(d.cmd==='delUser') delUser(d.username||'');
 });
@@ -264,6 +267,25 @@ function catalogRows(rows){
     ${rows.map(r=>`<tr><td>${esc(r.match?.domain)}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.risk||'')}</td><td>${esc(r.review_status||'')}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.stub_template||'')}</td><td>${esc(r.cname_target||'')}</td><td>${catalogActions(r)}</td></tr>`).join('')}
   </tbody></table></div>`;
 }
+function optionHTML(value,current,label){
+  return `<option value="${esc(value)}" ${String(current??'')===String(value)?'selected':''}>${esc(label||value)}</option>`;
+}
+function managedCatalogRow(r,editing){
+  const search=esc([r.match?.domain,(r.source_ids||[]).join(','),r.category,r.resource_type,r.review_status,r.confidence].join(' ').toLowerCase());
+  const id=esc(r.id);
+  if(editing){
+    return `<tr data-search="${search}" data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td>
+    <td><input class="agh-edit-category" value="${esc(r.category||'')}" placeholder="category"></td>
+    <td><input class="agh-edit-resource" value="${esc(r.resource_type||'')}" placeholder="resource"></td>
+    <td><select class="agh-edit-review">${optionHTML('',r.review_status,'')}${['candidate','approved','rejected','needs_test','disabled'].map(v=>optionHTML(v,r.review_status)).join('')}</select></td>
+    <td><select class="agh-edit-confidence">${optionHTML('',r.confidence,'')}${['low','medium','high'].map(v=>optionHTML(v,r.confidence)).join('')}</select></td>
+    <td><select class="agh-edit-rewrite">${optionHTML('true',String(!!r.rewrite_enabled),'yes')}${optionHTML('false',String(!!r.rewrite_enabled),'no')}</select></td>
+    <td><input class="agh-edit-reason" value="${esc(r.rewrite_reason||'')}" placeholder="rewrite reason"></td>
+    <td><button class="act" data-cmd="saveManagedCatalogRow" data-id="${id}">save</button><button class="act" data-cmd="cancelManagedCatalogRow" data-id="${id}">cancel</button></td></tr>`;
+  }
+  return `<tr data-search="${search}" data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
+    <td>${has('agh.manage')?`<button class="act" data-cmd="editManagedCatalogRow" data-id="${id}">edit</button><button class="act" data-cmd="managedRewrite" data-id="${id}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`;
+}
 
 async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
@@ -272,6 +294,7 @@ async function viewAGHManaged(v){
   const rollbacks=(await api('GET','/api/agh/managed-catalog/rollbacks')).rollbacks||[];
   const rows=(await api('GET','/api/agh/managed-catalog')).entries||[];
   window.AGH_MANAGED_SOURCES=sources;
+  window.AGH_MANAGED_ROWS=rows;
   v.appendChild(el(`<div class="card"><h2>AGH Managed Overview</h2><div class="kv">
     <div>feed path</div><div>${esc(status.feed_path||'/agh/managed-rewrites.txt')}</div>
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
@@ -328,8 +351,7 @@ async function viewAGHManaged(v){
       <button class="act" data-cmd="bulkManagedCatalog">Apply bulk edit</button>
     </div>`:''}
     <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th></th></tr></thead><tbody>
-    ${rows.slice(0,500).map(r=>`<tr data-search="${esc([r.match?.domain,(r.source_ids||[]).join(','),r.category,r.resource_type,r.review_status,r.confidence].join(' ').toLowerCase())}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${esc(r.id)}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
-    <td>${has('agh.manage')?`<button class="act" data-cmd="managedRewrite" data-id="${esc(r.id)}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`).join('')}
+    ${rows.slice(0,500).map(r=>managedCatalogRow(r,false)).join('')}
     </tbody></table></div></div>`));
 }
 async function addManagedSource(){ try{
@@ -348,6 +370,31 @@ async function approveManagedSource(id){ try{ await api('POST','/api/agh/sources
 async function rejectManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/reject'); render(); }catch(e){ alert(e.message);} }
 async function deleteManagedSource(id){ if(!confirm('Delete source '+id+'?'))return; try{ await api('DELETE','/api/agh/sources/'+id); render(); }catch(e){ alert(e.message);} }
 async function setManagedRewrite(id,on){ try{ await api('PATCH','/api/agh/managed-catalog/'+id,{rewrite_enabled:on,rewrite_reason:on?'manual enable':'manual disable'}); render(); }catch(e){ alert(e.message);} }
+function managedRowByID(id){ return (window.AGH_MANAGED_ROWS||[]).find(r=>r.id===id); }
+function replaceManagedCatalogRow(id,editing){ const r=managedRowByID(id); const tr=document.querySelector(`tr[data-managed-row="${CSS.escape(id)}"]`); if(r&&tr) tr.outerHTML=managedCatalogRow(r,editing); }
+function editManagedCatalogRow(id){ replaceManagedCatalogRow(id,true); }
+function cancelManagedCatalogRow(id){ replaceManagedCatalogRow(id,false); }
+async function saveManagedCatalogRow(id){ try{
+  const r=managedRowByID(id);
+  const tr=document.querySelector(`tr[data-managed-row="${CSS.escape(id)}"]`);
+  if(!r||!tr) throw new Error('row not found');
+  const body={};
+  const category=tr.querySelector('.agh-edit-category')?.value.trim()||'';
+  const resource=tr.querySelector('.agh-edit-resource')?.value.trim()||'';
+  const review=tr.querySelector('.agh-edit-review')?.value||'';
+  const confidence=tr.querySelector('.agh-edit-confidence')?.value||'';
+  const rewrite=tr.querySelector('.agh-edit-rewrite')?.value||'';
+  const reason=tr.querySelector('.agh-edit-reason')?.value.trim()||'';
+  if(category && category!==(r.category||'')) body.category=category;
+  if(resource && resource!==(r.resource_type||'')) body.resource_type=resource;
+  if(review && review!==(r.review_status||'')) body.review_status=review;
+  if(confidence && confidence!==(r.confidence||'')) body.confidence=confidence;
+  if(rewrite && (rewrite==='true')!==!!r.rewrite_enabled) body.rewrite_enabled=rewrite==='true';
+  if(reason && reason!==(r.rewrite_reason||'')) body.rewrite_reason=reason;
+  if(!Object.keys(body).length) throw new Error('no inline edit changes');
+  await api('PATCH','/api/agh/managed-catalog/'+id,body);
+  render();
+}catch(e){ alert(e.message);} }
 function selectedManagedCatalogIDs(){ return [...document.querySelectorAll('.agh-cat-select:checked')].map(x=>x.value); }
 function selectManagedCatalogVisible(){ document.querySelectorAll('.agh-cat-select').forEach(cb=>{ if(cb.closest('tr')?.style.display!=='none') cb.checked=true; }); }
 function clearManagedCatalogSelection(){ document.querySelectorAll('.agh-cat-select').forEach(cb=>{ cb.checked=false; }); }
