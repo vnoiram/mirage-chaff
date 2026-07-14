@@ -560,6 +560,40 @@ func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) 
 	return CatalogRow{Entry: e, SourceIDs: []string{e.Source.Name}, RewriteEnabled: rewriteEnabled(e, cur, m.cfg), RewriteReason: cur.RewriteReason}, nil
 }
 
+func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride) ([]CatalogRow, error) {
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("ids required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range ids {
+		if _, ok := m.entries[id]; !ok {
+			return nil, fmt.Errorf("entry %q not found", id)
+		}
+	}
+	rows := make([]CatalogRow, 0, len(ids))
+	for _, id := range ids {
+		cur := m.overrides[id]
+		mergeOverride(&cur, ov)
+		m.overrides[id] = cur
+	}
+	if err := m.saveLocked(); err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		e := m.applyOverrideLocked(m.entries[id])
+		cur := m.overrides[id]
+		rows = append(rows, CatalogRow{Entry: e, SourceIDs: []string{e.Source.Name}, RewriteEnabled: rewriteEnabled(e, cur, m.cfg), RewriteReason: cur.RewriteReason})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Match.Domain != rows[j].Match.Domain {
+			return rows[i].Match.Domain < rows[j].Match.Domain
+		}
+		return rows[i].ID < rows[j].ID
+	})
+	return rows, nil
+}
+
 func (m *Manager) SetEmergencyEmpty(on bool) error {
 	m.mu.Lock()
 	m.cfg.EmergencyEmpty = on

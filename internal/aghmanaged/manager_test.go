@@ -506,6 +506,66 @@ func TestConflictsListExcludeAndResolve(t *testing.T) {
 	}
 }
 
+func TestBulkPatchEntriesAppliesOverridesAtomically(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||one.example.net^\n||two.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	ids := []string{rows[0].ID, rows[1].ID}
+
+	off := false
+	updated, err := m.BulkPatchEntries(ids, CatalogOverride{
+		Category:       "ad_sdk",
+		ReviewStatus:   "needs_test",
+		RewriteEnabled: &off,
+		RewriteReason:  "bulk disable",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) != 2 {
+		t.Fatalf("updated = %+v", updated)
+	}
+	for _, row := range m.CatalogRows() {
+		if row.Category != "ad_sdk" || row.ReviewStatus != "needs_test" || row.RewriteEnabled || row.RewriteReason != "bulk disable" {
+			t.Fatalf("row after bulk patch = %+v", row)
+		}
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range p.Items {
+		if item.Reason != "disabled by preset or user" {
+			t.Fatalf("item after bulk patch = %+v", item)
+		}
+	}
+
+	on := true
+	if _, err := m.BulkPatchEntries([]string{ids[0], "missing"}, CatalogOverride{RewriteEnabled: &on, RewriteReason: "should not apply"}); err == nil {
+		t.Fatal("BulkPatchEntries should reject missing IDs")
+	}
+	for _, row := range m.CatalogRows() {
+		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
+			t.Fatalf("bulk patch was not atomic: %+v", row)
+		}
+	}
+}
+
 func TestManualSourceIDIncludesContent(t *testing.T) {
 	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), testConfig(), nil)
 	if err != nil {

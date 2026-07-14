@@ -153,7 +153,11 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"pending_sources",
 		"unresolved conflicts",
 		"/api/agh/managed-catalog/conflicts",
+		"/api/agh/managed-catalog/bulk",
 		"resolveManagedConflict",
+		"bulkManagedCatalog",
+		"selectManagedCatalogVisible",
+		"Apply bulk edit",
 		"disable rewrite",
 		"needs test",
 		"allow exception wins",
@@ -282,6 +286,110 @@ func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	}
 	if got := managed.ListConflicts(); len(got) != 0 {
 		t.Fatalf("conflict still listed after admin resolve: %+v", got)
+	}
+}
+
+func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policy")
+	catalogDir := filepath.Join(dir, "catalog")
+	if err := os.MkdirAll(policyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(catalogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := policy.Load(policyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||one.example.net^\n||two.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := managed.CatalogRows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	bodyBytes, err := json.Marshal(map[string]any{
+		"ids": []string{rows[0].ID, rows[1].ID},
+		"override": map[string]any{
+			"rewrite_enabled": false,
+			"rewrite_reason":  "bulk disable",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{
+		Version:    "test",
+		ConfigPath: filepath.Join(dir, "mirage-chaff.conf"),
+		Paths:      config.PathsConfig{PolicyDir: policyDir, CatalogDir: catalogDir, StateDir: dir},
+		Recorder:   observability.NewRecorder(true, 8),
+		Engine:     policy.NewEngine(rs),
+		AGHManaged: managed,
+	})
+	h := s.Handler()
+	viewerCookie, viewerCSRF := loginForTest(t, h, "viewer", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agh/managed-catalog/bulk", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", viewerCSRF)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer bulk status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/managed-catalog/bulk", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin bulk status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp struct {
+		Updated int `json:"updated"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Updated != 2 {
+		t.Fatalf("bulk response = %s", rr.Body.String())
+	}
+	for _, row := range managed.CatalogRows() {
+		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
+			t.Fatalf("row after bulk handler = %+v", row)
+		}
 	}
 }
 

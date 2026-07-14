@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -178,6 +179,33 @@ func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Req
 	}
 	s.store.Audit(sess.username, "agh_managed.catalog.patch", row.ID)
 	writeJSON(w, row)
+}
+
+func (s *Server) handleAGHManagedCatalogBulkPatch(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		IDs      []string                   `json:"ids"`
+		Override aghmanaged.CatalogOverride `json:"override"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	ov := aghmanaged.CatalogOverride{
+		Category:       req.Override.Category,
+		ReviewStatus:   req.Override.ReviewStatus,
+		RewriteEnabled: req.Override.RewriteEnabled,
+		RewriteReason:  req.Override.RewriteReason,
+	}
+	rows, err := s.deps.AGHManaged.BulkPatchEntries(req.IDs, ov)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.catalog.bulk_patch", fmt.Sprintf("updated=%d", len(rows)))
+	writeJSON(w, map[string]any{"updated": len(rows), "entries": rows})
 }
 
 func (s *Server) handleAGHManagedConflictResolve(w http.ResponseWriter, r *http.Request, sess *session) {
