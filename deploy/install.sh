@@ -55,8 +55,7 @@ done
 "${PREFIX}/${NAME}" check -config "$ETC/mirage-chaff.conf"
 
 # 6. Initial admin bootstrap (only when admin is enabled and no users exist).
-#    TODO(Phase 6): generate a temporary admin password, print it to the journal,
-#    and force change on first login. Placeholder here in Phase 0.
+"${PREFIX}/${NAME}" admin-bootstrap -config "$ETC/mirage-chaff.conf"
 
 # 7. systemd unit.
 install -m 0644 "$REPO_DIR/deploy/${NAME}.service" "$UNIT"

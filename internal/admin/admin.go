@@ -85,19 +85,36 @@ func New(store *Store, deps Deps) *Server {
 // bootstrap creates an initial admin with a random temporary password (forced
 // change on first login) when the store has no users (design doc install step 5).
 func (s *Server) bootstrap() {
-	if s.store.UserCount() > 0 {
+	tempPW, created, err := BootstrapInitialAdmin(s.store)
+	if err != nil {
+		log.Printf("admin: bootstrap failed: %v", err)
 		return
 	}
+	if !created {
+		return
+	}
+	log.Printf("admin: created initial account 'admin' — TEMPORARY PASSWORD: %s (change on first login)", tempPW)
+}
+
+// BootstrapInitialAdmin creates the first local admin account with a random
+// temporary password when the store has no users. The password is returned once
+// to the caller so installers can print it to their journal/stdout.
+func BootstrapInitialAdmin(store *Store) (password string, created bool, err error) {
+	if store.UserCount() > 0 {
+		return "", false, nil
+	}
 	tempPW := randToken()[:16]
-	_ = s.store.Upsert(User{
+	if err := store.Upsert(User{
 		Username:   "admin",
 		Hash:       HashPassword(tempPW),
 		Role:       RoleAdmin,
 		MustChange: true,
 		Created:    time.Now(),
-	})
-	log.Printf("admin: created initial account 'admin' — TEMPORARY PASSWORD: %s (change on first login)", tempPW)
-	s.store.Audit("system", "bootstrap", "created initial admin account")
+	}); err != nil {
+		return "", false, err
+	}
+	store.Audit("system", "bootstrap", "created initial admin account")
+	return tempPW, true, nil
 }
 
 // Handler returns the admin HTTP handler (API + embedded SPA).

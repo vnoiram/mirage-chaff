@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
+	"github.com/vnoiram/mirage-chaff/internal/admin"
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/server"
 )
@@ -37,6 +39,8 @@ func main() {
 		os.Exit(cmdRun(os.Args[2:]))
 	case "check":
 		os.Exit(cmdCheck(os.Args[2:]))
+	case "admin-bootstrap":
+		os.Exit(cmdAdminBootstrap(os.Args[2:]))
 	case "version", "-v", "--version":
 		fmt.Printf("mirage-chaff %s\n", version)
 		os.Exit(0)
@@ -56,6 +60,8 @@ func usage() {
 Usage:
   mirage-chaff run   [-config PATH]   Run the server (foreground; systemd-managed in production).
   mirage-chaff check [-config PATH]   Validate config + policy.d + catalog, then exit (nginx -t style).
+  mirage-chaff admin-bootstrap [-config PATH]
+                                      Create the initial local admin account if needed.
   mirage-chaff version                Print version and exit.
 
 Default config path: `+defaultConfigPath+`
@@ -91,6 +97,45 @@ func cmdCheck(args []string) int {
 		return 1
 	}
 	fmt.Printf("ok: %s is valid\n", *cfgPath)
+	return 0
+}
+
+func cmdAdminBootstrap(args []string) int {
+	fs := flag.NewFlagSet("admin-bootstrap", flag.ContinueOnError)
+	cfgPath := fs.String("config", defaultConfigPath, "path to mirage-chaff.conf")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
+		return 1
+	}
+	if err := cfg.Check(); err != nil {
+		fmt.Fprintf(os.Stderr, "config invalid: %v\n", err)
+		return 1
+	}
+	if !cfg.Admin.Enabled {
+		fmt.Println("admin disabled; bootstrap skipped")
+		return 0
+	}
+
+	store, err := admin.OpenStore(filepath.Join(cfg.Paths.StateDir, "admin", "admin.json"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "admin bootstrap failed: %v\n", err)
+		return 1
+	}
+	password, created, err := admin.BootstrapInitialAdmin(store)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "admin bootstrap failed: %v\n", err)
+		return 1
+	}
+	if !created {
+		fmt.Println("admin users already exist; bootstrap skipped")
+		return 0
+	}
+	fmt.Printf("created initial admin account 'admin'\nTEMPORARY PASSWORD: %s\nchange on first login\n", password)
 	return 0
 }
 
