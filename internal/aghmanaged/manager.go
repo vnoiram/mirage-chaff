@@ -57,6 +57,7 @@ type Source struct {
 	AllowExceptions  int       `json:"allow_exceptions"`
 	PendingReview    bool      `json:"pending_review,omitempty"`
 	Priority         int       `json:"priority,omitempty"`
+	Health           string    `json:"health,omitempty"`
 }
 
 // FeedStatus summarizes generated feed state for the admin UI.
@@ -252,10 +253,28 @@ func (m *Manager) ListSources() []Source {
 	defer m.mu.RUnlock()
 	out := make([]Source, 0, len(m.sources))
 	for _, src := range m.sources {
+		src.Health = m.sourceHealthLocked(src)
 		out = append(out, src)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+func (m *Manager) sourceHealthLocked(src Source) string {
+	switch {
+	case !src.Enabled:
+		return "paused"
+	case src.PendingReview:
+		return "pending"
+	case src.Type == SourceFilterURL && isStaleSource(src, staleSourceDuration(m.cfg.Scheduler.StaleSourceTTL)):
+		return "stale"
+	case src.LastError != "":
+		return "failing"
+	case src.LastSuccess.IsZero():
+		return "never synced"
+	default:
+		return "healthy"
+	}
 }
 
 func (m *Manager) UpsertSource(src Source) (Source, error) {
@@ -280,6 +299,7 @@ func (m *Manager) UpsertSource(src Source) (Source, error) {
 	if src.Type == SourceManual && src.Content == "" {
 		return Source{}, fmt.Errorf("content required")
 	}
+	src.Health = ""
 	m.mu.Lock()
 	if old, ok := m.sources[src.ID]; ok {
 		src.LastSyncStarted = old.LastSyncStarted
@@ -882,7 +902,7 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		ov := overrides[e.ID]
 		item := m.feedItem(e, ov, cfg, ips, conflictKeys[entryKey(e)])
 		if staleSourceTTL > 0 {
-			if src, ok := sourceByID[e.Source.Name]; ok && src.Type == SourceFilterURL && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > staleSourceTTL {
+			if src, ok := sourceByID[e.Source.Name]; ok && isStaleSource(src, staleSourceTTL) {
 				item.Included = false
 				item.Reason = "stale source"
 				staleSources[src.ID] = true
@@ -1431,6 +1451,10 @@ func staleSourceDuration(raw string) time.Duration {
 		return 0
 	}
 	return durationOr(raw, 72*time.Hour)
+}
+
+func isStaleSource(src Source, ttl time.Duration) bool {
+	return ttl > 0 && src.Type == SourceFilterURL && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > ttl
 }
 
 func ipStrings(ips []net.IP) []string {

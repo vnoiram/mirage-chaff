@@ -155,6 +155,8 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"refreshManagedTarget",
 		"filterManagedCatalog",
 		"manual",
+		"health",
+		"never synced",
 		"target_cache_used",
 		"pending_sources",
 		"pending diff",

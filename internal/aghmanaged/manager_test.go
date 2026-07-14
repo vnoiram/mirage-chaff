@@ -753,6 +753,76 @@ func TestManualSourceIDIncludesContent(t *testing.T) {
 	}
 }
 
+func TestListSourcesIncludesDerivedHealth(t *testing.T) {
+	cfg := testConfig()
+	cfg.Scheduler.StaleSourceTTL = "1h"
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := m.UpsertSource(Source{Type: SourceManual, Name: "paused", Enabled: false, Content: "||paused.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	never, err := m.UpsertSource(Source{Type: SourceManual, Name: "never", Enabled: true, Content: "||never.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing, err := m.UpsertSource(Source{Type: SourceManual, Name: "failing", Enabled: true, Content: "||failing.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := m.UpsertSource(Source{Type: SourceManual, Name: "pending", Enabled: true, Content: "||pending.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := m.UpsertSource(Source{Type: SourceFilterURL, Name: "stale", URL: "https://example.test/stale.txt", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy, err := m.UpsertSource(Source{Type: SourceManual, Name: "healthy", Enabled: true, Content: "||healthy.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	src := m.sources[failing.ID]
+	src.LastError = "boom"
+	m.sources[failing.ID] = src
+	src = m.sources[pending.ID]
+	src.PendingReview = true
+	m.sources[pending.ID] = src
+	src = m.sources[stale.ID]
+	src.LastSuccess = time.Now().Add(-2 * time.Hour)
+	m.sources[stale.ID] = src
+	src = m.sources[healthy.ID]
+	src.LastSuccess = time.Now()
+	m.sources[healthy.ID] = src
+	m.mu.Unlock()
+
+	got := map[string]string{}
+	for _, src := range m.ListSources() {
+		got[src.Name] = src.Health
+		if src.ID == paused.ID || src.ID == never.ID || src.ID == failing.ID || src.ID == pending.ID || src.ID == stale.ID || src.ID == healthy.ID {
+			if src.Health == "" {
+				t.Fatalf("source missing health: %+v", src)
+			}
+		}
+	}
+	want := map[string]string{
+		"paused":  "paused",
+		"never":   "never synced",
+		"failing": "failing",
+		"pending": "pending",
+		"stale":   "stale",
+		"healthy": "healthy",
+	}
+	for name, health := range want {
+		if got[name] != health {
+			t.Fatalf("health[%s] = %q, want %q; all=%+v", name, got[name], health, got)
+		}
+	}
+}
+
 func TestEmergencyEmptySurvivesConfigReloadAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "managed.json")
 	cfg := testConfig()
