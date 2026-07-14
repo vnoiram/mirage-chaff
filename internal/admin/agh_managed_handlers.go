@@ -247,6 +247,23 @@ func (s *Server) handleAGHManagedFeedPreview(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, p)
 }
 
+func (s *Server) handleAGHManagedFeedExport(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	p, err := s.deps.AGHManaged.Generate(r.Context(), false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	name := "mirage-chaff-managed-rewrites-" + time.Now().UTC().Format("20060102T150405Z") + ".txt"
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(p.Lines))
+}
+
 func (s *Server) handleAGHManagedRefreshTarget(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)

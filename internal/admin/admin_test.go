@@ -154,10 +154,13 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"unresolved conflicts",
 		"/api/agh/managed-catalog/conflicts",
 		"/api/agh/managed-catalog/bulk",
+		"/api/agh/rewrite-feed/export",
 		"resolveManagedConflict",
 		"bulkManagedCatalog",
 		"selectManagedCatalogVisible",
+		"exportManagedFeedSnapshot",
 		"Apply bulk edit",
+		"Export snapshot",
 		"disable rewrite",
 		"needs test",
 		"allow exception wins",
@@ -181,6 +184,83 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		if strings.Contains(html, bad) {
 			t.Fatalf("admin UI still contains vulnerable dynamic action pattern %q", bad)
 		}
+	}
+}
+
+func TestAGHManagedFeedExportHandler(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policy")
+	catalogDir := filepath.Join(dir, "catalog")
+	if err := os.MkdirAll(policyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(catalogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := policy.Load(policyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||export.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{
+		Version:    "test",
+		ConfigPath: filepath.Join(dir, "mirage-chaff.conf"),
+		Paths:      config.PathsConfig{PolicyDir: policyDir, CatalogDir: catalogDir, StateDir: dir},
+		Recorder:   observability.NewRecorder(true, 8),
+		Engine:     policy.NewEngine(rs),
+		AGHManaged: managed,
+	})
+	h := s.Handler()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/export", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated export status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+
+	cookie, _ := loginForTest(t, h, "viewer", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/export", nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer export status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, `attachment; filename="mirage-chaff-managed-rewrites-`) || !strings.HasSuffix(cd, `.txt"`) {
+		t.Fatalf("content-disposition = %q", cd)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "! mirage-chaff managed rewrites") || !strings.Contains(body, "||export.example.net^$dnsrewrite=NOERROR;A;192.0.2.10") {
+		t.Fatalf("export body =\n%s", body)
 	}
 }
 
