@@ -11,6 +11,11 @@
 #   - Otherwise, strip the marker-delimited cushion block from AdGuardHome.yaml
 #     (a timestamped backup is kept) and restart AdGuard Home.
 #
+# API mode needs AGH_KILLSWITCH_TARGETS set to the cushion rewrite answers to
+# delete, separated by commas and/or whitespace. Examples:
+#   AGH_KILLSWITCH_TARGETS="192.0.2.10 2001:db8::10"
+#   AGH_KILLSWITCH_TARGETS="mirage-chaff.lan"
+#
 # The cushion-managed rewrites in AdGuardHome.yaml must be wrapped in markers:
 #   # >>> mirage-chaff managed rewrites >>>
 #   ... rewrite entries ...
@@ -25,14 +30,83 @@ END="# <<< mirage-chaff managed rewrites <<<"
 
 log() { printf '[kill-switch] %s\n' "$*"; }
 
+api_url() {
+  printf '%s/%s\n' "${AGH_API_URL%/}" "$1"
+}
+
+delete_rewrites_via_api() {
+  if [ -z "${AGH_KILLSWITCH_TARGETS:-}" ]; then
+    log "API credentials found, but AGH_KILLSWITCH_TARGETS is unset; falling back to file method"
+    return 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    log "curl not found; falling back to file method"
+    return 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "python3 not found; falling back to file method"
+    return 1
+  fi
+
+  local list payloads count
+  if ! list="$(curl -fsS -u "${AGH_API_USER}:${AGH_API_PASS}" "$(api_url control/rewrite/list)")"; then
+    log "failed to list AGH rewrites via API; falling back to file method"
+    return 1
+  fi
+  if ! payloads="$(
+    AGH_KILLSWITCH_TARGETS="$AGH_KILLSWITCH_TARGETS" python3 -c '
+import json
+import os
+import re
+import sys
+
+targets = {x for x in re.split(r"[\s,]+", os.environ.get("AGH_KILLSWITCH_TARGETS", "").strip()) if x}
+rewrites = json.load(sys.stdin)
+if not isinstance(rewrites, list):
+    raise SystemExit("rewrite list response is not a JSON array")
+for rewrite in rewrites:
+    if not isinstance(rewrite, dict):
+        continue
+    domain = rewrite.get("domain")
+    answer = rewrite.get("answer")
+    if domain and answer in targets:
+        print(json.dumps({"domain": domain, "answer": answer}, separators=(",", ":")))
+' <<<"$list"
+  )"; then
+    log "failed to parse AGH rewrite list; falling back to file method"
+    return 1
+  fi
+
+  if [ -z "$payloads" ]; then
+    log "no AGH rewrites matched AGH_KILLSWITCH_TARGETS; falling back to file method"
+    return 1
+  fi
+
+  count=0
+  while IFS= read -r payload; do
+    [ -n "$payload" ] || continue
+    if ! curl -fsS -u "${AGH_API_USER}:${AGH_API_PASS}" \
+      -H 'Content-Type: application/json' \
+      -d "$payload" \
+      "$(api_url control/rewrite/delete)" >/dev/null; then
+      log "failed to delete AGH rewrite via API; falling back to file method"
+      return 1
+    fi
+    count=$((count + 1))
+  done <<<"$payloads"
+  log "deleted $count AGH rewrite(s) via API"
+  return 0
+}
+
 # shellcheck disable=SC1090
 [ -f "$AGH_ENV" ] && . "$AGH_ENV" || true
 
 if [ -n "${AGH_API_URL:-}" ] && [ -n "${AGH_API_USER:-}" ] && [ -n "${AGH_API_PASS:-}" ]; then
   log "using AGH API at ${AGH_API_URL} (no restart)"
-  # TODO(Phase 5): enumerate /control/rewrite/list and delete cushion entries via
-  # /control/rewrite/delete. Placeholder to keep the API path explicit.
-  log "API path not yet implemented; falling back to file method"
+  if delete_rewrites_via_api; then
+    log "curated domains now resolve normally"
+    exit 0
+  fi
 fi
 
 [ -f "$AGH_YAML" ] || { echo "AGH config not found: $AGH_YAML (set AGH_YAML)" >&2; exit 1; }
