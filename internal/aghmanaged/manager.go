@@ -61,18 +61,22 @@ type Source struct {
 
 // FeedStatus summarizes generated feed state for the admin UI.
 type FeedStatus struct {
-	Enabled        bool      `json:"enabled"`
-	FeedPath       string    `json:"feed_path"`
-	TargetMode     string    `json:"target_mode"`
-	TargetName     string    `json:"target_name"`
-	ResolvedIPs    []string  `json:"resolved_ips,omitempty"`
-	LastResolve    time.Time `json:"last_resolve,omitempty"`
-	LastResolveErr string    `json:"last_resolve_error,omitempty"`
-	ItemCount      int       `json:"item_count"`
-	ExcludedCount  int       `json:"excluded_count"`
-	EmergencyEmpty bool      `json:"emergency_empty"`
-	Sources        int       `json:"sources"`
-	LastGenerated  time.Time `json:"last_generated,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	FeedPath        string    `json:"feed_path"`
+	TargetMode      string    `json:"target_mode"`
+	TargetName      string    `json:"target_name"`
+	ResolvedIPs     []string  `json:"resolved_ips,omitempty"`
+	LastResolve     time.Time `json:"last_resolve,omitempty"`
+	LastResolveErr  string    `json:"last_resolve_error,omitempty"`
+	TargetCacheUsed bool      `json:"target_cache_used,omitempty"`
+	ItemCount       int       `json:"item_count"`
+	ExcludedCount   int       `json:"excluded_count"`
+	EmergencyEmpty  bool      `json:"emergency_empty"`
+	Sources         int       `json:"sources"`
+	PendingSources  int       `json:"pending_sources"`
+	StaleSources    int       `json:"stale_sources"`
+	LastSourceSync  time.Time `json:"last_source_sync,omitempty"`
+	LastGenerated   time.Time `json:"last_generated,omitempty"`
 }
 
 // Preview is a generated feed plus status.
@@ -105,6 +109,14 @@ type CatalogRow struct {
 	SourceIDs      []string `json:"source_ids,omitempty"`
 	RewriteEnabled bool     `json:"rewrite_enabled"`
 	RewriteReason  string   `json:"rewrite_reason,omitempty"`
+}
+
+// PendingDiff describes a pending large-change review for one source.
+type PendingDiff struct {
+	Source  Source              `json:"source"`
+	Added   []rulecatalog.Entry `json:"added"`
+	Removed []rulecatalog.Entry `json:"removed"`
+	Changed []rulecatalog.Entry `json:"changed"`
 }
 
 type state struct {
@@ -364,6 +376,21 @@ func (m *Manager) RejectSource(id string) (Source, error) {
 	return src, nil
 }
 
+func (m *Manager) PendingDiff(id string) (PendingDiff, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	src, ok := m.sources[id]
+	if !ok {
+		return PendingDiff{}, os.ErrNotExist
+	}
+	pending, ok := m.pending[id]
+	if !ok {
+		return PendingDiff{}, os.ErrNotExist
+	}
+	prev := entriesForSource(m.entries, id)
+	return pendingDiff(src, prev, pending), nil
+}
+
 func (m *Manager) PreviewSource(ctx context.Context, src Source) (Source, []rulecatalog.Entry, error) {
 	if src.Type == "" {
 		src.Type = SourceFilterURL
@@ -478,6 +505,27 @@ func (m *Manager) SetEmergencyEmpty(on bool) error {
 	return err
 }
 
+func (m *Manager) RefreshTarget(ctx context.Context) (FeedStatus, error) {
+	m.mu.RLock()
+	cfg := m.cfg
+	cached := append([]net.IP(nil), m.targetIPs...)
+	m.mu.RUnlock()
+	if cfg.TargetMode != "" && cfg.TargetMode != "resolved_ip" {
+		return m.Status(ctx), nil
+	}
+	ips, err := m.resolveTarget(ctx, cfg, cached)
+	m.mu.Lock()
+	if err == nil {
+		m.targetIPs = append([]net.IP(nil), ips...)
+		m.lastResolve = time.Now()
+		m.lastResolveErr = ""
+	} else {
+		m.lastResolveErr = err.Error()
+	}
+	m.mu.Unlock()
+	return m.Status(ctx), err
+}
+
 func (m *Manager) Status(ctx context.Context) FeedStatus {
 	p, _ := m.Generate(ctx, false)
 	return p.Status
@@ -505,6 +553,7 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 
 	var ips []net.IP
 	var resolveErr error
+	targetCacheUsed := false
 	if cfg.TargetMode == "" || cfg.TargetMode == "resolved_ip" {
 		ips, resolveErr = m.resolveTarget(ctx, cfg, cachedIPs)
 		if resolveErr == nil {
@@ -520,6 +569,7 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 			staleTargetTTL := durationOr(cfg.StaleTargetTTL, 24*time.Hour)
 			if len(cachedIPs) > 0 && !lastResolve.IsZero() && time.Since(lastResolve) <= staleTargetTTL {
 				ips = cachedIPs
+				targetCacheUsed = true
 			}
 		}
 	}
@@ -529,9 +579,12 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	status := FeedStatus{
 		Enabled: cfg.Enabled, FeedPath: cfg.FeedPath, TargetMode: nonempty(cfg.TargetMode, "resolved_ip"),
 		TargetName: cfg.TargetName, ResolvedIPs: ipStrings(ips), LastResolve: lastResolve,
-		LastResolveErr: lastResolveErr, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
+		LastResolveErr: lastResolveErr, TargetCacheUsed: targetCacheUsed, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
 	}
 	fmt.Fprintf(&b, "! mirage-chaff managed rewrites\n! generated_at=%s\n! target_mode=%s target_name=%s\n", now.Format(time.RFC3339), status.TargetMode, cfg.TargetName)
+	if targetCacheUsed {
+		fmt.Fprintf(&b, "! target_resolution=stale-cache last_success=%s error=%s\n", lastResolve.Format(time.RFC3339), lastResolveErr)
+	}
 	if cfg.EmergencyEmpty || !cfg.Enabled {
 		fmt.Fprintf(&b, "! feed empty: enabled=%v emergency_empty=%v\n", cfg.Enabled, cfg.EmergencyEmpty)
 		status.ExcludedCount = len(entries)
@@ -543,8 +596,16 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	sourceByID := make(map[string]Source, len(sources))
 	for _, src := range sources {
 		sourceByID[src.ID] = src
+		if src.PendingReview {
+			status.PendingSources++
+		}
+		if src.LastSuccess.After(status.LastSourceSync) {
+			status.LastSourceSync = src.LastSuccess
+		}
 	}
-	staleSourceTTL := durationOr(cfg.Scheduler.StaleSourceTTL, 0)
+	staleSourceTTL := staleSourceDuration(cfg.Scheduler.StaleSourceTTL)
+	staleSources := map[string]bool{}
+	conflicts := conflictKeys(entries)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Match.Domain != entries[j].Match.Domain {
 			return entries[i].Match.Domain < entries[j].Match.Domain
@@ -554,11 +615,12 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	var items []FeedItem
 	for _, e := range entries {
 		ov := overrides[e.ID]
-		item := m.feedItem(e, ov, cfg, ips)
+		item := m.feedItem(e, ov, cfg, ips, conflicts[entryKey(e)])
 		if staleSourceTTL > 0 {
 			if src, ok := sourceByID[e.Source.Name]; ok && src.Type == SourceFilterURL && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > staleSourceTTL {
 				item.Included = false
 				item.Reason = "stale source"
+				staleSources[src.ID] = true
 			}
 		}
 		if item.Included {
@@ -571,6 +633,7 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		}
 		items = append(items, item)
 	}
+	status.StaleSources = len(staleSources)
 	m.mu.Lock()
 	m.lastGenerated = now
 	m.mu.Unlock()
@@ -624,7 +687,7 @@ func (m *Manager) resolveTarget(ctx context.Context, cfg config.AGHManagedConfig
 	return m.resolver.LookupIP(ctx, cfg.TargetName)
 }
 
-func (m *Manager) feedItem(e rulecatalog.Entry, ov CatalogOverride, cfg config.AGHManagedConfig, ips []net.IP) FeedItem {
+func (m *Manager) feedItem(e rulecatalog.Entry, ov CatalogOverride, cfg config.AGHManagedConfig, ips []net.IP, conflict bool) FeedItem {
 	item := FeedItem{
 		Domain: e.Match.Domain, EntryID: e.ID, SourceIDs: []string{e.Source.Name}, Category: e.Category,
 		ResourceType: e.ResourceType, ReviewStatus: e.ReviewStatus, Confidence: e.Confidence,
@@ -638,8 +701,20 @@ func (m *Manager) feedItem(e rulecatalog.Entry, ov CatalogOverride, cfg config.A
 		item.Reason = "unsupported layer"
 		return item
 	}
+	if e.Layer != "" && e.Layer != rulecatalog.LayerDNS {
+		item.Reason = "http layer"
+		return item
+	}
+	if e.Match.Path != "" {
+		item.Reason = "path scoped rule"
+		return item
+	}
 	if e.Category == "allow_exception" {
 		item.Reason = "allow exception"
+		return item
+	}
+	if conflict {
+		item.Reason = "conflict unresolved"
 		return item
 	}
 	if e.ReviewStatus == rulecatalog.ReviewRejected || e.ReviewStatus == rulecatalog.ReviewDisabled {
@@ -805,6 +880,75 @@ func diffEntries(prev, next []rulecatalog.Entry) (added, removed, changed int) {
 	return
 }
 
+func pendingDiff(src Source, prev, next []rulecatalog.Entry) PendingDiff {
+	p := map[string]rulecatalog.Entry{}
+	n := map[string]rulecatalog.Entry{}
+	for _, e := range prev {
+		p[e.ID] = e
+	}
+	for _, e := range next {
+		n[e.ID] = e
+	}
+	out := PendingDiff{Source: src}
+	for _, e := range next {
+		if old, ok := p[e.ID]; !ok {
+			out.Added = append(out.Added, e)
+		} else if old.OriginalRule != e.OriginalRule || old.Category != e.Category || old.ResourceType != e.ResourceType {
+			out.Changed = append(out.Changed, e)
+		}
+	}
+	for _, e := range prev {
+		if _, ok := n[e.ID]; !ok {
+			out.Removed = append(out.Removed, e)
+		}
+	}
+	sortEntries(out.Added)
+	sortEntries(out.Removed)
+	sortEntries(out.Changed)
+	return out
+}
+
+func sortEntries(entries []rulecatalog.Entry) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Match.Domain != entries[j].Match.Domain {
+			return entries[i].Match.Domain < entries[j].Match.Domain
+		}
+		if entries[i].Match.Path != entries[j].Match.Path {
+			return entries[i].Match.Path < entries[j].Match.Path
+		}
+		return entries[i].ID < entries[j].ID
+	})
+}
+
+func conflictKeys(entries []rulecatalog.Entry) map[string]bool {
+	type seen struct {
+		category string
+		review   string
+		allow    bool
+	}
+	seenByKey := map[string]seen{}
+	conflicts := map[string]bool{}
+	for _, e := range entries {
+		if e.Match.Domain == "" {
+			continue
+		}
+		k := entryKey(e)
+		cur := seen{category: e.Category, review: e.ReviewStatus, allow: e.Category == "allow_exception"}
+		if old, ok := seenByKey[k]; ok {
+			if old.category != cur.category || old.review != cur.review || old.allow != cur.allow {
+				conflicts[k] = true
+			}
+			continue
+		}
+		seenByKey[k] = cur
+	}
+	return conflicts
+}
+
+func entryKey(e rulecatalog.Entry) string {
+	return e.Match.Domain + "\x00" + e.Match.Path
+}
+
 func countImported(entries []rulecatalog.Entry) (unsupported, allow int) {
 	for _, e := range entries {
 		if e.Unsupported || e.Layer == rulecatalog.LayerDOM {
@@ -840,8 +984,24 @@ func rewriteEnabled(e rulecatalog.Entry, ov CatalogOverride, cfg config.AGHManag
 	case "aggressive":
 		return e.ReviewStatus != rulecatalog.ReviewRejected && e.ReviewStatus != rulecatalog.ReviewDisabled
 	default:
-		return e.ReviewStatus == rulecatalog.ReviewCandidate || e.ReviewStatus == rulecatalog.ReviewApproved || e.ReviewStatus == rulecatalog.ReviewNeedsTest
+		return e.ReviewStatus == rulecatalog.ReviewApproved || e.ReviewStatus == rulecatalog.ReviewNeedsTest || (e.ReviewStatus == rulecatalog.ReviewCandidate && confidenceAtLeast(e.Confidence, "medium"))
 	}
+}
+
+func confidenceAtLeast(got, min string) bool {
+	rank := func(v string) int {
+		switch strings.ToLower(v) {
+		case "low":
+			return 1
+		case "medium", "":
+			return 2
+		case "high":
+			return 3
+		default:
+			return 0
+		}
+	}
+	return rank(got) >= rank(min)
 }
 
 func mergeOverride(dst *CatalogOverride, src CatalogOverride) {
@@ -904,6 +1064,13 @@ func durationOr(raw string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+func staleSourceDuration(raw string) time.Duration {
+	if raw == "0" {
+		return 0
+	}
+	return durationOr(raw, 72*time.Hour)
 }
 
 func ipStrings(ips []net.IP) []string {

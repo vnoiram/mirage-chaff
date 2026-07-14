@@ -133,6 +133,19 @@ func (s *Server) handleAGHManagedSourceReject(w http.ResponseWriter, r *http.Req
 	writeJSON(w, src)
 }
 
+func (s *Server) handleAGHManagedSourcePendingDiff(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	diff, err := s.deps.AGHManaged.PendingDiff(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, diff)
+}
+
 func (s *Server) handleAGHManagedCatalog(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
@@ -180,6 +193,16 @@ func (s *Server) handleAGHManagedFeedPreview(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, p)
 }
 
+func (s *Server) handleAGHManagedRefreshTarget(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	status, err := s.deps.AGHManaged.RefreshTarget(r.Context())
+	s.store.Audit(sess.username, "agh_managed.refresh_target", mapErr(err))
+	writeJSON(w, map[string]any{"status": status, "error": errString(err)})
+}
+
 func (s *Server) handleAGHManagedEmergencyEmpty(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
@@ -204,4 +227,18 @@ func mapBool(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func mapErr(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return err.Error()
 }

@@ -141,8 +141,18 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"permanentAllowDomain",
 		"approveManagedSource",
 		"rejectManagedSource",
+		"pendingManagedSource",
+		"previewManagedSource",
+		"toggleManagedSource",
+		"refreshManagedTarget",
+		"filterManagedCatalog",
+		"manual",
+		"target_cache_used",
+		"pending_sources",
 		"/api/agh/sources/'+id+'/approve",
 		"/api/agh/sources/'+id+'/reject",
+		"/api/agh/sources/'+id+'/pending-diff",
+		"/api/agh/rewrite-feed/refresh-target",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin UI missing %q", want)

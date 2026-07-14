@@ -93,6 +93,76 @@ func TestManagedFeedCNAME(t *testing.T) {
 	}
 }
 
+func TestManagedFeedExcludesHTTPPathRules(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||ads.example.net/sdk.js$script\n||dns.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p.Lines, "ads.example.net") {
+		t.Fatalf("HTTP/path scoped rule should not be emitted:\n%s", p.Lines)
+	}
+	if !strings.Contains(p.Lines, "dns.example.net") {
+		t.Fatalf("DNS domain rule should be emitted:\n%s", p.Lines)
+	}
+	var sawHTTP bool
+	for _, item := range p.Items {
+		if item.Domain == "ads.example.net" && (item.Reason == "http layer" || item.Reason == "path scoped rule") {
+			sawHTTP = true
+		}
+	}
+	if !sawHTTP {
+		t.Fatalf("preview items did not explain HTTP/path exclusion: %+v", p.Items)
+	}
+}
+
+func TestBalancedPresetRequiresMediumConfidenceCandidate(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||low.example.net^\n||medium.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range m.CatalogRows() {
+		if row.Match.Domain == "low.example.net" {
+			if _, err := m.PatchEntry(row.ID, CatalogOverride{Confidence: "low"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	p, err := m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p.Lines, "low.example.net") {
+		t.Fatalf("low confidence candidate should be excluded:\n%s", p.Lines)
+	}
+	if !strings.Contains(p.Lines, "medium.example.net") {
+		t.Fatalf("medium confidence candidate should be included:\n%s", p.Lines)
+	}
+}
+
 func TestSourceURLSync(t *testing.T) {
 	filter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("||ads.example.net/sdk.js$script\n"))
@@ -154,6 +224,13 @@ func TestPendingReviewApproveRejectAndReopen(t *testing.T) {
 	}
 	if rows := m.CatalogRows(); len(rows) != 1 || rows[0].Match.Domain != "old.example.net" {
 		t.Fatalf("pending sync should not replace active rows: %+v", rows)
+	}
+	diff, err := m.PendingDiff(src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Added) != 1 || len(diff.Removed) != 1 || len(diff.Changed) != 0 {
+		t.Fatalf("pending diff = %+v", diff)
 	}
 
 	reopened, err := Open(path, cfg, nil)
@@ -221,6 +298,74 @@ func TestStaleTargetTTLRejectsExpiredCachedIPs(t *testing.T) {
 	}
 	if strings.Contains(p.Lines, "192.0.2.10") {
 		t.Fatalf("expired cached IP should not be used:\n%s", p.Lines)
+	}
+}
+
+func TestFreshCachedTargetIsMarkedStaleCache(t *testing.T) {
+	cfg := testConfig()
+	cfg.StaleTargetTTL = "1h"
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, fakeResolver{err: errors.New("dns down")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.targetIPs = []net.IP{net.ParseIP("192.0.2.10")}
+	m.lastResolve = time.Now().Add(-10 * time.Minute)
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||ads.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Status.TargetCacheUsed || !strings.Contains(p.Lines, "target_resolution=stale-cache") {
+		t.Fatalf("cached target use was not marked: status=%+v lines=\n%s", p.Status, p.Lines)
+	}
+}
+
+func TestStaleSourceTTLDefaultAndDisable(t *testing.T) {
+	filter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("||remote.example.net^\n"))
+	}))
+	defer filter.Close()
+
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := m.UpsertSource(Source{Type: SourceFilterURL, Name: "remote", URL: filter.URL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), remote.ID); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	src := m.sources[remote.ID]
+	src.LastSuccess = time.Now().Add(-73 * time.Hour)
+	m.sources[remote.ID] = src
+	m.mu.Unlock()
+	p, err := m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p.Lines, "remote.example.net") || p.Status.StaleSources != 1 {
+		t.Fatalf("default stale_source_ttl should exclude old remote source: status=%+v lines=\n%s", p.Status, p.Lines)
+	}
+	cfg.Scheduler.StaleSourceTTL = "0"
+	m.SetConfig(cfg)
+	p, err = m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Lines, "remote.example.net") {
+		t.Fatalf("stale_source_ttl=0 should disable exclusion:\n%s", p.Lines)
 	}
 }
 
