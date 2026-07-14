@@ -1,4 +1,5 @@
-// Package mimic implements forward-mimic: shape-preserving decoys. Phase 4 scope
-// is image/js/binary only; video is deferred (design doc C-1). Supports
-// deterministic (URL-seeded) and per-request generation with Range support.
+// Package mimic implements forward-mimic: shape-preserving decoys for image, JS,
+// binary, and opt-in video-shaped opaque bytes. Video mimic is deterministic and
+// range-consistent, but not a playable byte-valid video. Supports deterministic
+// (URL-seeded) and per-request generation with Range support.
 package mimic

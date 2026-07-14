@@ -42,12 +42,13 @@ resolvers = ["https://1.1.1.1/dns-query", "https://9.9.9.9/dns-query"]
 # Global mode: "full" (all actions) | "stub-only" (lightest: decoys only).
 mode = "full"                   # reload-safe (stub side)
 
-# forward-mimic (shape-preserving decoys). Phase 4 scope: image/js/binary.
+# forward-mimic (shape-preserving decoys). Video mimic is opt-in and returns
+# opaque range-consistent bytes, not playable MP4/WebM/HLS/DASH media.
 [mimic]
 enabled     = true              # reload-safe
 max_bytes   = 8388608           # 8 MiB; over this -> stub fallback
 cache_max   = 512
-allow_video = false             # video -> stub/asis (design decision C-1)
+allow_video = false             # false: video -> stub/asis; true: opaque video-shaped decoy
 
 # Resource caps for constrained VMs (pair with systemd MemoryMax/CPUQuota).
 [resources]

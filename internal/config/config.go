@@ -85,8 +85,8 @@ type UpstreamConfig struct {
 	Resolvers []string `toml:"resolvers" reload:"safe"` // e.g. ["https://1.1.1.1/dns-query"]
 }
 
-// MimicConfig controls forward-mimic (shape-preserving decoys). Phase 4 scope is
-// image/js/binary only; video is deferred (design doc C-1).
+// MimicConfig controls forward-mimic (shape-preserving decoys). Video mimic is
+// opt-in and serves opaque range-consistent bytes, not playable media.
 type MimicConfig struct {
 	Enabled    bool  `toml:"enabled" reload:"safe"`
 	MaxBytes   int64 `toml:"max_bytes" reload:"safe"`

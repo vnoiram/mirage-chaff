@@ -121,8 +121,10 @@ func (h *Handler) storeDecoy(url string, d CachedDecoy) {
 	}
 }
 
-// Serve mimics r's resource. It returns false (serving nothing) when the media
-// is unsupported (video) or too large, so the caller falls back to stub/asis.
+// Serve mimics r's resource. It returns false (serving nothing) when video is
+// not opted in or the resource is too large, so the caller falls back to
+// stub/asis. Opted-in video mimic serves deterministic opaque bytes, not a
+// playable byte-valid video stream.
 func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) bool {
 	urlKey := r.URL.String()
 
@@ -227,6 +229,19 @@ func defaultContentType(media, path string) string {
 			return "image/png"
 		}
 		return "image/gif"
+	case MediaVideo:
+		switch {
+		case strings.HasSuffix(strings.ToLower(path), ".webm"):
+			return "video/webm"
+		case strings.HasSuffix(strings.ToLower(path), ".m3u8"):
+			return "application/vnd.apple.mpegurl"
+		case strings.HasSuffix(strings.ToLower(path), ".mpd"):
+			return "application/dash+xml"
+		case strings.HasSuffix(strings.ToLower(path), ".ts"):
+			return "video/mp2t"
+		default:
+			return "video/mp4"
+		}
 	default:
 		return "application/octet-stream"
 	}

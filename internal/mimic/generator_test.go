@@ -3,6 +3,7 @@ package mimic
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
@@ -23,6 +24,7 @@ func TestGenerateExactLengthAndDeterminism(t *testing.T) {
 		{ContentType: "image/gif", Length: 300, Media: MediaImage},
 		{ContentType: "image/png", Length: 300, Media: MediaImage},
 		{ContentType: "application/octet-stream", Length: 777, Media: MediaBinary},
+		{ContentType: "video/mp4", Length: 777, Media: MediaVideo},
 	}
 	for _, sh := range shapes {
 		a, err := Generate("https://x/seed", sh)
@@ -75,9 +77,21 @@ func TestRangeConsistency(t *testing.T) {
 	}
 }
 
-func TestVideoRefused(t *testing.T) {
-	if _, err := Generate("s", Shape{Media: MediaVideo, Length: 100}); err == nil {
-		t.Fatal("expected video to be refused")
+func TestGenerateVideoOpaqueDeterministic(t *testing.T) {
+	shape := Shape{ContentType: "video/mp4", Length: 100, Media: MediaVideo}
+	a, err := Generate("https://ads.test/clip.mp4", shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Generate("https://ads.test/clip.mp4", shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) != int(shape.Length) {
+		t.Fatalf("len=%d want %d", len(a), shape.Length)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatal("video decoy is not deterministic")
 	}
 }
 
@@ -89,6 +103,77 @@ func TestServeFallsBackForVideo(t *testing.T) {
 	// probe will fail (nil resolver) but classification by .mp4 is video -> false.
 	if h.Serve(rec, r) {
 		t.Fatal("video should not be served by mimic")
+	}
+}
+
+func TestServeGeneratesOptInVideoWithoutProbe(t *testing.T) {
+	h := New(deadResolver{}, Options{AllowVideo: true})
+	r := httptest.NewRequest(http.MethodGet, "https://ads.test/clip.mp4", nil)
+	r.Host = "ads.test"
+	rec := httptest.NewRecorder()
+	if !h.Serve(rec, r) {
+		t.Fatal("video should be served when allow_video is true")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want %d", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "video/mp4" {
+		t.Errorf("content-type = %q", ct)
+	}
+	if rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Error("expected Accept-Ranges: bytes")
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("expected non-empty body")
+	}
+	if rec.Header().Get("Content-Length") != fmt.Sprint(rec.Body.Len()) {
+		t.Errorf("content-length = %q want %d", rec.Header().Get("Content-Length"), rec.Body.Len())
+	}
+	cached, ok := h.Lookup(r.URL.String())
+	if !ok {
+		t.Fatal("expected cached video decoy")
+	}
+	if cached.Shape.Media != MediaVideo {
+		t.Fatalf("cached media = %q want %q", cached.Shape.Media, MediaVideo)
+	}
+	if sum := sha256.Sum256(rec.Body.Bytes()); sum != cached.Hash {
+		t.Fatal("cached hash does not match served body")
+	}
+}
+
+func TestServeOptInVideoRange(t *testing.T) {
+	h := New(deadResolver{}, Options{AllowVideo: true})
+	fullReq := httptest.NewRequest(http.MethodGet, "https://ads.test/clip.mp4", nil)
+	fullReq.Host = "ads.test"
+	fullRec := httptest.NewRecorder()
+	if !h.Serve(fullRec, fullReq) {
+		t.Fatal("video should be served when allow_video is true")
+	}
+
+	rangeReq := httptest.NewRequest(http.MethodGet, "https://ads.test/clip.mp4", nil)
+	rangeReq.Host = "ads.test"
+	rangeReq.Header.Set("Range", "bytes=10-19")
+	rangeRec := httptest.NewRecorder()
+	if !h.Serve(rangeRec, rangeReq) {
+		t.Fatal("video range should be served when allow_video is true")
+	}
+	if rangeRec.Code != http.StatusPartialContent {
+		t.Fatalf("status=%d want %d", rangeRec.Code, http.StatusPartialContent)
+	}
+	if got := rangeRec.Body.Len(); got != 10 {
+		t.Fatalf("range body len=%d want 10", got)
+	}
+	if !bytes.Equal(rangeRec.Body.Bytes(), fullRec.Body.Bytes()[10:20]) {
+		t.Fatal("range body does not match full response slice")
+	}
+	if got := rangeRec.Header().Get("Content-Range"); got != "bytes 10-19/1024" {
+		t.Errorf("content-range = %q", got)
+	}
+	if got := rangeRec.Header().Get("Content-Length"); got != "10" {
+		t.Errorf("content-length = %q", got)
+	}
+	if got := rangeRec.Header().Get("Content-Type"); got != "video/mp4" {
+		t.Errorf("content-type = %q", got)
 	}
 }
 

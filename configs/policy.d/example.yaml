@@ -5,7 +5,7 @@
 # cushion get the safe default (stub 204). Actions:
 #   stub             serve a named catalog decoy; no upstream contact (default)
 #   forward-scrubbed strip identifiers, resolve real IP via independent resolver
-#   forward-mimic    shape-preserving decoy (image/js/binary; video deferred)
+#   forward-mimic    shape-preserving decoy (image/js/binary; opt-in opaque video)
 #   forward-asis     unmodified passthrough of decrypted traffic
 #   passthrough      TCP/QUIC splice, no TLS termination (for pinned domains)
 #

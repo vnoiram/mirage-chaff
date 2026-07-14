@@ -1,9 +1,10 @@
 // Package mimic implements forward-mimic: shape-preserving decoys that satisfy
 // "a real-looking resource loaded" without serving the real ad/tracker payload.
 //
-// Scope (design doc C-1): image / js / binary only. Video is intentionally
-// deferred — byte-exact, range-consistent, playable video decoys are not
-// feasible without fetching the real bytes, so callers fall back to stub/asis.
+// Scope: image / js / binary, plus opt-in video-shaped opaque bytes. Video
+// decoys are deterministic and range-consistent, but intentionally not playable
+// byte-valid MP4/WebM/HLS/DASH media; callers that do not opt in fall back to
+// stub/asis before generation.
 //
 // Generation is deterministic: the same (seed, shape) always yields identical
 // bytes, so a decoy's hash can be precomputed for manifest/SRI rewriting
@@ -33,8 +34,8 @@ type Shape struct {
 	Media       string // MediaImage / MediaJS / MediaBinary / MediaVideo
 }
 
-// ErrUnsupported is returned for media that mimic will not decoy (video), so the
-// caller falls back to stub/asis.
+// ErrUnsupported is returned for media that mimic will not decoy, so the caller
+// falls back to stub/asis.
 type ErrUnsupported struct{ Media string }
 
 func (e *ErrUnsupported) Error() string { return "mimic: unsupported media " + e.Media }
@@ -96,11 +97,9 @@ var (
 )
 
 // Generate returns deterministic decoy bytes of exactly shape.Length for the
-// given seed (the request URL). Video is refused.
+// given seed (the request URL). Video shapes use the opaque binary keystream;
+// the handler is responsible for enforcing the allow_video opt-in gate.
 func Generate(seed string, shape Shape) ([]byte, error) {
-	if shape.Media == MediaVideo {
-		return nil, &ErrUnsupported{Media: MediaVideo}
-	}
 	if shape.Length < 0 {
 		return nil, fmt.Errorf("mimic: negative length")
 	}

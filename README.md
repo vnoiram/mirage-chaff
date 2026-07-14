@@ -117,7 +117,7 @@ All phased milestones are implemented (see the design doc's rollout):
 3. **Forward + passthrough** — scrubbed/asis reverse-proxy via an independent
    resolver (DoH/DoT/plain), SNI-peek TCP splice, redacted observability.
 4. **forward-mimic** — deterministic image/js/binary decoys with Range support;
-   SRI/JSON `hashrewrite` (video deferred, C-1).
+   SRI/JSON `hashrewrite`; opt-in opaque video-shaped decoys.
 5. **QUIC** — HTTP/3 termination (quic-go) and a from-scratch RFC 9001 Initial
    SNI parser + UDP passthrough relay; `sd_notify` watchdog; circuit breaker.
 6. **Admin UI** — argon2id + sessions + CSRF + lockout + RBAC, embedded SPA,
