@@ -163,6 +163,14 @@ func (s *Server) handleAGHManagedConflicts(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, map[string]any{"conflicts": s.deps.AGHManaged.ListConflicts()})
 }
 
+func (s *Server) handleAGHManagedRollbacks(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{"rollbacks": s.deps.AGHManaged.ListRollbacks()})
+}
+
 func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
@@ -224,6 +232,20 @@ func (s *Server) handleAGHManagedConflictResolve(w http.ResponseWriter, r *http.
 	}
 	s.store.Audit(sess.username, "agh_managed.conflict.resolve", row.ID)
 	writeJSON(w, row)
+}
+
+func (s *Server) handleAGHManagedRollbackApply(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	rows, err := s.deps.AGHManaged.Rollback(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.rollback", fmt.Sprintf("updated=%d", len(rows)))
+	writeJSON(w, map[string]any{"updated": len(rows), "entries": rows})
 }
 
 func (s *Server) handleAGHManagedFeedStatus(w http.ResponseWriter, r *http.Request, sess *session) {

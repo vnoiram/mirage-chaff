@@ -97,6 +97,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='clearManagedCatalogSelection') clearManagedCatalogSelection();
   if(d.cmd==='bulkManagedCatalog') bulkManagedCatalog();
   if(d.cmd==='exportManagedFeedSnapshot') exportManagedFeedSnapshot();
+  if(d.cmd==='applyManagedRollback') applyManagedRollback(d.id||'');
   if(d.cmd==='resetPw') resetPw(d.username||'');
   if(d.cmd==='delUser') delUser(d.username||'');
 });
@@ -268,6 +269,7 @@ async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
   const sources=(await api('GET','/api/agh/sources')).sources||[];
   const conflicts=(await api('GET','/api/agh/managed-catalog/conflicts')).conflicts||[];
+  const rollbacks=(await api('GET','/api/agh/managed-catalog/rollbacks')).rollbacks||[];
   const rows=(await api('GET','/api/agh/managed-catalog')).entries||[];
   window.AGH_MANAGED_SOURCES=sources;
   v.appendChild(el(`<div class="card"><h2>AGH Managed Overview</h2><div class="kv">
@@ -293,6 +295,11 @@ async function viewAGHManaged(v){
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
   <div id="agh-feed-items"></div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Rollback Candidates</h2>
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>action</th><th>summary</th><th>entries</th><th></th></tr></thead><tbody>
+    ${rollbacks.slice(0,50).map(r=>`<tr><td>${esc(r.time?new Date(r.time).toLocaleString():'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.summary||'')}</td><td>${(r.entry_ids||[]).length}</td>
+    <td>${has('agh.manage')?`<button class="act danger" data-cmd="applyManagedRollback" data-id="${esc(r.id)}">rollback</button>`:''}</td></tr>`).join('')}
+    </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>domain</th><th>path</th><th>reason</th><th>sources</th><th>entries</th><th></th></tr></thead><tbody>
     ${conflicts.slice(0,200).map(c=>`<tr><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
@@ -371,6 +378,7 @@ async function resolveManagedConflict(id,action){ try{
 async function setEmergencyEmpty(on){ try{ await api('POST','/api/agh/rewrite-feed/emergency-empty',{enabled:on}); render(); }catch(e){ alert(e.message);} }
 async function refreshManagedTarget(){ try{ const r=await api('POST','/api/agh/rewrite-feed/refresh-target'); if(r.error) alert(r.error); render(); }catch(e){ alert(e.message);} }
 function exportManagedFeedSnapshot(){ window.location.href='/api/agh/rewrite-feed/export'; }
+async function applyManagedRollback(id){ if(!confirm('Apply rollback '+id+'?'))return; try{ await api('POST','/api/agh/managed-catalog/rollbacks/'+id+'/apply'); render(); }catch(e){ alert(e.message);} }
 async function previewManagedFeed(){ try{ const p=await api('GET','/api/agh/rewrite-feed/preview'); document.getElementById('agh-feed').textContent=p.lines||''; document.getElementById('agh-feed-items').innerHTML=`<div class="grid"><table><thead><tr><th>domain</th><th>included</th><th>reason</th><th>source</th></tr></thead><tbody>${(p.items||[]).slice(0,500).map(i=>`<tr><td>${esc(i.domain)}</td><td>${i.included?'yes':'no'}</td><td>${esc(i.reason)}</td><td>${esc((i.source_ids||[]).join(','))}</td></tr>`).join('')}</tbody></table></div>`; }catch(e){ alert(e.message);} }
 function filterManagedCatalog(){ const q=(document.getElementById('agh-cat-filter')?.value||'').toLowerCase(); document.querySelectorAll('tr[data-search]').forEach(tr=>{ tr.style.display=tr.dataset.search.includes(q)?'':'none'; }); }
 

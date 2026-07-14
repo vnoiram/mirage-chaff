@@ -131,12 +131,25 @@ type PendingDiff struct {
 	Changed []rulecatalog.Entry `json:"changed"`
 }
 
+// RollbackRecord captures one reversible catalog override change.
+type RollbackRecord struct {
+	ID           string                     `json:"id"`
+	Time         time.Time                  `json:"time"`
+	Action       string                     `json:"action"`
+	EntryIDs     []string                   `json:"entry_ids"`
+	Before       map[string]CatalogOverride `json:"before,omitempty"`
+	BeforeExists map[string]bool            `json:"before_exists,omitempty"`
+	After        map[string]CatalogOverride `json:"after,omitempty"`
+	Summary      string                     `json:"summary,omitempty"`
+}
+
 type state struct {
 	Sources        []Source                       `json:"sources"`
 	Entries        []rulecatalog.Entry            `json:"entries"`
 	Pending        map[string][]rulecatalog.Entry `json:"pending,omitempty"`
 	Overrides      map[string]CatalogOverride     `json:"overrides,omitempty"`
 	EmergencyEmpty *bool                          `json:"emergency_empty,omitempty"`
+	Rollbacks      []RollbackRecord               `json:"rollbacks,omitempty"`
 }
 
 // CatalogOverride holds admin-owned state over imported entries.
@@ -166,6 +179,7 @@ type Manager struct {
 	entries   map[string]rulecatalog.Entry
 	pending   map[string][]rulecatalog.Entry
 	overrides map[string]CatalogOverride
+	rollbacks []RollbackRecord
 
 	targetIPs      []net.IP
 	lastResolve    time.Time
@@ -208,6 +222,9 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		}
 		if st.EmergencyEmpty != nil {
 			m.cfg.EmergencyEmpty = *st.EmergencyEmpty
+		}
+		if st.Rollbacks != nil {
+			m.rollbacks = st.Rollbacks
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -534,8 +551,10 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogR
 		return CatalogRow{}, os.ErrNotExist
 	}
 	cur := m.overrides[targetID]
+	before, beforeExists := captureOverrides(m.overrides, []string{targetID})
 	mergeOverride(&cur, override)
 	m.overrides[targetID] = cur
+	m.recordRollbackLocked("conflict resolve", []string{targetID}, before, beforeExists, fmt.Sprintf("resolved %s", id))
 	if err := m.saveLocked(); err != nil {
 		return CatalogRow{}, err
 	}
@@ -551,8 +570,10 @@ func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) 
 		return CatalogRow{}, os.ErrNotExist
 	}
 	cur := m.overrides[id]
+	before, beforeExists := captureOverrides(m.overrides, []string{id})
 	mergeOverride(&cur, ov)
 	m.overrides[id] = cur
+	m.recordRollbackLocked("catalog patch", []string{id}, before, beforeExists, "patched 1 entry")
 	if err := m.saveLocked(); err != nil {
 		return CatalogRow{}, err
 	}
@@ -571,15 +592,72 @@ func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride) ([]CatalogR
 			return nil, fmt.Errorf("entry %q not found", id)
 		}
 	}
-	rows := make([]CatalogRow, 0, len(ids))
+	before, beforeExists := captureOverrides(m.overrides, ids)
 	for _, id := range ids {
 		cur := m.overrides[id]
 		mergeOverride(&cur, ov)
 		m.overrides[id] = cur
 	}
+	m.recordRollbackLocked("catalog bulk patch", ids, before, beforeExists, fmt.Sprintf("bulk patched %d entries", len(ids)))
 	if err := m.saveLocked(); err != nil {
 		return nil, err
 	}
+	return m.rowsForIDsLocked(ids), nil
+}
+
+func (m *Manager) ListRollbacks() []RollbackRecord {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]RollbackRecord, len(m.rollbacks))
+	copy(out, m.rollbacks)
+	sort.Slice(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
+	return out
+}
+
+func (m *Manager) Rollback(id string) ([]CatalogRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := -1
+	for i, rec := range m.rollbacks {
+		if rec.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, os.ErrNotExist
+	}
+	rec := m.rollbacks[idx]
+	targets := map[string]bool{}
+	for _, entryID := range rec.EntryIDs {
+		if _, ok := m.entries[entryID]; !ok {
+			return nil, fmt.Errorf("entry %q not found", entryID)
+		}
+		targets[entryID] = true
+	}
+	for i := idx + 1; i < len(m.rollbacks); i++ {
+		for _, entryID := range m.rollbacks[i].EntryIDs {
+			if targets[entryID] {
+				return nil, fmt.Errorf("newer rollback candidate overlaps entry %q", entryID)
+			}
+		}
+	}
+	for _, entryID := range rec.EntryIDs {
+		if rec.BeforeExists[entryID] {
+			m.overrides[entryID] = rec.Before[entryID]
+		} else {
+			delete(m.overrides, entryID)
+		}
+	}
+	m.rollbacks = append(m.rollbacks[:idx], m.rollbacks[idx+1:]...)
+	if err := m.saveLocked(); err != nil {
+		return nil, err
+	}
+	return m.rowsForIDsLocked(rec.EntryIDs), nil
+}
+
+func (m *Manager) rowsForIDsLocked(ids []string) []CatalogRow {
+	rows := make([]CatalogRow, 0, len(ids))
 	for _, id := range ids {
 		e := m.applyOverrideLocked(m.entries[id])
 		cur := m.overrides[id]
@@ -591,7 +669,67 @@ func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride) ([]CatalogR
 		}
 		return rows[i].ID < rows[j].ID
 	})
-	return rows, nil
+	return rows
+}
+
+func (m *Manager) recordRollbackLocked(action string, ids []string, before map[string]CatalogOverride, beforeExists map[string]bool, summary string) {
+	ids = uniqueStrings(ids)
+	after := make(map[string]CatalogOverride, len(ids))
+	for _, id := range ids {
+		after[id] = copyOverride(m.overrides[id])
+	}
+	h := sha1.Sum([]byte(action + "\x00" + strings.Join(ids, "\x00") + "\x00" + time.Now().UTC().Format(time.RFC3339Nano)))
+	rec := RollbackRecord{
+		ID:           "rb_" + hex.EncodeToString(h[:])[:12],
+		Time:         time.Now(),
+		Action:       action,
+		EntryIDs:     ids,
+		Before:       before,
+		BeforeExists: beforeExists,
+		After:        after,
+		Summary:      summary,
+	}
+	m.rollbacks = append(m.rollbacks, rec)
+	if len(m.rollbacks) > 50 {
+		m.rollbacks = m.rollbacks[len(m.rollbacks)-50:]
+	}
+}
+
+func captureOverrides(overrides map[string]CatalogOverride, ids []string) (map[string]CatalogOverride, map[string]bool) {
+	ids = uniqueStrings(ids)
+	before := make(map[string]CatalogOverride, len(ids))
+	beforeExists := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		ov, ok := overrides[id]
+		beforeExists[id] = ok
+		before[id] = copyOverride(ov)
+	}
+	return before, beforeExists
+}
+
+func copyOverride(ov CatalogOverride) CatalogOverride {
+	if ov.Verified != nil {
+		v := *ov.Verified
+		ov.Verified = &v
+	}
+	if ov.RewriteEnabled != nil {
+		v := *ov.RewriteEnabled
+		ov.RewriteEnabled = &v
+	}
+	return ov
+}
+
+func uniqueStrings(ids []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func (m *Manager) SetEmergencyEmpty(on bool) error {
@@ -909,6 +1047,9 @@ func (m *Manager) saveLocked() error {
 	st := state{Overrides: m.overrides, EmergencyEmpty: &emergency}
 	if len(m.pending) > 0 {
 		st.Pending = m.pending
+	}
+	if len(m.rollbacks) > 0 {
+		st.Rollbacks = m.rollbacks
 	}
 	for _, src := range m.sources {
 		st.Sources = append(st.Sources, src)

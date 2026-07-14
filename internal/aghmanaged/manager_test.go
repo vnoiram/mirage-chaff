@@ -3,6 +3,7 @@ package aghmanaged
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -563,6 +564,110 @@ func TestBulkPatchEntriesAppliesOverridesAtomically(t *testing.T) {
 		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
 			t.Fatalf("bulk patch was not atomic: %+v", row)
 		}
+	}
+}
+
+func TestRollbackRestoresCatalogOverrides(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||one.example.net^\n||two.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	off := false
+	if _, err := m.PatchEntry(rows[0].ID, CatalogOverride{RewriteEnabled: &off, RewriteReason: "manual disable"}); err != nil {
+		t.Fatal(err)
+	}
+	rollbacks := m.ListRollbacks()
+	if len(rollbacks) != 1 {
+		t.Fatalf("rollbacks = %+v", rollbacks)
+	}
+	restored, err := m.Rollback(rollbacks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0].ID != rows[0].ID || !restored[0].RewriteEnabled || restored[0].RewriteReason != "" {
+		t.Fatalf("restored = %+v", restored)
+	}
+	if _, ok := m.overrides[rows[0].ID]; ok {
+		t.Fatalf("override should be removed after rollback: %+v", m.overrides[rows[0].ID])
+	}
+	if got := m.ListRollbacks(); len(got) != 0 {
+		t.Fatalf("rollback record should be removed: %+v", got)
+	}
+
+	off = false
+	if _, err := m.BulkPatchEntries([]string{rows[0].ID, rows[1].ID}, CatalogOverride{Category: "ad_sdk", RewriteEnabled: &off, RewriteReason: "bulk disable"}); err != nil {
+		t.Fatal(err)
+	}
+	rollbacks = m.ListRollbacks()
+	if len(rollbacks) != 1 || len(rollbacks[0].EntryIDs) != 2 {
+		t.Fatalf("bulk rollbacks = %+v", rollbacks)
+	}
+	restored, err = m.Rollback(rollbacks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 2 {
+		t.Fatalf("bulk restored = %+v", restored)
+	}
+	for _, row := range restored {
+		if row.Category == "ad_sdk" || !row.RewriteEnabled || row.RewriteReason != "" {
+			t.Fatalf("row after bulk rollback = %+v", row)
+		}
+	}
+}
+
+func TestRollbackRejectsOverlappingNewerChangeAndCapsHistory(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||one.example.net^\n||two.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	off := false
+	if _, err := m.PatchEntry(rows[0].ID, CatalogOverride{RewriteEnabled: &off, RewriteReason: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	first := m.ListRollbacks()[0]
+	if _, err := m.PatchEntry(rows[0].ID, CatalogOverride{RewriteReason: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Rollback(first.ID); err == nil {
+		t.Fatal("expected older overlapping rollback to be rejected")
+	}
+	if got := m.overrides[rows[0].ID].RewriteReason; got != "second" {
+		t.Fatalf("rollback changed state despite overlap error: %q", got)
+	}
+
+	for i := 0; i < 55; i++ {
+		if _, err := m.PatchEntry(rows[1].ID, CatalogOverride{RewriteReason: fmt.Sprintf("cap-%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(m.ListRollbacks()); got != 50 {
+		t.Fatalf("rollback history len = %d, want 50", got)
 	}
 }
 

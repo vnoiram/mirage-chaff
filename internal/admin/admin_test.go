@@ -154,13 +154,17 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"unresolved conflicts",
 		"/api/agh/managed-catalog/conflicts",
 		"/api/agh/managed-catalog/bulk",
+		"/api/agh/managed-catalog/rollbacks",
 		"/api/agh/rewrite-feed/export",
 		"resolveManagedConflict",
 		"bulkManagedCatalog",
 		"selectManagedCatalogVisible",
 		"exportManagedFeedSnapshot",
+		"applyManagedRollback",
+		"Rollback Candidates",
 		"Apply bulk edit",
 		"Export snapshot",
+		"rollback",
 		"disable rewrite",
 		"needs test",
 		"allow exception wins",
@@ -168,6 +172,7 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"/api/agh/sources/'+id+'/reject",
 		"/api/agh/sources/'+id+'/pending-diff",
 		"/api/agh/managed-catalog/conflicts/'+id+'/resolve",
+		"/api/agh/managed-catalog/rollbacks/'+id+'/apply",
 		"/api/agh/rewrite-feed/refresh-target",
 	} {
 		if !strings.Contains(html, want) {
@@ -470,6 +475,120 @@ func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
 		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
 			t.Fatalf("row after bulk handler = %+v", row)
 		}
+	}
+}
+
+func TestAGHManagedRollbackHandlersRBAC(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policy")
+	catalogDir := filepath.Join(dir, "catalog")
+	if err := os.MkdirAll(policyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(catalogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := policy.Load(policyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||rollback.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := managed.CatalogRows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	off := false
+	if _, err := managed.PatchEntry(rows[0].ID, aghmanaged.CatalogOverride{RewriteEnabled: &off, RewriteReason: "manual disable"}); err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{
+		Version:    "test",
+		ConfigPath: filepath.Join(dir, "mirage-chaff.conf"),
+		Paths:      config.PathsConfig{PolicyDir: policyDir, CatalogDir: catalogDir, StateDir: dir},
+		Recorder:   observability.NewRecorder(true, 8),
+		Engine:     policy.NewEngine(rs),
+		AGHManaged: managed,
+	})
+	h := s.Handler()
+	viewerCookie, viewerCSRF := loginForTest(t, h, "viewer", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agh/managed-catalog/rollbacks", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer rollbacks status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var listed struct {
+		Rollbacks []struct {
+			ID string `json:"id"`
+		} `json:"rollbacks"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Rollbacks) != 1 || listed.Rollbacks[0].ID == "" {
+		t.Fatalf("rollbacks response = %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/managed-catalog/rollbacks/"+listed.Rollbacks[0].ID+"/apply", nil)
+	req.Header.Set("X-CSRF-Token", viewerCSRF)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer rollback status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/managed-catalog/rollbacks/"+listed.Rollbacks[0].ID+"/apply", nil)
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin rollback status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var resp struct {
+		Updated int `json:"updated"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Updated != 1 {
+		t.Fatalf("rollback response = %s", rr.Body.String())
+	}
+	row := managed.CatalogRows()[0]
+	if !row.RewriteEnabled || row.RewriteReason != "" {
+		t.Fatalf("row after rollback = %+v", row)
 	}
 }
 
