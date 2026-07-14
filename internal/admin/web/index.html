@@ -101,6 +101,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='editManagedCatalogRow') editManagedCatalogRow(d.id||'');
   if(d.cmd==='saveManagedCatalogRow') saveManagedCatalogRow(d.id||'');
   if(d.cmd==='cancelManagedCatalogRow') cancelManagedCatalogRow(d.id||'');
+  if(d.cmd==='toggleManagedCatalogDetails') toggleManagedCatalogDetails(d.id||'');
   if(d.cmd==='resetPw') resetPw(d.username||'');
   if(d.cmd==='delUser') delUser(d.username||'');
 });
@@ -270,6 +271,19 @@ function catalogRows(rows){
 function optionHTML(value,current,label){
   return `<option value="${esc(value)}" ${String(current??'')===String(value)?'selected':''}>${esc(label||value)}</option>`;
 }
+function managedCatalogDetailRow(r){
+  const id=esc(r.id);
+  return `<tr class="agh-cat-detail" data-managed-detail="${id}"><td></td><td colspan="9"><div class="kv">
+    <div>entry id</div><div>${id}</div>
+    <div>source</div><div>${esc(r.source?.name||'')} ${esc(r.source?.type?`(${r.source.type})`:'')}</div>
+    <div>source URL</div><div>${esc(r.source?.url||'')}</div>
+    <div>original_rule</div><div>${esc(r.original_rule||'')}</div>
+    <div>match</div><div>${esc(r.match?.domain||'')}${r.match?.path?esc(' '+r.match.path):''}</div>
+    <div>layer</div><div>${esc(r.layer||'')}</div>
+    <div>unsupported</div><div>${r.unsupported?'yes':'no'}</div>
+    <div>classification</div><div>${esc([r.category,r.resource_type,r.review_status,r.confidence].filter(Boolean).join(' / '))}</div>
+  </div></td></tr>`;
+}
 function managedCatalogRow(r,editing){
   const search=esc([r.match?.domain,(r.source_ids||[]).join(','),r.category,r.resource_type,r.review_status,r.confidence].join(' ').toLowerCase());
   const id=esc(r.id);
@@ -284,7 +298,7 @@ function managedCatalogRow(r,editing){
     <td><button class="act" data-cmd="saveManagedCatalogRow" data-id="${id}">save</button><button class="act" data-cmd="cancelManagedCatalogRow" data-id="${id}">cancel</button></td></tr>`;
   }
   return `<tr data-search="${search}" data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
-    <td>${has('agh.manage')?`<button class="act" data-cmd="editManagedCatalogRow" data-id="${id}">edit</button><button class="act" data-cmd="managedRewrite" data-id="${id}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`;
+    <td><button class="act" data-cmd="toggleManagedCatalogDetails" data-id="${id}">details</button>${has('agh.manage')?`<button class="act" data-cmd="editManagedCatalogRow" data-id="${id}">edit</button><button class="act" data-cmd="managedRewrite" data-id="${id}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`;
 }
 
 async function viewAGHManaged(v){
@@ -374,6 +388,16 @@ function managedRowByID(id){ return (window.AGH_MANAGED_ROWS||[]).find(r=>r.id==
 function replaceManagedCatalogRow(id,editing){ const r=managedRowByID(id); const tr=document.querySelector(`tr[data-managed-row="${CSS.escape(id)}"]`); if(r&&tr) tr.outerHTML=managedCatalogRow(r,editing); }
 function editManagedCatalogRow(id){ replaceManagedCatalogRow(id,true); }
 function cancelManagedCatalogRow(id){ replaceManagedCatalogRow(id,false); }
+function toggleManagedCatalogDetails(id){
+  const existing=document.querySelector(`tr[data-managed-detail="${CSS.escape(id)}"]`);
+  if(existing){ existing.remove(); const b=document.querySelector(`button[data-cmd="toggleManagedCatalogDetails"][data-id="${CSS.escape(id)}"]`); if(b) b.textContent='details'; return; }
+  const r=managedRowByID(id);
+  const tr=document.querySelector(`tr[data-managed-row="${CSS.escape(id)}"]`);
+  if(!r||!tr) return;
+  tr.insertAdjacentHTML('afterend',managedCatalogDetailRow(r));
+  const b=tr.querySelector(`button[data-cmd="toggleManagedCatalogDetails"]`);
+  if(b) b.textContent='hide';
+}
 async function saveManagedCatalogRow(id){ try{
   const r=managedRowByID(id);
   const tr=document.querySelector(`tr[data-managed-row="${CSS.escape(id)}"]`);
