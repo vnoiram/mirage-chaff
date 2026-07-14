@@ -92,6 +92,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='rejectManagedSource') rejectManagedSource(d.id||'');
   if(d.cmd==='deleteManagedSource') deleteManagedSource(d.id||'');
   if(d.cmd==='managedRewrite') setManagedRewrite(d.id||'', d.enabled==='true');
+  if(d.cmd==='resolveManagedConflict') resolveManagedConflict(d.id||'', d.action||'');
   if(d.cmd==='resetPw') resetPw(d.username||'');
   if(d.cmd==='delUser') delUser(d.username||'');
 });
@@ -262,6 +263,7 @@ function catalogRows(rows){
 async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
   const sources=(await api('GET','/api/agh/sources')).sources||[];
+  const conflicts=(await api('GET','/api/agh/managed-catalog/conflicts')).conflicts||[];
   const rows=(await api('GET','/api/agh/managed-catalog')).entries||[];
   window.AGH_MANAGED_SOURCES=sources;
   v.appendChild(el(`<div class="card"><h2>AGH Managed Overview</h2><div class="kv">
@@ -273,6 +275,7 @@ async function viewAGHManaged(v){
     <div>resolved IPs</div><div>${esc((status.resolved_ips||[]).join(', ')||'none')}</div>
     <div>target cache</div><div>${status.target_cache_used?'stale cache in use':'fresh or not needed'}</div>
     <div>feed items</div><div>${status.item_count||0} included / ${status.excluded_count||0} excluded</div>
+    <div>unresolved conflicts</div><div>${status.conflict_count||0}</div>
     <div>source health</div><div>${status.pending_sources||0} pending / ${status.stale_sources||0} stale</div>
     <div>last source sync</div><div>${esc(status.last_source_sync?new Date(status.last_source_sync).toLocaleString():'never')}</div>
     <div>last generated</div><div>${esc(status.last_generated?new Date(status.last_generated).toLocaleString():'never')}</div>
@@ -285,6 +288,11 @@ async function viewAGHManaged(v){
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
   <div id="agh-feed-items"></div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th>domain</th><th>path</th><th>reason</th><th>sources</th><th>entries</th><th></th></tr></thead><tbody>
+    ${conflicts.slice(0,200).map(c=>`<tr><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
+    <td>${has('agh.manage')?`<button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="disable">disable rewrite</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="needs_test">needs test</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="allow_exception">allow exception wins</button>`:''}</td></tr>`).join('')}
+    </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Sources</h2>
     ${has('agh.manage')?`<div class="row">
       <select id="agh-src-type"><option value="filter_url">filter URL</option><option value="manual">manual</option></select>
@@ -319,6 +327,14 @@ async function approveManagedSource(id){ try{ await api('POST','/api/agh/sources
 async function rejectManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/reject'); render(); }catch(e){ alert(e.message);} }
 async function deleteManagedSource(id){ if(!confirm('Delete source '+id+'?'))return; try{ await api('DELETE','/api/agh/sources/'+id); render(); }catch(e){ alert(e.message);} }
 async function setManagedRewrite(id,on){ try{ await api('PATCH','/api/agh/managed-catalog/'+id,{rewrite_enabled:on,rewrite_reason:on?'manual enable':'manual disable'}); render(); }catch(e){ alert(e.message);} }
+async function resolveManagedConflict(id,action){ try{
+  let body={};
+  if(action==='disable') body={rewrite_enabled:false,rewrite_reason:'conflict resolution'};
+  if(action==='needs_test') body={review_status:'needs_test',rewrite_reason:'conflict needs test'};
+  if(action==='allow_exception') body={category:'allow_exception',review_status:'approved',rewrite_enabled:false,rewrite_reason:'allow exception wins'};
+  await api('POST','/api/agh/managed-catalog/conflicts/'+id+'/resolve',body);
+  render();
+}catch(e){ alert(e.message);} }
 async function setEmergencyEmpty(on){ try{ await api('POST','/api/agh/rewrite-feed/emergency-empty',{enabled:on}); render(); }catch(e){ alert(e.message);} }
 async function refreshManagedTarget(){ try{ const r=await api('POST','/api/agh/rewrite-feed/refresh-target'); if(r.error) alert(r.error); render(); }catch(e){ alert(e.message);} }
 async function previewManagedFeed(){ try{ const p=await api('GET','/api/agh/rewrite-feed/preview'); document.getElementById('agh-feed').textContent=p.lines||''; document.getElementById('agh-feed-items').innerHTML=`<div class="grid"><table><thead><tr><th>domain</th><th>included</th><th>reason</th><th>source</th></tr></thead><tbody>${(p.items||[]).slice(0,500).map(i=>`<tr><td>${esc(i.domain)}</td><td>${i.included?'yes':'no'}</td><td>${esc(i.reason)}</td><td>${esc((i.source_ids||[]).join(','))}</td></tr>`).join('')}</tbody></table></div>`; }catch(e){ alert(e.message);} }

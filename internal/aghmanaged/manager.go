@@ -71,6 +71,7 @@ type FeedStatus struct {
 	TargetCacheUsed bool      `json:"target_cache_used,omitempty"`
 	ItemCount       int       `json:"item_count"`
 	ExcludedCount   int       `json:"excluded_count"`
+	ConflictCount   int       `json:"conflict_count"`
 	EmergencyEmpty  bool      `json:"emergency_empty"`
 	Sources         int       `json:"sources"`
 	PendingSources  int       `json:"pending_sources"`
@@ -109,6 +110,17 @@ type CatalogRow struct {
 	SourceIDs      []string `json:"source_ids,omitempty"`
 	RewriteEnabled bool     `json:"rewrite_enabled"`
 	RewriteReason  string   `json:"rewrite_reason,omitempty"`
+}
+
+// Conflict is a grouped domain/path disagreement that blocks feed emission.
+type Conflict struct {
+	ID             string       `json:"id"`
+	Domain         string       `json:"domain"`
+	Path           string       `json:"path,omitempty"`
+	SourceIDs      []string     `json:"source_ids,omitempty"`
+	Reasons        []string     `json:"reasons"`
+	Entries        []CatalogRow `json:"entries"`
+	ResolutionHint string       `json:"resolution_hint,omitempty"`
 }
 
 // PendingDiff describes a pending large-change review for one source.
@@ -480,6 +492,57 @@ func (m *Manager) CatalogRows() []CatalogRow {
 	return rows
 }
 
+func (m *Manager) ListConflicts() []Conflict {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	entries := make([]rulecatalog.Entry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, m.applyOverrideLocked(e))
+	}
+	return buildConflicts(entries, m.overrides, m.cfg)
+}
+
+func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries := make([]rulecatalog.Entry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, m.applyOverrideLocked(e))
+	}
+	conflicts := buildConflicts(entries, m.overrides, m.cfg)
+	var targetID string
+	for _, c := range conflicts {
+		if c.ID != id {
+			continue
+		}
+		for _, row := range c.Entries {
+			if row.Category != "allow_exception" && row.RewriteEnabled {
+				targetID = row.ID
+				break
+			}
+		}
+		if targetID == "" && len(c.Entries) > 0 {
+			targetID = c.Entries[0].ID
+		}
+		break
+	}
+	if targetID == "" {
+		return CatalogRow{}, os.ErrNotExist
+	}
+	e, ok := m.entries[targetID]
+	if !ok {
+		return CatalogRow{}, os.ErrNotExist
+	}
+	cur := m.overrides[targetID]
+	mergeOverride(&cur, override)
+	m.overrides[targetID] = cur
+	if err := m.saveLocked(); err != nil {
+		return CatalogRow{}, err
+	}
+	e = m.applyOverrideLocked(e)
+	return CatalogRow{Entry: e, SourceIDs: []string{e.Source.Name}, RewriteEnabled: rewriteEnabled(e, cur, m.cfg), RewriteReason: cur.RewriteReason}, nil
+}
+
 func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -581,6 +644,12 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		TargetName: cfg.TargetName, ResolvedIPs: ipStrings(ips), LastResolve: lastResolve,
 		LastResolveErr: lastResolveErr, TargetCacheUsed: targetCacheUsed, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
 	}
+	conflicts := buildConflicts(entries, overrides, cfg)
+	conflictKeys := map[string]bool{}
+	for _, conflict := range conflicts {
+		conflictKeys[domainPathKey(conflict.Domain, conflict.Path)] = true
+	}
+	status.ConflictCount = len(conflicts)
 	fmt.Fprintf(&b, "! mirage-chaff managed rewrites\n! generated_at=%s\n! target_mode=%s target_name=%s\n", now.Format(time.RFC3339), status.TargetMode, cfg.TargetName)
 	if targetCacheUsed {
 		fmt.Fprintf(&b, "! target_resolution=stale-cache last_success=%s error=%s\n", lastResolve.Format(time.RFC3339), lastResolveErr)
@@ -605,7 +674,6 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	}
 	staleSourceTTL := staleSourceDuration(cfg.Scheduler.StaleSourceTTL)
 	staleSources := map[string]bool{}
-	conflicts := conflictKeys(entries)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Match.Domain != entries[j].Match.Domain {
 			return entries[i].Match.Domain < entries[j].Match.Domain
@@ -615,7 +683,7 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	var items []FeedItem
 	for _, e := range entries {
 		ov := overrides[e.ID]
-		item := m.feedItem(e, ov, cfg, ips, conflicts[entryKey(e)])
+		item := m.feedItem(e, ov, cfg, ips, conflictKeys[entryKey(e)])
 		if staleSourceTTL > 0 {
 			if src, ok := sourceByID[e.Source.Name]; ok && src.Type == SourceFilterURL && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > staleSourceTTL {
 				item.Included = false
@@ -920,33 +988,125 @@ func sortEntries(entries []rulecatalog.Entry) {
 	})
 }
 
-func conflictKeys(entries []rulecatalog.Entry) map[string]bool {
-	type seen struct {
-		category string
-		review   string
-		allow    bool
-	}
-	seenByKey := map[string]seen{}
-	conflicts := map[string]bool{}
+func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOverride, cfg config.AGHManagedConfig) []Conflict {
+	grouped := map[string][]CatalogRow{}
 	for _, e := range entries {
 		if e.Match.Domain == "" {
 			continue
 		}
-		k := entryKey(e)
-		cur := seen{category: e.Category, review: e.ReviewStatus, allow: e.Category == "allow_exception"}
-		if old, ok := seenByKey[k]; ok {
-			if old.category != cur.category || old.review != cur.review || old.allow != cur.allow {
-				conflicts[k] = true
-			}
+		ov := overrides[e.ID]
+		row := CatalogRow{
+			Entry:          e,
+			SourceIDs:      []string{e.Source.Name},
+			RewriteEnabled: rewriteEnabled(e, ov, cfg),
+			RewriteReason:  ov.RewriteReason,
+		}
+		grouped[entryKey(e)] = append(grouped[entryKey(e)], row)
+	}
+	var out []Conflict
+	for key, rows := range grouped {
+		if len(rows) < 2 {
 			continue
 		}
-		seenByKey[k] = cur
+		var participants []CatalogRow
+		for _, row := range rows {
+			if row.Category == "allow_exception" || row.RewriteEnabled {
+				participants = append(participants, row)
+			}
+		}
+		if len(participants) < 2 {
+			continue
+		}
+		categories := map[string]bool{}
+		reviews := map[string]bool{}
+		sourceIDs := map[string]bool{}
+		var hasAllow, hasRewrite bool
+		for _, row := range participants {
+			categories[row.Category] = true
+			reviews[row.ReviewStatus] = true
+			if row.Category == "allow_exception" {
+				hasAllow = true
+			} else if row.RewriteEnabled {
+				hasRewrite = true
+			}
+			for _, id := range row.SourceIDs {
+				sourceIDs[id] = true
+			}
+		}
+		var reasons []string
+		if len(categories) > 1 {
+			reasons = append(reasons, "category mismatch")
+		}
+		if len(reviews) > 1 {
+			reasons = append(reasons, "review_status mismatch")
+		}
+		if hasAllow && hasRewrite {
+			reasons = append(reasons, "allow_exception conflicts with rewrite candidate")
+		}
+		if len(reasons) == 0 {
+			continue
+		}
+		domain, path := splitEntryKey(key)
+		sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+		out = append(out, Conflict{
+			ID:             conflictID(domain, path),
+			Domain:         domain,
+			Path:           path,
+			SourceIDs:      sortedKeys(sourceIDs),
+			Reasons:        reasons,
+			Entries:        rows,
+			ResolutionHint: resolutionHint(reasons),
+		})
 	}
-	return conflicts
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Domain != out[j].Domain {
+			return out[i].Domain < out[j].Domain
+		}
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
 }
 
 func entryKey(e rulecatalog.Entry) string {
-	return e.Match.Domain + "\x00" + e.Match.Path
+	return domainPathKey(e.Match.Domain, e.Match.Path)
+}
+
+func domainPathKey(domain, path string) string {
+	return domain + "\x00" + path
+}
+
+func splitEntryKey(key string) (string, string) {
+	parts := strings.SplitN(key, "\x00", 2)
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+	return parts[0], parts[1]
+}
+
+func conflictID(domain, path string) string {
+	h := sha1.Sum([]byte(domainPathKey(domain, path)))
+	return "conflict_" + hex.EncodeToString(h[:])[:12]
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func resolutionHint(reasons []string) string {
+	for _, reason := range reasons {
+		if reason == "allow_exception conflicts with rewrite candidate" {
+			return "disable the rewrite candidate or classify it as an allow_exception"
+		}
+	}
+	return "align category or review_status on the conflicting entries"
 }
 
 func countImported(entries []rulecatalog.Entry) (unsupported, allow int) {

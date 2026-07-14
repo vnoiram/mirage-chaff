@@ -154,6 +154,14 @@ func (s *Server) handleAGHManagedCatalog(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, map[string]any{"entries": s.deps.AGHManaged.CatalogRows()})
 }
 
+func (s *Server) handleAGHManagedConflicts(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{"conflicts": s.deps.AGHManaged.ListConflicts()})
+}
+
 func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
@@ -169,6 +177,24 @@ func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.store.Audit(sess.username, "agh_managed.catalog.patch", row.ID)
+	writeJSON(w, row)
+}
+
+func (s *Server) handleAGHManagedConflictResolve(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req aghmanaged.CatalogOverride
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	row, err := s.deps.AGHManaged.ResolveConflict(r.PathValue("id"), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.conflict.resolve", row.ID)
 	writeJSON(w, row)
 }
 

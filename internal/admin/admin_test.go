@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vnoiram/mirage-chaff/internal/aghmanaged"
 	"github.com/vnoiram/mirage-chaff/internal/config"
 	"github.com/vnoiram/mirage-chaff/internal/observability"
 	"github.com/vnoiram/mirage-chaff/internal/policy"
@@ -149,9 +151,16 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"manual",
 		"target_cache_used",
 		"pending_sources",
+		"unresolved conflicts",
+		"/api/agh/managed-catalog/conflicts",
+		"resolveManagedConflict",
+		"disable rewrite",
+		"needs test",
+		"allow exception wins",
 		"/api/agh/sources/'+id+'/approve",
 		"/api/agh/sources/'+id+'/reject",
 		"/api/agh/sources/'+id+'/pending-diff",
+		"/api/agh/managed-catalog/conflicts/'+id+'/resolve",
 		"/api/agh/rewrite-feed/refresh-target",
 	} {
 		if !strings.Contains(html, want) {
@@ -168,6 +177,111 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		if strings.Contains(html, bad) {
 			t.Fatalf("admin UI still contains vulnerable dynamic action pattern %q", bad)
 		}
+	}
+}
+
+func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policy")
+	catalogDir := filepath.Join(dir, "catalog")
+	if err := os.MkdirAll(policyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(catalogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := policy.Load(policyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "tracker", Enabled: true, Content: "||conflict.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "allow", Enabled: true, Content: "@@||conflict.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), tracker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), allow.ID); err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{
+		Version:    "test",
+		ConfigPath: filepath.Join(dir, "mirage-chaff.conf"),
+		Paths:      config.PathsConfig{PolicyDir: policyDir, CatalogDir: catalogDir, StateDir: dir},
+		Recorder:   observability.NewRecorder(true, 8),
+		Engine:     policy.NewEngine(rs),
+		AGHManaged: managed,
+	})
+	h := s.Handler()
+	viewerCookie, viewerCSRF := loginForTest(t, h, "viewer", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agh/managed-catalog/conflicts", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer conflicts status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var listed struct {
+		Conflicts []struct {
+			ID string `json:"id"`
+		} `json:"conflicts"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Conflicts) != 1 || listed.Conflicts[0].ID == "" {
+		t.Fatalf("conflicts response = %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/managed-catalog/conflicts/"+listed.Conflicts[0].ID+"/resolve", strings.NewReader(`{"rewrite_enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", viewerCSRF)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer resolve status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/managed-catalog/conflicts/"+listed.Conflicts[0].ID+"/resolve", strings.NewReader(`{"rewrite_enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin resolve status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := managed.ListConflicts(); len(got) != 0 {
+		t.Fatalf("conflict still listed after admin resolve: %+v", got)
 	}
 }
 

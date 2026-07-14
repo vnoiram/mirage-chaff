@@ -421,6 +421,91 @@ func TestStaleSourceTTLExcludesOnlyRemoteSources(t *testing.T) {
 	}
 }
 
+func TestConflictsListExcludeAndResolve(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker, err := m.UpsertSource(Source{Type: SourceManual, Name: "tracker", Enabled: true, Content: "||conflict.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := m.UpsertSource(Source{Type: SourceManual, Name: "allow", Enabled: true, Content: "@@||conflict.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), tracker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), allow.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts := m.ListConflicts()
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	if conflicts[0].Domain != "conflict.example.net" || len(conflicts[0].Entries) != 2 {
+		t.Fatalf("conflict = %+v", conflicts[0])
+	}
+	if !strings.Contains(strings.Join(conflicts[0].Reasons, ","), "allow_exception conflicts with rewrite candidate") {
+		t.Fatalf("conflict reasons = %+v", conflicts[0].Reasons)
+	}
+
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status.ConflictCount != 1 {
+		t.Fatalf("status = %+v", p.Status)
+	}
+	var sawUnresolved bool
+	for _, item := range p.Items {
+		if item.Domain == "conflict.example.net" && item.Reason == "conflict unresolved" {
+			sawUnresolved = true
+		}
+	}
+	if !sawUnresolved {
+		t.Fatalf("preview items did not explain unresolved conflict: %+v", p.Items)
+	}
+	if strings.Contains(p.Lines, "conflict.example.net") {
+		t.Fatalf("unresolved conflict should not be emitted:\n%s", p.Lines)
+	}
+
+	off := false
+	if _, err := m.ResolveConflict(conflicts[0].ID, CatalogOverride{RewriteEnabled: &off, RewriteReason: "manual disable"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.ListConflicts(); len(got) != 0 {
+		t.Fatalf("resolved conflict still listed: %+v", got)
+	}
+	p, err = m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status.ConflictCount != 0 {
+		t.Fatalf("status after resolve = %+v", p.Status)
+	}
+	var sawDisabled, sawStillUnresolved bool
+	for _, item := range p.Items {
+		if item.Domain != "conflict.example.net" {
+			continue
+		}
+		if item.Reason == "disabled by preset or user" {
+			sawDisabled = true
+		}
+		if item.Reason == "conflict unresolved" {
+			sawStillUnresolved = true
+		}
+	}
+	if !sawDisabled || sawStillUnresolved {
+		t.Fatalf("preview items after resolve = %+v", p.Items)
+	}
+}
+
 func TestManualSourceIDIncludesContent(t *testing.T) {
 	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), testConfig(), nil)
 	if err != nil {
