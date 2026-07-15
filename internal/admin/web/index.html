@@ -113,6 +113,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='saveManagedPreset') saveManagedPreset();
   if(d.cmd==='refreshAGHFilters') refreshAGHFilters();
   if(d.cmd==='checkManagedAGHStatus') checkManagedAGHStatus();
+  if(d.cmd==='useManagedAGHBaseURL') useManagedAGHBaseURL();
   if(d.cmd==='saveManagedTargetConfig') saveManagedTargetConfig();
   if(d.cmd==='saveManagedSchedulerConfig') saveManagedSchedulerConfig();
   if(d.cmd==='applyConfigReload') reload();
@@ -148,6 +149,7 @@ const TABS = [
   ['Audit','audit.view',viewAudit],
 ];
 let CUR = 'Dashboard';
+let AGH_MANAGED_LAST_BASE_URL = '';
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -529,6 +531,7 @@ async function viewAGHManaged(v){
       <select id="agh-src-type"><option value="filter_url">filter URL</option><option value="manual">manual</option><option value="agh_custom_rules">AGH custom rules</option><option value="agh_query_log_cname">AGH query log CNAME</option></select>
       <input id="agh-src-name" placeholder="name">
       <input id="agh-src-url" placeholder="filter URL or AGH base URL" style="min-width:320px">
+      <button class="act" data-cmd="useManagedAGHBaseURL" title="use checked AGH base URL">Use AGH URL</button>
       <input id="agh-src-priority" type="number" value="0" title="higher priority wins conflicts" style="width:90px">
       <select id="agh-src-stale-policy"><option value="exclude">exclude stale</option><option value="keep">keep stale</option></select>
       <input id="agh-src-interval" placeholder="sync interval" value="12h" style="width:110px">
@@ -576,11 +579,13 @@ function updateManagedSourceTypeFields(){
   const cfg=managedSourceTypeConfig(type);
   const url=document.getElementById('agh-src-url');
   const content=document.getElementById('agh-src-content');
+  const useAGHURL=document.querySelector('[data-cmd="useManagedAGHBaseURL"]');
   if(url){
     url.disabled=!cfg.url;
     url.placeholder=cfg.urlPlaceholder;
     url.required=!!cfg.url;
     if(!cfg.url) url.value='';
+    if(cfg.url&&type!=='filter_url'&&!url.value&&AGH_MANAGED_LAST_BASE_URL) url.value=AGH_MANAGED_LAST_BASE_URL;
   }
   if(content){
     content.disabled=!cfg.content;
@@ -588,8 +593,18 @@ function updateManagedSourceTypeFields(){
     content.required=!!cfg.content;
     if(!cfg.content) content.value='';
   }
+  if(useAGHURL){
+    useAGHURL.disabled=!(type==='agh_custom_rules'||type==='agh_query_log_cname');
+    useAGHURL.title=AGH_MANAGED_LAST_BASE_URL||'run AGH registration check first';
+  }
 }
 function managedSourceFormValue(id){ return (document.getElementById(id)?.value||'').trim(); }
+function useManagedAGHBaseURL(){
+  const type=document.getElementById('agh-src-type')?.value||'';
+  if(type!=='agh_custom_rules'&&type!=='agh_query_log_cname') return;
+  const url=document.getElementById('agh-src-url');
+  if(url&&AGH_MANAGED_LAST_BASE_URL) url.value=AGH_MANAGED_LAST_BASE_URL;
+}
 async function addManagedSource(){ try{
   const type=document.getElementById('agh-src-type').value;
   const cfg=managedSourceTypeConfig(type);
@@ -1064,6 +1079,8 @@ async function checkManagedAGHStatus(){ try{
   const out=document.getElementById('agh-registration-result');
   if(out) out.textContent='checking...';
   const r=await api('GET','/api/agh/rewrite-feed/agh-status');
+  AGH_MANAGED_LAST_BASE_URL = r.base_url||AGH_MANAGED_LAST_BASE_URL;
+  updateManagedSourceTypeFields();
   const f=r.matched_filter||{};
   const check=r.check_result||{};
   const raw=check.raw||{};
