@@ -96,6 +96,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='deleteManagedSource') deleteManagedSource(d.id||'');
   if(d.cmd==='managedRewrite') setManagedRewrite(d.id||'', d.enabled==='true');
   if(d.cmd==='resolveManagedConflict') resolveManagedConflict(d.id||'', d.action||'');
+  if(d.cmd==='resolveManagedConflictCustom') resolveManagedConflictCustom(d.id||'');
   if(d.cmd==='selectManagedCatalogVisible') selectManagedCatalogVisible();
   if(d.cmd==='clearManagedCatalogSelection') clearManagedCatalogSelection();
   if(d.cmd==='bulkManagedCatalog') bulkManagedCatalog();
@@ -390,8 +391,8 @@ async function viewAGHManaged(v){
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>domain</th><th>path</th><th>reason</th><th>sources</th><th>entries</th><th></th></tr></thead><tbody>
-    ${conflicts.slice(0,200).map(c=>`<tr><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
-    <td>${has('agh.manage')?`<button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="source_priority">source priority</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="disable">disable rewrite</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="needs_test">needs test</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="allow_exception">allow exception wins</button>`:''}</td></tr>`).join('')}
+    ${conflicts.slice(0,200).map(c=>`<tr data-managed-conflict="${esc(c.id)}"><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
+    <td>${has('agh.manage')?managedConflictControls(c):''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Sources</h2>
     ${has('agh.manage')?`<div class="row">
@@ -472,6 +473,20 @@ function managedHistoryCounts(e){
   if(e.entry_count) parts.push(`${Number(e.entry_count)} entries`);
   if(e.emergency_empty) parts.push('emergency');
   return esc(parts.join(', '));
+}
+function managedConflictControls(c){
+  const id=esc(c.id);
+  return `<button class="act" data-cmd="resolveManagedConflict" data-id="${id}" data-action="source_priority">source priority</button><button class="act" data-cmd="resolveManagedConflict" data-id="${id}" data-action="disable">disable rewrite</button><button class="act" data-cmd="resolveManagedConflict" data-id="${id}" data-action="needs_test">needs test</button><button class="act" data-cmd="resolveManagedConflict" data-id="${id}" data-action="allow_exception">allow exception wins</button>
+    <div class="row" style="margin-top:6px">
+      <input class="agh-conflict-category" placeholder="category">
+      <input class="agh-conflict-resource" placeholder="resource">
+      <select class="agh-conflict-review"><option value="">review</option><option value="candidate">candidate</option><option value="approved">approved</option><option value="rejected">rejected</option><option value="needs_test">needs_test</option><option value="disabled">disabled</option></select>
+      <select class="agh-conflict-confidence"><option value="">confidence</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select>
+      <input class="agh-conflict-action" placeholder="action">
+      <select class="agh-conflict-rewrite"><option value="">rewrite</option><option value="true">enable</option><option value="false">disable</option></select>
+      <input class="agh-conflict-reason" placeholder="rewrite reason">
+      <button class="act" data-cmd="resolveManagedConflictCustom" data-id="${id}">apply classification</button>
+    </div>`;
 }
 async function toggleManagedSourceEntries(id){ try{
   const existing=document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`);
@@ -611,6 +626,28 @@ async function resolveManagedConflict(id,action){ try{
   if(action==='disable') body={rewrite_enabled:false,rewrite_reason:'conflict resolution'};
   if(action==='needs_test') body={review_status:'needs_test',rewrite_reason:'conflict needs test'};
   if(action==='allow_exception') body={category:'allow_exception',review_status:'approved',rewrite_enabled:false,rewrite_reason:'allow exception wins'};
+  await api('POST','/api/agh/managed-catalog/conflicts/'+id+'/resolve',body);
+  render();
+}catch(e){ alert(e.message);} }
+async function resolveManagedConflictCustom(id){ try{
+  const tr=document.querySelector(`tr[data-managed-conflict="${CSS.escape(id)}"]`);
+  if(!tr) throw new Error('conflict row not found');
+  const body={};
+  const category=(tr.querySelector('.agh-conflict-category')?.value||'').trim();
+  const resource=(tr.querySelector('.agh-conflict-resource')?.value||'').trim();
+  const review=tr.querySelector('.agh-conflict-review')?.value||'';
+  const confidence=tr.querySelector('.agh-conflict-confidence')?.value||'';
+  const action=(tr.querySelector('.agh-conflict-action')?.value||'').trim();
+  const rewrite=tr.querySelector('.agh-conflict-rewrite')?.value||'';
+  const reason=(tr.querySelector('.agh-conflict-reason')?.value||'').trim();
+  if(category) body.category=category;
+  if(resource) body.resource_type=resource;
+  if(review) body.review_status=review;
+  if(confidence) body.confidence=confidence;
+  if(action) body.action=action;
+  if(rewrite) body.rewrite_enabled=rewrite==='true';
+  if(reason) body.rewrite_reason=reason;
+  if(!Object.keys(body).length) throw new Error('choose at least one classification value');
   await api('POST','/api/agh/managed-catalog/conflicts/'+id+'/resolve',body);
   render();
 }catch(e){ alert(e.message);} }
