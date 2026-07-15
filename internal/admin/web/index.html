@@ -102,6 +102,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='resolveManagedConflictCustom') resolveManagedConflictCustom(d.id||'');
   if(d.cmd==='selectManagedCatalogVisible') selectManagedCatalogVisible();
   if(d.cmd==='clearManagedCatalogSelection') clearManagedCatalogSelection();
+  if(d.cmd==='showMoreManagedCatalogRows') showMoreManagedCatalogRows();
   if(d.cmd==='bulkManagedCatalog') bulkManagedCatalog();
   if(d.cmd==='exportManagedFeedSnapshot') exportManagedFeedSnapshot();
   if(d.cmd==='toggleManagedRollbackDetails') toggleManagedRollbackDetails(d.id||'');
@@ -454,6 +455,7 @@ async function viewAGHManaged(v){
   window.AGH_MANAGED_SOURCES=sources;
   window.AGH_MANAGED_ROWS=rows;
   window.AGH_MANAGED_ROLLBACKS=rollbacks;
+  window.AGH_MANAGED_CATALOG_STATE={rows,limit:500};
   v.appendChild(el(`<div class="card"><h2>AGH Managed Overview</h2><div class="kv">
     <div>feed path</div><div>${esc(status.feed_path||'/agh/managed-rewrites.txt')}</div>
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
@@ -528,7 +530,7 @@ async function viewAGHManaged(v){
     ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${has('agh.manage')?`<input class="agh-src-priority" type="number" value="${Number(s.priority||0)}" style="width:80px">`:Number(s.priority||0)}</td><td>${has('agh.manage')?`<select class="agh-src-stale-policy">${optionHTML('exclude',s.stale_feed_policy||'exclude','exclude')}${optionHTML('keep',s.stale_feed_policy||'exclude','keep')}</select><button class="act" data-cmd="saveManagedSourceSettings" data-id="${esc(s.id)}">save</button>`:esc(s.stale_feed_policy||'exclude')}</td><td>${esc(s.sync_interval||'')}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${Number(s.last_duration_ms||0)}</td><td>${Number(s.consecutive_failures||0)}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
     <td><button class="act" data-cmd="toggleManagedSourceEntries" data-id="${esc(s.id)}">entries</button>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="editManagedSourceRow" data-id="${esc(s.id)}">edit</button><button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
     </tbody></table></div><div id="agh-source-detail" style="white-space:pre-wrap;max-height:260px;overflow:auto"></div></div>`));
-  v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="row"><input id="agh-cat-filter" oninput="filterManagedCatalog()" placeholder="filter domain/source/category/review">${managedCatalogFilterSelect('agh-cat-source','source',managedCatalogFilterValues(rows,r=>r.source_ids||[]))}${managedCatalogFilterSelect('agh-cat-category','category',managedCatalogFilterValues(rows,r=>r.category||''))}${managedCatalogFilterSelect('agh-cat-resource','resource',managedCatalogFilterValues(rows,r=>r.resource_type||''))}${managedCatalogFilterSelect('agh-cat-review','review',managedCatalogFilterValues(rows,r=>r.review_status||''))}<select id="agh-cat-rewrite" onchange="filterManagedCatalog()"><option value="">rewrite</option><option value="true">rewrite yes</option><option value="false">rewrite no</option></select><select id="agh-cat-unsupported" onchange="filterManagedCatalog()"><option value="">unsupported: ${unsupportedCount}</option><option value="true">unsupported only</option><option value="false">supported only</option></select></div>
+  v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="row"><input id="agh-cat-filter" oninput="filterManagedCatalog()" placeholder="filter domain/source/category/review">${managedCatalogFilterSelect('agh-cat-source','source',managedCatalogFilterValues(rows,r=>r.source_ids||[]))}${managedCatalogFilterSelect('agh-cat-category','category',managedCatalogFilterValues(rows,r=>r.category||''))}${managedCatalogFilterSelect('agh-cat-resource','resource',managedCatalogFilterValues(rows,r=>r.resource_type||''))}${managedCatalogFilterSelect('agh-cat-review','review',managedCatalogFilterValues(rows,r=>r.review_status||''))}<select id="agh-cat-rewrite" onchange="filterManagedCatalog()"><option value="">rewrite</option><option value="true">rewrite yes</option><option value="false">rewrite no</option></select><select id="agh-cat-unsupported" onchange="filterManagedCatalog()"><option value="">unsupported: ${unsupportedCount}</option><option value="true">unsupported only</option><option value="false">supported only</option></select><button class="act" data-cmd="showMoreManagedCatalogRows">show more</button><span id="agh-cat-count" class="muted"></span></div>
     ${has('agh.manage')?`<div class="row" style="margin-top:10px">
       <button class="act" data-cmd="selectManagedCatalogVisible">select visible</button><button class="act" data-cmd="clearManagedCatalogSelection">clear</button>
       <select id="agh-bulk-rewrite"><option value="">rewrite</option><option value="true">enable rewrite</option><option value="false">disable rewrite</option></select>
@@ -544,9 +546,9 @@ async function viewAGHManaged(v){
       <input id="agh-bulk-reason" placeholder="rewrite reason">
       <button class="act" data-cmd="bulkManagedCatalog">Apply bulk edit</button>
     </div>`:''}
-    <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th>changed by</th><th>feed included</th><th></th></tr></thead><tbody>
-    ${rows.slice(0,500).map(r=>managedCatalogRow(r,false)).join('')}
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th>changed by</th><th>feed included</th><th></th></tr></thead><tbody id="agh-cat-body">
     </tbody></table></div></div>`));
+  renderManagedCatalogRows();
 }
 async function addManagedSource(){ try{
   const type=document.getElementById('agh-src-type').value;
@@ -944,7 +946,8 @@ async function previewManagedFeed(){ try{
   document.getElementById('agh-feed').textContent=p.lines||'';
   document.getElementById('agh-feed-items').innerHTML=managedFeedPreviewDiagnostics(p)+managedFeedPreviewTable(p.items||[]);
 }catch(e){ alert(e.message);} }
-function filterManagedCatalog(){
+function managedCatalogFilteredRows(){
+  const state=window.AGH_MANAGED_CATALOG_STATE||{rows:[]};
   const q=(document.getElementById('agh-cat-filter')?.value||'').toLowerCase();
   const source=document.getElementById('agh-cat-source')?.value||'';
   const category=document.getElementById('agh-cat-category')?.value||'';
@@ -952,16 +955,37 @@ function filterManagedCatalog(){
   const review=document.getElementById('agh-cat-review')?.value||'';
   const rewrite=document.getElementById('agh-cat-rewrite')?.value||'';
   const unsupported=document.getElementById('agh-cat-unsupported')?.value||'';
-  document.querySelectorAll('tr[data-search]').forEach(tr=>{
-    const ok=tr.dataset.search.includes(q)
-      && (!source || (tr.dataset.source||'').split(',').includes(source))
-      && (!category || tr.dataset.category===category)
-      && (!resource || tr.dataset.resource===resource)
-      && (!review || tr.dataset.review===review)
-      && (!rewrite || tr.dataset.rewrite===rewrite)
-      && (!unsupported || tr.dataset.unsupported===unsupported);
-    tr.style.display=ok?'':'none';
+  return (state.rows||[]).filter(r=>{
+    const search=[r.match?.domain,managedSourceTraceRefSearch(r.source_refs,r.source_ids||[]),r.category,r.resource_type,r.risk,r.review_status,r.confidence,r.expected_catalog,r.action,r.notes,r.rewrite_reason,r.last_changed_by,r.last_feed_included_at].join(' ').toLowerCase();
+    return search.includes(q)
+      && (!source || (r.source_ids||[]).includes(source))
+      && (!category || (r.category||'')===category)
+      && (!resource || (r.resource_type||'')===resource)
+      && (!review || (r.review_status||'')===review)
+      && (!rewrite || String(!!r.rewrite_enabled)===rewrite)
+      && (!unsupported || String(!!r.unsupported)===unsupported);
   });
+}
+function renderManagedCatalogRows(){
+  const state=window.AGH_MANAGED_CATALOG_STATE;
+  const body=document.getElementById('agh-cat-body');
+  if(!state||!body) return;
+  const filtered=managedCatalogFilteredRows();
+  const shown=filtered.slice(0,state.limit||500);
+  body.innerHTML=shown.map(r=>managedCatalogRow(r,false)).join('')||'<tr><td colspan="17" class="muted">none</td></tr>';
+  const count=document.getElementById('agh-cat-count');
+  if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${(state.rows||[]).length} total`;
+}
+function filterManagedCatalog(){
+  const state=window.AGH_MANAGED_CATALOG_STATE;
+  if(state) state.limit=500;
+  renderManagedCatalogRows();
+}
+function showMoreManagedCatalogRows(){
+  const state=window.AGH_MANAGED_CATALOG_STATE;
+  if(!state) return;
+  state.limit=(state.limit||500)+500;
+  renderManagedCatalogRows();
 }
 
 async function viewCuration(v){
