@@ -531,9 +531,9 @@ async function viewAGHManaged(v){
     <td><button class="act" data-cmd="toggleManagedRollbackDetails" data-id="${esc(r.id)}">details</button>${has('agh.manage')?`<button class="act danger" data-cmd="applyManagedRollback" data-id="${esc(r.id)}">rollback</button>`:''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
-    <div class="row"><input id="agh-conflict-filter" oninput="filterManagedConflicts()" placeholder="filter conflict domain/path/reason/source/entry"><span id="agh-conflict-count" class="muted"></span></div>
+    <div class="row"><input id="agh-conflict-filter" oninput="filterManagedConflicts()" placeholder="filter conflict domain/path/reason/source/entry">${managedConflictFilterSelect('agh-conflict-source','source',managedConflictFilterValues(conflicts,'source'))}${managedConflictFilterSelect('agh-conflict-reason','reason',managedConflictFilterValues(conflicts,'reason'))}<span id="agh-conflict-count" class="muted"></span></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>domain</th><th>path</th><th>reason</th><th>sources</th><th>entries</th><th></th></tr></thead><tbody>
-    ${conflicts.slice(0,200).map(c=>`<tr data-managed-conflict="${esc(c.id)}" data-search="${esc(managedConflictSearch(c))}"><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
+    ${conflicts.slice(0,200).map(c=>`<tr data-managed-conflict="${esc(c.id)}" data-search="${esc(managedConflictSearch(c))}" data-sources="${esc(JSON.stringify(c.source_ids||[]))}" data-reasons="${esc(JSON.stringify(c.reasons||[]))}"><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
     <td>${has('agh.manage')?managedConflictControls(c):''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Scheduler Settings</h2>${managedSchedulerDiagnostics(scheduler)}<div style="margin-top:10px">${managedSchedulerConfigForm(scheduler)}</div></div>`));
@@ -845,12 +845,28 @@ function managedConflictSearch(c){
   const entries=(c.entries||[]).map(e=>`${(e.source_ids||[]).join(' ')} ${Number(e.source_priority||0)} ${e.category||''} ${e.review_status||''} ${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' ');
   return [c.domain,c.path,(c.reasons||[]).join(' '),(c.source_ids||[]).join(' '),entries].join(' ').toLowerCase();
 }
+function managedConflictFilterValues(conflicts,field){
+  const set={};
+  (conflicts||[]).forEach(c=>{
+    const values=field==='source'?(c.source_ids||[]):(c.reasons||[]);
+    values.forEach(v=>{ if(v) set[v]=true; });
+  });
+  return Object.keys(set).sort();
+}
+function managedConflictFilterSelect(id,label,values){
+  return `<select id="${esc(id)}" onchange="filterManagedConflicts()"><option value="">${esc(label)}</option>${(values||[]).map(v=>optionHTML(v,'')).join('')}</select>`;
+}
+function managedConflictDatasetList(row,name){
+  try{ return JSON.parse(row.dataset[name]||'[]'); }catch{ return []; }
+}
 function filterManagedConflicts(){
   const q=(document.getElementById('agh-conflict-filter')?.value||'').toLowerCase();
+  const source=document.getElementById('agh-conflict-source')?.value||'';
+  const reason=document.getElementById('agh-conflict-reason')?.value||'';
   const rows=[...document.querySelectorAll('tr[data-managed-conflict]')];
   let visible=0;
   rows.forEach(row=>{
-    const show=(row.dataset.search||'').includes(q);
+    const show=(row.dataset.search||'').includes(q)&&(!source||managedConflictDatasetList(row,'sources').includes(source))&&(!reason||managedConflictDatasetList(row,'reasons').includes(reason));
     row.style.display=show?'':'none';
     if(show) visible++;
   });
