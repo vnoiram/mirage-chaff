@@ -497,6 +497,17 @@ function managedFeedExportResultHTML(r){
   ];
   return `<div id="agh-feed-export-status"><strong>snapshot exported</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedConfigReloadResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-reload-status">error: ${esc(r.error)}</div>`;
+  if(r.reloading) return `<div id="agh-reload-status">applying reload...</div>`;
+  const rows=[
+    ['status',r.status||'reloaded'],
+    ['scope',r.scope||'managed config'],
+    ['next action','verify AGH registration or preview the feed']
+  ];
+  return `<div id="agh-reload-status"><strong>reload applied</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedTargetResultHTML(r){
   if(!r) return '';
   if(r.error) return `<div id="agh-target-status">error: ${esc(r.error)}</div>`;
@@ -510,7 +521,7 @@ function managedTargetResultHTML(r){
       ['static IPv6',(r.static_ipv6||[]).join(', ')||'none'],
       ['stale target TTL',r.stale_target_ttl||'']
     ];
-    return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button></div></div>`;
+    return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
   }
   const st=r.status||{};
   const rows=[
@@ -537,7 +548,7 @@ function managedSchedulerResultHTML(r){
     ['stale source TTL',s.stale_source_ttl||''],
     ['large change review',s.large_change_requires_review?'enabled':'disabled']
   ];
-  return `<div id="agh-scheduler-status"><strong>scheduler settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button></div></div>`;
+  return `<div id="agh-scheduler-status"><strong>scheduler settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
 }
 function managedSourceOperationResultHTML(r){
   if(!r) return '';
