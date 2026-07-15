@@ -75,7 +75,24 @@ func (s *Server) handleAGHManagedSourcePreview(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, map[string]any{"source": src, "entries": entries})
+	page := aghmanaged.PendingDiffEntriesPage(entries, aghManagedPendingDiffEntryQuery(r))
+	writeJSON(w, map[string]any{"source": src, "entries": page.Entries, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
+}
+
+func aghManagedPendingDiffEntryQuery(r *http.Request) aghmanaged.PendingDiffEntryQuery {
+	values := r.URL.Query()
+	q := aghmanaged.PendingDiffEntryQuery{Q: strings.TrimSpace(values.Get("q"))}
+	if v := strings.TrimSpace(values.Get("limit")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			q.Limit = parsed
+		}
+	}
+	if v := strings.TrimSpace(values.Get("offset")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			q.Offset = parsed
+		}
+	}
+	return q
 }
 
 func (s *Server) handleAGHManagedSourceDelete(w http.ResponseWriter, r *http.Request, sess *session) {

@@ -609,6 +609,33 @@ func TestAGHManagedSourceSyncAuditDetail(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
+	previewBody, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/sources/preview?q=allow+exception&limit=1&offset=0", bytes.NewReader(previewBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin source preview status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var previewResp struct {
+		Source  aghmanaged.Source             `json:"source"`
+		Entries []aghmanaged.PendingDiffEntry `json:"entries"`
+		Total   int                           `json:"total"`
+		Limit   int                           `json:"limit"`
+		Offset  int                           `json:"offset"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &previewResp); err != nil {
+		t.Fatal(err)
+	}
+	if previewResp.Source.ID != src.ID || previewResp.Total != 1 || previewResp.Limit != 1 || previewResp.Offset != 0 || len(previewResp.Entries) != 1 || previewResp.Entries[0].Match.Domain != "allow.example.net" {
+		t.Fatalf("source preview response = %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/agh/sources/"+src.ID+"/sync", nil)
 	req.Header.Set("X-CSRF-Token", adminCSRF)
 	req.AddCookie(adminCookie)
