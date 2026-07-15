@@ -186,6 +186,14 @@ func (s *Server) handleAGHManagedCatalog(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, map[string]any{"entries": page.Entries, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 }
 
+func (s *Server) handleAGHManagedCatalogFacets(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, s.deps.AGHManaged.CatalogFacets(aghManagedCatalogQuery(r)))
+}
+
 func aghManagedCatalogQuery(r *http.Request) aghmanaged.CatalogQuery {
 	values := r.URL.Query()
 	q := aghmanaged.CatalogQuery{

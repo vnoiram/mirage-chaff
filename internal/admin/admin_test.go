@@ -1535,6 +1535,21 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/managed-catalog/facets?source="+sourceB.ID+"&unsupported=true&limit=1&offset=10", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer managed catalog facets status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var facetsResp aghmanaged.CatalogFacets
+	if err := json.Unmarshal(rr.Body.Bytes(), &facetsResp); err != nil {
+		t.Fatal(err)
+	}
+	if facetsResp.Total != 1 || facetsResp.Unsupported != 1 || facetsResp.Supported != 0 || len(facetsResp.Sources) != 1 || facetsResp.Sources[0] != sourceB.ID {
+		t.Fatalf("managed catalog facets response = %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/agh/sources/missing/entries", nil)
 	req.AddCookie(viewerCookie)
 	h.ServeHTTP(rr, req)
