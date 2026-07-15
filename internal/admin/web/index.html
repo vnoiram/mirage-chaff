@@ -164,6 +164,7 @@ function render(){
   const tab = TABS.find(t=>t[0]===CUR) || TABS[0];
   document.getElementById('view').innerHTML='';
   tab[2](document.getElementById('view'));
+  if(CUR==='AGH Managed') initManagedSourceForm();
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
 }
 
@@ -558,11 +559,47 @@ async function viewAGHManaged(v){
     </tbody></table></div></div>`));
   renderManagedCatalogRows();
 }
+function managedSourceTypeConfig(type){
+  if(type==='manual') return {url:false, content:true, urlPlaceholder:'not used for manual source', contentPlaceholder:'manual domains or rules'};
+  if(type==='agh_custom_rules') return {url:true, content:false, urlPlaceholder:'AGH base URL for custom rules', contentPlaceholder:'not used for AGH custom rules'};
+  if(type==='agh_query_log_cname') return {url:true, content:false, urlPlaceholder:'AGH base URL for query log CNAME', contentPlaceholder:'not used for AGH query log CNAME'};
+  return {url:true, content:false, urlPlaceholder:'filter URL', contentPlaceholder:'not used for filter URL'};
+}
+function initManagedSourceForm(){
+  const type=document.getElementById('agh-src-type');
+  if(!type) return;
+  type.onchange=updateManagedSourceTypeFields;
+  updateManagedSourceTypeFields();
+}
+function updateManagedSourceTypeFields(){
+  const type=document.getElementById('agh-src-type')?.value||'filter_url';
+  const cfg=managedSourceTypeConfig(type);
+  const url=document.getElementById('agh-src-url');
+  const content=document.getElementById('agh-src-content');
+  if(url){
+    url.disabled=!cfg.url;
+    url.placeholder=cfg.urlPlaceholder;
+    url.required=!!cfg.url;
+    if(!cfg.url) url.value='';
+  }
+  if(content){
+    content.disabled=!cfg.content;
+    content.placeholder=cfg.contentPlaceholder;
+    content.required=!!cfg.content;
+    if(!cfg.content) content.value='';
+  }
+}
+function managedSourceFormValue(id){ return (document.getElementById(id)?.value||'').trim(); }
 async function addManagedSource(){ try{
   const type=document.getElementById('agh-src-type').value;
-  const body={type,name:document.getElementById('agh-src-name').value,enabled:true,priority:Number(document.getElementById('agh-src-priority')?.value||0),stale_feed_policy:document.getElementById('agh-src-stale-policy')?.value||'exclude',sync_interval:document.getElementById('agh-src-interval').value};
-  if(type==='manual') body.content=document.getElementById('agh-src-content').value;
-  else body.url=document.getElementById('agh-src-url').value;
+  const cfg=managedSourceTypeConfig(type);
+  const url=managedSourceFormValue('agh-src-url');
+  const content=managedSourceFormValue('agh-src-content');
+  if(cfg.url&&!url) throw new Error(type==='filter_url'?'url required':'agh base url required');
+  if(cfg.content&&!content) throw new Error('content required');
+  const body={type,name:managedSourceFormValue('agh-src-name'),enabled:true,priority:Number(document.getElementById('agh-src-priority')?.value||0),stale_feed_policy:document.getElementById('agh-src-stale-policy')?.value||'exclude',sync_interval:managedSourceFormValue('agh-src-interval')};
+  if(cfg.content) body.content=content;
+  if(cfg.url) body.url=url;
   await api('POST','/api/agh/sources',body);
   render();
 }catch(e){ alert(e.message);} }
