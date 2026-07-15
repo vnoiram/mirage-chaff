@@ -289,7 +289,9 @@ func (s *Server) handleAGHManagedFeedStatus(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, s.deps.AGHManaged.Status(r.Context()))
+	status := s.deps.AGHManaged.Status(r.Context())
+	status.FeedURL = aghManagedFeedURL(r, status.FeedPath)
+	writeJSON(w, status)
 }
 
 func (s *Server) handleAGHManagedFeedPreview(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -356,6 +358,30 @@ func mapBool(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func aghManagedFeedURL(r *http.Request, feedPath string) string {
+	if feedPath == "" {
+		feedPath = "/agh/managed-rewrites.txt"
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = strings.Split(forwarded, ",")[0]
+	}
+	host := r.Host
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		host = strings.Split(forwarded, ",")[0]
+	}
+	if host == "" {
+		return feedPath
+	}
+	if !strings.HasPrefix(feedPath, "/") {
+		feedPath = "/" + feedPath
+	}
+	return scheme + "://" + host + feedPath
 }
 
 func errString(err error) string {

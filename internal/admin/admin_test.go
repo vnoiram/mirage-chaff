@@ -70,6 +70,16 @@ func TestRBACCapabilities(t *testing.T) {
 	}
 }
 
+func TestAGHManagedFeedURLUsesForwardedHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/status", nil)
+	req.Host = "admin.internal:8443"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "mirage.example.net")
+	if got, want := aghManagedFeedURL(req, "/agh/managed-rewrites.txt"), "https://mirage.example.net/agh/managed-rewrites.txt"; got != want {
+		t.Fatalf("feed URL = %q, want %q", got, want)
+	}
+}
+
 func TestStoreCRUDAndAudit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "admin.json")
 	s, err := OpenStore(path)
@@ -155,6 +165,10 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"saveManagedSourceSettings",
 		"agh-src-stale-policy",
 		"refreshManagedTarget",
+		"Feed Setup",
+		"managedTargetState",
+		"AGH feed URL",
+		"DNS blocklists",
 		"filterManagedCatalog",
 		"managedCatalogFilterSelect",
 		"managedCatalogFilterValues",

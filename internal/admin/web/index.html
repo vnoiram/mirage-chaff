@@ -324,6 +324,12 @@ function managedCatalogFilterSelect(id,label,values){
 function managedCatalogFilterValues(rows,fn){
   return [...new Set(rows.map(fn).flat().filter(Boolean))].sort();
 }
+function managedTargetState(status){
+  const mode=status.target_mode||'resolved_ip';
+  if(mode==='static_ip') return (status.static_ips||[]).join(', ')||'no static IPs configured';
+  if(mode==='cname') return status.target_name?`CNAME ${status.target_name}`:'CNAME target missing';
+  return (status.resolved_ips||[]).join(', ')||'not resolved';
+}
 
 async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
@@ -356,6 +362,13 @@ async function viewAGHManaged(v){
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
   <div id="agh-feed-items"></div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Feed Setup</h2><div class="kv">
+    <div>AGH feed URL</div><div><code>${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')}</code></div>
+    <div>AGH setting</div><div>Filters - DNS blocklists - Add blocklist - Add a custom list</div>
+    <div>target output</div><div>${esc(managedTargetState(status))}</div>
+    <div>target mode</div><div>${esc(status.target_mode||'resolved_ip')}</div>
+    <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
+  </div></div>`));
   v.appendChild(el(`<div class="card"><h2>Feed Generation History</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>target mode</th><th>included</th><th>excluded</th><th>conflicts</th><th>emergency empty</th></tr></thead><tbody>
     ${(status.history||[]).slice(0,20).map(h=>`<tr><td>${esc(h.time?new Date(h.time).toLocaleString():'')}</td><td>${esc(h.target_mode||'')}</td><td>${h.included_count||0}</td><td>${h.excluded_count||0}</td><td>${h.conflict_count||0}</td><td>${h.emergency_empty?'yes':'no'}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}

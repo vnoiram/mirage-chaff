@@ -70,9 +70,11 @@ type Source struct {
 type FeedStatus struct {
 	Enabled         bool                   `json:"enabled"`
 	FeedPath        string                 `json:"feed_path"`
+	FeedURL         string                 `json:"feed_url,omitempty"`
 	TargetMode      string                 `json:"target_mode"`
 	TargetName      string                 `json:"target_name"`
 	ResolvedIPs     []string               `json:"resolved_ips,omitempty"`
+	StaticIPs       []string               `json:"static_ips,omitempty"`
 	LastResolve     time.Time              `json:"last_resolve,omitempty"`
 	LastResolveErr  string                 `json:"last_resolve_error,omitempty"`
 	TargetCacheUsed bool                   `json:"target_cache_used,omitempty"`
@@ -1017,7 +1019,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	now := time.Now()
 	status := FeedStatus{
 		Enabled: cfg.Enabled, FeedPath: cfg.FeedPath, TargetMode: nonempty(cfg.TargetMode, "resolved_ip"),
-		TargetName: cfg.TargetName, ResolvedIPs: ipStrings(ips), LastResolve: lastResolve,
+		TargetName: cfg.TargetName, ResolvedIPs: ipStrings(ips), StaticIPs: staticIPStrings(cfg), LastResolve: lastResolve,
 		LastResolveErr: lastResolveErr, TargetCacheUsed: targetCacheUsed, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
 		History: feedHistoryNewestFirst(history),
 	}
@@ -1758,6 +1760,17 @@ func ipStrings(ips []net.IP) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func staticIPStrings(cfg config.AGHManagedConfig) []string {
+	raw := append(append([]string{}, cfg.StaticIPv4...), cfg.StaticIPv6...)
+	ips := make([]net.IP, 0, len(raw))
+	for _, s := range raw {
+		if ip := net.ParseIP(s); ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	return ipStrings(ips)
 }
 
 func nonempty(v, fallback string) string {
