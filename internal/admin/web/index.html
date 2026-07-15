@@ -1190,12 +1190,23 @@ async function refreshAGHFilters(){ try{
   const force=!!document.getElementById('agh-refresh-force')?.checked;
   const r=await api('POST','/api/agh/rewrite-feed/refresh-agh',{force});
   const out=document.getElementById('agh-refresh-result');
-  if(out) out.textContent=`refreshed ${r.base_url||''}${r.force?' (force)':''}`;
+  if(out) out.innerHTML=managedAGHRefreshResultHTML(r);
 }catch(e){
   const out=document.getElementById('agh-refresh-result');
-  if(out) out.textContent=e.message;
+  if(out) out.innerHTML=managedAGHRefreshResultHTML({error:e.message});
   else alert(e.message);
 } }
+function managedAGHRefreshResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-refresh-status">error: ${esc(r.error)}</div>`;
+  const rows=[
+    ['status',r.status||'ok'],
+    ['base URL',r.base_url||''],
+    ['force',r.force?'yes':'no'],
+    ['verify','Check AGH registration or preview the feed']
+  ];
+  return `<div id="agh-refresh-status"><strong>refreshed</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedAGHCheckSummary(raw){
   if(!raw) return '';
   const keys=['reason','rule','service_name','filter_name','filter_id'];
