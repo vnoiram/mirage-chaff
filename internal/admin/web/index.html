@@ -165,6 +165,7 @@ let AGH_MANAGED_SOURCE_DETAIL_KIND = '';
 let AGH_MANAGED_SOURCE_PREVIEW_RESULT = null;
 let AGH_MANAGED_PENDING_DIFF_RESULT = null;
 let AGH_MANAGED_REGISTRATION_RESULT = null;
+let AGH_MANAGED_FEED_EXPORT_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -669,7 +670,7 @@ async function viewAGHManaged(v){
     <button class="act" onclick="previewManagedFeed()">Preview feed</button>
     <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT)}</span>
     <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
-    <span id="agh-feed-export-result" class="muted">${managedFeedExportResultHTML(null)}</span>
+    <span id="agh-feed-export-result" class="muted">${managedFeedExportResultHTML(AGH_MANAGED_FEED_EXPORT_RESULT)}</span>
     ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted">${managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT)}</span>`:''}
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
@@ -1625,17 +1626,20 @@ function downloadManagedBlob(blob,filename){
   URL.revokeObjectURL(url);
 }
 async function exportManagedFeedSnapshot(){ try{
+  AGH_MANAGED_FEED_EXPORT_RESULT={exporting:true};
   const out=document.getElementById('agh-feed-export-result');
-  if(out) out.innerHTML=managedFeedExportResultHTML({exporting:true});
+  if(out) out.innerHTML=managedFeedExportResultHTML(AGH_MANAGED_FEED_EXPORT_RESULT);
   const r=await fetch('/api/agh/rewrite-feed/export',{headers:ME?{'X-CSRF-Token':ME.csrf}:{}});
   if(!r.ok) throw new Error(await r.text());
   const text=await r.text();
   const filename=managedExportFilename(r.headers.get('content-disposition'));
   downloadManagedBlob(new Blob([text],{type:r.headers.get('content-type')||'text/plain'}),filename);
-  if(out) out.innerHTML=managedFeedExportResultHTML({filename,bytes:text.length,lines:text.split(/\n/).length});
+  AGH_MANAGED_FEED_EXPORT_RESULT={filename,bytes:text.length,lines:text.split(/\n/).length};
+  if(out) out.innerHTML=managedFeedExportResultHTML(AGH_MANAGED_FEED_EXPORT_RESULT);
 }catch(e){
+  AGH_MANAGED_FEED_EXPORT_RESULT={error:e.message};
   const out=document.getElementById('agh-feed-export-result');
-  if(out) out.innerHTML=managedFeedExportResultHTML({error:e.message});
+  if(out) out.innerHTML=managedFeedExportResultHTML(AGH_MANAGED_FEED_EXPORT_RESULT);
   else alert(e.message);
 } }
 async function applyManagedRollback(id){ if(!confirm('Apply rollback '+id+'?'))return; try{
