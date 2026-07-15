@@ -1610,7 +1610,34 @@ async function checkManagedAGHStatus(){ try{
   if(out) out.innerHTML=managedAGHRegistrationResultHTML(AGH_MANAGED_REGISTRATION_RESULT);
   else alert(e.message);
 } }
-function exportManagedFeedSnapshot(){ window.location.href='/api/agh/rewrite-feed/export'; }
+function managedExportFilename(disposition){
+  const m=String(disposition||'').match(/filename="([^"]+)"/i);
+  return m?m[1]:'mirage-chaff-managed-rewrites.txt';
+}
+function downloadManagedBlob(blob,filename){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+async function exportManagedFeedSnapshot(){ try{
+  const out=document.getElementById('agh-feed-export-result');
+  if(out) out.innerHTML=managedFeedExportResultHTML({exporting:true});
+  const r=await fetch('/api/agh/rewrite-feed/export',{headers:ME?{'X-CSRF-Token':ME.csrf}:{}});
+  if(!r.ok) throw new Error(await r.text());
+  const text=await r.text();
+  const filename=managedExportFilename(r.headers.get('content-disposition'));
+  downloadManagedBlob(new Blob([text],{type:r.headers.get('content-type')||'text/plain'}),filename);
+  if(out) out.innerHTML=managedFeedExportResultHTML({filename,bytes:text.length,lines:text.split(/\n/).length});
+}catch(e){
+  const out=document.getElementById('agh-feed-export-result');
+  if(out) out.innerHTML=managedFeedExportResultHTML({error:e.message});
+  else alert(e.message);
+} }
 async function applyManagedRollback(id){ if(!confirm('Apply rollback '+id+'?'))return; try{
   const out=document.getElementById('agh-rollback-result');
   AGH_MANAGED_ROLLBACK_RESULT={id,applying:true};
