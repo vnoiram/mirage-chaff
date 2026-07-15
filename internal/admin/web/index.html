@@ -169,6 +169,7 @@ function render(){
   if(CUR==='AGH Managed'){
     initManagedSourceForm();
     filterManagedSources();
+    filterManagedHistory();
   }
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
 }
@@ -515,9 +516,9 @@ async function viewAGHManaged(v){
     <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
   </div></div>`));
   v.appendChild(el(`<div class="card"><h2>AGH Managed History</h2>
-    <div class="row"><input id="agh-history-filter" oninput="filterManagedHistory()" placeholder="filter history kind/action/detail"></div>
+    <div class="row"><input id="agh-history-filter" oninput="filterManagedHistory()" placeholder="filter history kind/action/detail"><select id="agh-history-kind" onchange="filterManagedHistory()"><option value="">all kinds</option><option value="audit">audit</option><option value="feed_generation">feed_generation</option><option value="rollback_candidate">rollback_candidate</option></select><span id="agh-history-count" class="muted"></span></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>kind</th><th>actor</th><th>action</th><th>detail</th><th>counts</th></tr></thead><tbody>
-    ${((history&&history.events)||[]).slice(0,100).map(e=>`<tr data-managed-history data-search="${esc(managedHistorySearch(e))}"><td>${esc(e.time?new Date(e.time).toLocaleString():'')}</td><td>${esc(e.kind||'')}</td><td>${esc(e.actor||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.detail||e.summary||'')}</td><td>${managedHistoryCounts(e)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}
+    ${((history&&history.events)||[]).slice(0,100).map(e=>`<tr data-managed-history data-history-kind="${esc(e.kind||'')}" data-search="${esc(managedHistorySearch(e))}"><td>${esc(e.time?new Date(e.time).toLocaleString():'')}</td><td>${esc(e.kind||'')}</td><td>${esc(e.actor||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.detail||e.summary||'')}</td><td>${managedHistoryCounts(e)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Feed Generation History</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>target mode</th><th>included</th><th>delta</th><th>excluded</th><th>conflicts</th><th>emergency empty</th></tr></thead><tbody>
@@ -789,7 +790,16 @@ function managedHistorySearch(e){
 }
 function filterManagedHistory(){
   const q=(document.getElementById('agh-history-filter')?.value||'').toLowerCase();
-  document.querySelectorAll('tr[data-managed-history]').forEach(tr=>{ tr.style.display=tr.dataset.search.includes(q)?'':'none'; });
+  const kind=document.getElementById('agh-history-kind')?.value||'';
+  const rows=[...document.querySelectorAll('tr[data-managed-history]')];
+  let visible=0;
+  rows.forEach(tr=>{
+    const show=tr.dataset.search.includes(q)&&(!kind||tr.dataset.historyKind===kind);
+    tr.style.display=show?'':'none';
+    if(show) visible++;
+  });
+  const out=document.getElementById('agh-history-count');
+  if(out) out.textContent=`${visible} / ${rows.length} events`;
 }
 function managedRollbackOverrideList(title,map){
   const ids=Object.keys(map||{}).sort();
