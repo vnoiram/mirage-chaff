@@ -116,7 +116,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='useManagedAGHBaseURL') useManagedAGHBaseURL();
   if(d.cmd==='saveManagedTargetConfig') saveManagedTargetConfig();
   if(d.cmd==='saveManagedSchedulerConfig') saveManagedSchedulerConfig();
-  if(d.cmd==='applyConfigReload') reload();
+  if(d.cmd==='applyConfigReload') applyManagedConfigReload(d.scope||'managed config');
   if(d.cmd==='editManagedCatalogRow') editManagedCatalogRow(d.id||'');
   if(d.cmd==='saveManagedCatalogRow') saveManagedCatalogRow(d.id||'');
   if(d.cmd==='cancelManagedCatalogRow') cancelManagedCatalogRow(d.id||'');
@@ -521,7 +521,7 @@ function managedTargetResultHTML(r){
       ['static IPv6',(r.static_ipv6||[]).join(', ')||'none'],
       ['stale target TTL',r.stale_target_ttl||'']
     ];
-    return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
+    return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload" data-scope="target settings">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
   }
   const st=r.status||{};
   const rows=[
@@ -548,7 +548,7 @@ function managedSchedulerResultHTML(r){
     ['stale source TTL',s.stale_source_ttl||''],
     ['large change review',s.large_change_requires_review?'enabled':'disabled']
   ];
-  return `<div id="agh-scheduler-status"><strong>scheduler settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
+  return `<div id="agh-scheduler-status"><strong>scheduler settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload" data-scope="scheduler settings">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
 }
 function managedSourceOperationResultHTML(r){
   if(!r) return '';
@@ -1855,6 +1855,16 @@ async function loadPolicy(){ const n=document.getElementById('pf').value; const 
 async function savePolicy(){ try{ const n=document.getElementById('pf').value;
   const r=await api('PUT','/api/policy/'+n,{content:document.getElementById('pc').value});
   document.getElementById('pmsg').textContent=r.note||'saved'; }catch(e){ document.getElementById('pmsg').textContent=e.message; } }
+async function applyManagedConfigReload(scope){ try{
+  const out=document.getElementById('agh-reload-result');
+  if(out) out.innerHTML=managedConfigReloadResultHTML({scope,reloading:true});
+  const r=await api('POST','/api/reload');
+  if(out) out.innerHTML=managedConfigReloadResultHTML({scope,status:r.status||'reloaded'});
+}catch(e){
+  const out=document.getElementById('agh-reload-result');
+  if(out) out.innerHTML=managedConfigReloadResultHTML({scope,error:e.message});
+  else alert(e.message);
+} }
 async function reload(){ try{ const r=await api('POST','/api/reload'); alert('reloaded'); }catch(e){ alert(e.message);} }
 
 async function viewConfig(v){
