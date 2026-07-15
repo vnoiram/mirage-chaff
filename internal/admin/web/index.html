@@ -171,6 +171,7 @@ function render(){
     initManagedSourceForm();
     filterManagedSources();
     filterManagedHistory();
+    filterManagedRollbacks();
     filterManagedConflicts();
   }
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
@@ -535,8 +536,9 @@ async function viewAGHManaged(v){
     ${(status.history||[]).slice(0,20).map(h=>`<tr><td>${esc(h.time?new Date(h.time).toLocaleString():'')}</td><td>${esc(h.target_mode||'')}</td><td>${h.included_count||0}</td><td>+${h.added_count||0} -${h.removed_count||0}</td><td>${h.excluded_count||0}</td><td>${h.conflict_count||0}</td><td>${h.emergency_empty?'yes':'no'}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">none</td></tr>'}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Rollback Candidates</h2>
+    <div class="row"><input id="agh-rollback-filter" oninput="filterManagedRollbacks()" placeholder="filter rollback time/action/summary/entry"><span id="agh-rollback-count" class="muted"></span></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>action</th><th>summary</th><th>entries</th><th></th></tr></thead><tbody>
-    ${rollbacks.slice(0,50).map(r=>`<tr data-managed-rollback="${esc(r.id)}"><td>${esc(r.time?new Date(r.time).toLocaleString():'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.summary||'')}</td><td>${(r.entry_ids||[]).length}</td>
+    ${rollbacks.slice(0,50).map(r=>`<tr data-managed-rollback="${esc(r.id)}" data-search="${esc(managedRollbackSearch(r))}"><td>${esc(r.time?new Date(r.time).toLocaleString():'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.summary||'')}</td><td>${(r.entry_ids||[]).length}</td>
     <td><button class="act" data-cmd="toggleManagedRollbackDetails" data-id="${esc(r.id)}">details</button>${has('agh.manage')?`<button class="act danger" data-cmd="applyManagedRollback" data-id="${esc(r.id)}">rollback</button>`:''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
@@ -835,6 +837,23 @@ function toggleManagedRollbackDetails(id){
   const rec=(window.AGH_MANAGED_ROLLBACKS||[]).find(r=>r.id===id);
   if(!row || !rec) return;
   row.insertAdjacentHTML('afterend',managedRollbackDetailsRow(rec));
+}
+function managedRollbackSearch(r){
+  return [r.time?new Date(r.time).toLocaleString():'',r.action,r.summary,(r.entry_ids||[]).join(' ')].join(' ').toLowerCase();
+}
+function filterManagedRollbacks(){
+  const q=(document.getElementById('agh-rollback-filter')?.value||'').toLowerCase();
+  const rows=[...document.querySelectorAll('tr[data-managed-rollback]')];
+  let visible=0;
+  rows.forEach(row=>{
+    const show=(row.dataset.search||'').includes(q);
+    row.style.display=show?'':'none';
+    const detail=document.querySelector(`tr[data-managed-rollback-detail="${CSS.escape(row.dataset.managedRollback||'')}"]`);
+    if(detail) detail.style.display=show?'':'none';
+    if(show) visible++;
+  });
+  const out=document.getElementById('agh-rollback-count');
+  if(out) out.textContent=`${visible} / ${rows.length} rollback candidates`;
 }
 function managedConflictControls(c){
   const id=esc(c.id);
