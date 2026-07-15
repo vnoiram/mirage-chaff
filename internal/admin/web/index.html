@@ -345,6 +345,7 @@ async function viewAGHManaged(v){
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
     <div>emergency empty</div><div>${status.emergency_empty?'yes':'no'}</div>
     <div>target mode</div><div>${esc(status.target_mode||'')}</div>
+    <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
     <div>target name</div><div>${esc(status.target_name||'')}</div>
     <div>resolved IPs</div><div>${esc((status.resolved_ips||[]).join(', ')||'none')}</div>
     <div>target cache</div><div>${status.target_cache_used?'stale cache in use':'fresh or not needed'}</div>
@@ -368,6 +369,7 @@ async function viewAGHManaged(v){
     <div>AGH setting</div><div>Filters - DNS blocklists - Add blocklist - Add a custom list</div>
     <div>target output</div><div>${esc(managedTargetState(status))}</div>
     <div>target mode</div><div>${esc(status.target_mode||'resolved_ip')}</div>
+    <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
     <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
   </div></div>`));
   v.appendChild(el(`<div class="card"><h2>Feed Generation History</h2>

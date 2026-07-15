@@ -187,6 +187,8 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"never synced",
 		"target_cache_used",
 		"pending_sources",
+		"default preset",
+		"default_preset",
 		"last duration ms",
 		"consecutive failures",
 		"last_duration_ms",
@@ -322,6 +324,23 @@ func TestAGHManagedFeedExportHandler(t *testing.T) {
 	}
 
 	cookie, _ := loginForTest(t, h, "viewer", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/status", nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer status status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var statusResp struct {
+		DefaultPreset string `json:"default_preset"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &statusResp); err != nil {
+		t.Fatal(err)
+	}
+	if statusResp.DefaultPreset != "balanced" {
+		t.Fatalf("status default_preset = %q, want balanced", statusResp.DefaultPreset)
+	}
+
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/export", nil)
 	req.AddCookie(cookie)

@@ -73,6 +73,7 @@ type FeedStatus struct {
 	FeedURL         string                 `json:"feed_url,omitempty"`
 	TargetMode      string                 `json:"target_mode"`
 	TargetName      string                 `json:"target_name"`
+	DefaultPreset   string                 `json:"default_preset"`
 	ResolvedIPs     []string               `json:"resolved_ips,omitempty"`
 	StaticIPs       []string               `json:"static_ips,omitempty"`
 	LastResolve     time.Time              `json:"last_resolve,omitempty"`
@@ -1027,7 +1028,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	now := time.Now()
 	status := FeedStatus{
 		Enabled: cfg.Enabled, FeedPath: cfg.FeedPath, TargetMode: nonempty(cfg.TargetMode, "resolved_ip"),
-		TargetName: cfg.TargetName, ResolvedIPs: ipStrings(ips), StaticIPs: staticIPStrings(cfg), LastResolve: lastResolve,
+		TargetName: cfg.TargetName, DefaultPreset: nonempty(cfg.DefaultPreset, "balanced"), ResolvedIPs: ipStrings(ips), StaticIPs: staticIPStrings(cfg), LastResolve: lastResolve,
 		LastResolveErr: lastResolveErr, TargetCacheUsed: targetCacheUsed, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
 		History: feedHistoryNewestFirst(history),
 	}
