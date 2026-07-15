@@ -872,6 +872,154 @@ sync_timeout = "30s"
 	}
 }
 
+func TestAGHManagedSchedulerConfigHandlerUpdatesConfig(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "mirage-chaff.conf")
+	writeTestFile(t, configPath, `[agh_managed_rewrites]
+enabled = true
+feed_path = "/agh/managed-rewrites.txt"
+
+[agh_managed_rewrites.scheduler]
+# keep scheduler comment
+enabled = true
+default_sync_interval = "12h"
+sync_timeout = "30s"
+max_parallel_syncs = 2
+jitter = "10m"
+stale_source_ttl = "72h"
+large_change_threshold_percent = 25
+large_change_threshold_count = 500
+large_change_requires_review = true
+`)
+	cfg := config.AGHManagedConfig{
+		Enabled:    true,
+		FeedPath:   "/agh/managed-rewrites.txt",
+		TargetMode: "static_ip",
+		StaticIPv4: []string{"192.0.2.10"},
+		Scheduler: config.AGHManagedScheduler{
+			Enabled: true, DefaultSyncInterval: "12h", SyncTimeout: "30s", MaxParallelSyncs: 2,
+			Jitter: "10m", StaleSourceTTL: "72h", LargeChangeThresholdPercent: 25,
+			LargeChangeThresholdCount: 500, LargeChangeRequiresReview: true,
+		},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||scheduler.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{ConfigPath: configPath, AGHManaged: managed})
+	h := s.Handler()
+	viewerCookie, _ := loginForTest(t, h, "viewer", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/scheduler", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer scheduler get status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var getResp struct {
+		Enabled      bool           `json:"enabled"`
+		SourceHealth map[string]int `json:"source_health"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &getResp); err != nil {
+		t.Fatal(err)
+	}
+	if !getResp.Enabled || getResp.SourceHealth["healthy"] != 1 {
+		t.Fatalf("scheduler get response = %+v", getResp)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/agh/rewrite-feed/scheduler", strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer scheduler put status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	body := `{"enabled":false,"default_sync_interval":"6h","sync_timeout":"15s","max_parallel_syncs":4,"jitter":"2m","stale_source_ttl":"24h","large_change_threshold_percent":10,"large_change_threshold_count":100,"large_change_requires_review":false}`
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/agh/rewrite-feed/scheduler", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin scheduler put status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"# keep scheduler comment",
+		`enabled = false`,
+		`default_sync_interval = "6h"`,
+		`sync_timeout = "15s"`,
+		`max_parallel_syncs = 4`,
+		`jitter = "2m"`,
+		`stale_source_ttl = "24h"`,
+		`large_change_threshold_percent = 10`,
+		`large_change_threshold_count = 100`,
+		`large_change_requires_review = false`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("updated scheduler config missing %q:\n%s", want, content)
+		}
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.scheduler_config")
+	if !ok || !strings.Contains(entry.Detail, "enabled=false") || !strings.Contains(entry.Detail, "max_parallel_syncs=4") {
+		t.Fatalf("scheduler audit = %+v ok=%v", entry, ok)
+	}
+}
+
+func TestPatchAGHManagedSchedulerConfigAddsMissingKeys(t *testing.T) {
+	got := patchAGHManagedSchedulerConfig(`[agh_managed_rewrites]
+enabled = true
+
+[agh_managed_rewrites.scheduler]
+sync_timeout = "30s"
+
+[rule_catalog]
+path = "/tmp/catalog.json"
+`, config.AGHManagedScheduler{Enabled: true, DefaultSyncInterval: "1h", SyncTimeout: "10s", MaxParallelSyncs: 3, Jitter: "1m", StaleSourceTTL: "12h", LargeChangeThresholdPercent: 5, LargeChangeThresholdCount: 25, LargeChangeRequiresReview: true})
+	for _, want := range []string{
+		`enabled = true`,
+		`default_sync_interval = "1h"`,
+		`sync_timeout = "10s"`,
+		`max_parallel_syncs = 3`,
+		`jitter = "1m"`,
+		`stale_source_ttl = "12h"`,
+		`large_change_threshold_percent = 5`,
+		`large_change_threshold_count = 25`,
+		`large_change_requires_review = true`,
+		`[rule_catalog]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("patched scheduler config missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "policy")

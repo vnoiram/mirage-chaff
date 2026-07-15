@@ -364,6 +364,18 @@ type aghManagedTargetConfigRequest struct {
 	StaleTargetTTL string   `json:"stale_target_ttl"`
 }
 
+type aghManagedSchedulerConfigRequest struct {
+	Enabled                     bool   `json:"enabled"`
+	DefaultSyncInterval         string `json:"default_sync_interval"`
+	SyncTimeout                 string `json:"sync_timeout"`
+	MaxParallelSyncs            int    `json:"max_parallel_syncs"`
+	Jitter                      string `json:"jitter"`
+	StaleSourceTTL              string `json:"stale_source_ttl"`
+	LargeChangeThresholdPercent int    `json:"large_change_threshold_percent"`
+	LargeChangeThresholdCount   int    `json:"large_change_threshold_count"`
+	LargeChangeRequiresReview   bool   `json:"large_change_requires_review"`
+}
+
 func (s *Server) handleAGHManagedTargetConfig(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
@@ -413,6 +425,55 @@ func (s *Server) handleAGHManagedTargetConfigPut(w http.ResponseWriter, r *http.
 		"static_ipv6":      cfg.AGHManaged.StaticIPv6,
 		"stale_target_ttl": cfg.AGHManaged.StaleTargetTTL,
 		"feed_status":      status,
+	})
+}
+
+func (s *Server) handleAGHManagedSchedulerConfig(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	cfg := s.deps.AGHManaged.Config()
+	sources := s.deps.AGHManaged.ListSources()
+	writeJSON(w, map[string]any{
+		"enabled":                        cfg.Scheduler.Enabled,
+		"default_sync_interval":          cfg.Scheduler.DefaultSyncInterval,
+		"sync_timeout":                   cfg.Scheduler.SyncTimeout,
+		"max_parallel_syncs":             cfg.Scheduler.MaxParallelSyncs,
+		"jitter":                         cfg.Scheduler.Jitter,
+		"stale_source_ttl":               cfg.Scheduler.StaleSourceTTL,
+		"large_change_threshold_percent": cfg.Scheduler.LargeChangeThresholdPercent,
+		"large_change_threshold_count":   cfg.Scheduler.LargeChangeThresholdCount,
+		"large_change_requires_review":   cfg.Scheduler.LargeChangeRequiresReview,
+		"source_health":                  aghManagedSourceHealthSummary(sources),
+		"next_sync":                      aghManagedNextSourceSync(sources),
+	})
+}
+
+func (s *Server) handleAGHManagedSchedulerConfigPut(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req aghManagedSchedulerConfigRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	cfg, content, err := updateAGHManagedSchedulerConfigFile(s.deps.ConfigPath, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := os.WriteFile(s.deps.ConfigPath, []byte(content), 0o600); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = os.Chmod(s.deps.ConfigPath, 0o600)
+	s.store.Audit(sess.username, "agh_managed.scheduler_config", aghManagedSchedulerConfigAuditDetail(cfg.AGHManaged.Scheduler))
+	writeJSON(w, map[string]any{
+		"status":    "ok",
+		"note":      "call /api/reload to apply",
+		"scheduler": cfg.AGHManaged.Scheduler,
 	})
 }
 
@@ -626,6 +687,49 @@ func updateAGHManagedTargetConfigFile(path string, req aghManagedTargetConfigReq
 	return cfg, content, nil
 }
 
+func updateAGHManagedSchedulerConfigFile(path string, req aghManagedSchedulerConfigRequest) (config.Config, string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return config.Config{}, "", fmt.Errorf("config file required for scheduler settings: %w", err)
+		}
+		return config.Config{}, "", err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return config.Config{}, "", err
+	}
+	cfg.AGHManaged.Scheduler.Enabled = req.Enabled
+	cfg.AGHManaged.Scheduler.DefaultSyncInterval = strings.TrimSpace(req.DefaultSyncInterval)
+	cfg.AGHManaged.Scheduler.SyncTimeout = strings.TrimSpace(req.SyncTimeout)
+	cfg.AGHManaged.Scheduler.MaxParallelSyncs = req.MaxParallelSyncs
+	cfg.AGHManaged.Scheduler.Jitter = strings.TrimSpace(req.Jitter)
+	cfg.AGHManaged.Scheduler.StaleSourceTTL = strings.TrimSpace(req.StaleSourceTTL)
+	cfg.AGHManaged.Scheduler.LargeChangeThresholdPercent = req.LargeChangeThresholdPercent
+	cfg.AGHManaged.Scheduler.LargeChangeThresholdCount = req.LargeChangeThresholdCount
+	cfg.AGHManaged.Scheduler.LargeChangeRequiresReview = req.LargeChangeRequiresReview
+	if err := cfg.Check(); err != nil {
+		return config.Config{}, "", fmt.Errorf("invalid config: %w", err)
+	}
+	content := patchAGHManagedSchedulerConfig(string(raw), cfg.AGHManaged.Scheduler)
+	checkPath := path + ".check"
+	if err := os.WriteFile(checkPath, []byte(content), 0o600); err != nil {
+		return config.Config{}, "", err
+	}
+	checked, checkErr := config.Load(checkPath)
+	removeErr := os.Remove(checkPath)
+	if checkErr == nil {
+		checkErr = checked.Check()
+	}
+	if checkErr != nil {
+		return config.Config{}, "", fmt.Errorf("invalid generated config: %w", checkErr)
+	}
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return config.Config{}, "", removeErr
+	}
+	return cfg, content, nil
+}
+
 func patchAGHManagedTargetConfig(raw string, cfg config.AGHManagedConfig) string {
 	lines := strings.Split(raw, "\n")
 	hadTrailingNewline := strings.HasSuffix(raw, "\n")
@@ -680,11 +784,45 @@ func patchAGHManagedTargetConfig(raw string, cfg config.AGHManagedConfig) string
 	return result
 }
 
+func patchAGHManagedSchedulerConfig(raw string, cfg config.AGHManagedScheduler) string {
+	lines := strings.Split(raw, "\n")
+	hadTrailingNewline := strings.HasSuffix(raw, "\n")
+	start, end := tomlSection(lines, "[agh_managed_rewrites.scheduler]")
+	schedulerLines := []string{
+		`enabled = ` + tomlBool(cfg.Enabled),
+		`default_sync_interval = ` + tomlString(stringDefault(cfg.DefaultSyncInterval, "12h")),
+		`sync_timeout = ` + tomlString(stringDefault(cfg.SyncTimeout, "30s")),
+		`max_parallel_syncs = ` + strconv.Itoa(cfg.MaxParallelSyncs),
+		`jitter = ` + tomlString(stringDefault(cfg.Jitter, "10m")),
+		`stale_source_ttl = ` + tomlString(stringDefault(cfg.StaleSourceTTL, "72h")),
+		`large_change_threshold_percent = ` + strconv.Itoa(cfg.LargeChangeThresholdPercent),
+		`large_change_threshold_count = ` + strconv.Itoa(cfg.LargeChangeThresholdCount),
+		`large_change_requires_review = ` + tomlBool(cfg.LargeChangeRequiresReview),
+	}
+	if start == -1 {
+		if len(lines) == 1 && lines[0] == "" {
+			lines = nil
+		}
+		lines = append(lines, "[agh_managed_rewrites.scheduler]")
+		lines = append(lines, schedulerLines...)
+		out := strings.Join(lines, "\n")
+		if hadTrailingNewline || !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		return out
+	}
+	return patchTomlSectionLines(lines, start, end, schedulerLines, hadTrailingNewline)
+}
+
 func aghManagedConfigSection(lines []string) (int, int) {
+	return tomlSection(lines, "[agh_managed_rewrites]")
+}
+
+func tomlSection(lines []string, section string) (int, int) {
 	start := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "[agh_managed_rewrites]" {
+		if trimmed == section {
 			start = i
 			continue
 		}
@@ -696,6 +834,38 @@ func aghManagedConfigSection(lines []string) (int, int) {
 		return -1, -1
 	}
 	return start, len(lines)
+}
+
+func patchTomlSectionLines(lines []string, start, end int, replacement []string, hadTrailingNewline bool) string {
+	updates := map[string]string{}
+	for _, line := range replacement {
+		key := strings.TrimSpace(strings.SplitN(line, "=", 2)[0])
+		updates[key] = line
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(lines)+len(replacement))
+	out = append(out, lines[:start+1]...)
+	for _, line := range lines[start+1 : end] {
+		key := tomlKey(line)
+		if next, ok := updates[key]; ok {
+			out = append(out, preserveIndent(line)+next)
+			seen[key] = true
+			continue
+		}
+		out = append(out, line)
+	}
+	for _, line := range replacement {
+		key := strings.TrimSpace(strings.SplitN(line, "=", 2)[0])
+		if !seen[key] {
+			out = append(out, line)
+		}
+	}
+	out = append(out, lines[end:]...)
+	result := strings.Join(out, "\n")
+	if hadTrailingNewline && !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+	return result
 }
 
 func tomlKey(line string) string {
@@ -712,6 +882,13 @@ func preserveIndent(line string) string {
 
 func tomlString(v string) string {
 	return strconv.Quote(v)
+}
+
+func tomlBool(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
 }
 
 func tomlStringArray(values []string) string {
@@ -740,6 +917,39 @@ func aghManagedTargetConfigAuditDetail(cfg config.AGHManagedConfig) string {
 		"target_mode=%s target_name=%s static_ipv4=%s static_ipv6=%s stale_target_ttl=%s",
 		stringDefault(cfg.TargetMode, "resolved_ip"), cfg.TargetName, strings.Join(cfg.StaticIPv4, ","), strings.Join(cfg.StaticIPv6, ","), stringDefault(cfg.StaleTargetTTL, "24h"),
 	)
+}
+
+func aghManagedSchedulerConfigAuditDetail(cfg config.AGHManagedScheduler) string {
+	return fmt.Sprintf(
+		"enabled=%s default_sync_interval=%s sync_timeout=%s max_parallel_syncs=%d jitter=%s stale_source_ttl=%s large_change_threshold_percent=%d large_change_threshold_count=%d large_change_requires_review=%s",
+		mapBool(cfg.Enabled), cfg.DefaultSyncInterval, cfg.SyncTimeout, cfg.MaxParallelSyncs, cfg.Jitter, cfg.StaleSourceTTL,
+		cfg.LargeChangeThresholdPercent, cfg.LargeChangeThresholdCount, mapBool(cfg.LargeChangeRequiresReview),
+	)
+}
+
+func aghManagedSourceHealthSummary(sources []aghmanaged.Source) map[string]int {
+	out := map[string]int{"total": len(sources)}
+	for _, src := range sources {
+		health := src.Health
+		if health == "" {
+			health = "unknown"
+		}
+		out[health]++
+	}
+	return out
+}
+
+func aghManagedNextSourceSync(sources []aghmanaged.Source) time.Time {
+	var next time.Time
+	for _, src := range sources {
+		if src.NextSync.IsZero() {
+			continue
+		}
+		if next.IsZero() || src.NextSync.Before(next) {
+			next = src.NextSync
+		}
+	}
+	return next
 }
 
 func stringDefault(v, fallback string) string {
