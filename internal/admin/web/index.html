@@ -503,6 +503,22 @@ function managedTargetResultHTML(r){
   ];
   return `<div id="agh-target-status"><strong>target refreshed</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedSchedulerResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-scheduler-status">error: ${esc(r.error)}</div>`;
+  if(r.running) return `<div id="agh-scheduler-status">saving scheduler settings...</div>`;
+  const s=r.scheduler||{};
+  const rows=[
+    ['enabled',s.enabled?'yes':'no'],
+    ['default interval',s.default_sync_interval||''],
+    ['sync timeout',s.sync_timeout||''],
+    ['max parallel',Number(s.max_parallel_syncs||0)],
+    ['jitter',s.jitter||''],
+    ['stale source TTL',s.stale_source_ttl||''],
+    ['large change review',s.large_change_requires_review?'enabled':'disabled']
+  ];
+  return `<div id="agh-scheduler-status"><strong>scheduler settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button></div></div>`;
+}
 function managedSourceOperationResultHTML(r){
   if(!r) return '';
   if(r.error) return `<div id="agh-source-status">error: ${esc(r.error)}</div>`;
@@ -1417,10 +1433,10 @@ async function saveManagedSchedulerConfig(){ try{
   };
   const r=await api('PUT','/api/agh/rewrite-feed/scheduler',body);
   const out=document.getElementById('agh-scheduler-config-result');
-  if(out) out.innerHTML=`saved; ${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button>`;
+  if(out) out.innerHTML=managedSchedulerResultHTML(r);
 }catch(e){
   const out=document.getElementById('agh-scheduler-config-result');
-  if(out) out.textContent=e.message;
+  if(out) out.innerHTML=managedSchedulerResultHTML({error:e.message});
   else alert(e.message);
 } }
 async function refreshAGHFilters(){ try{
