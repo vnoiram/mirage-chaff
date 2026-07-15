@@ -354,6 +354,68 @@ func (s *Server) handleAGHManagedFeedStatus(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, status)
 }
 
+func (s *Server) handleAGHManagedAGHStatus(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	status := s.deps.AGHManaged.Status(r.Context())
+	feedURL := aghManagedFeedURL(r, status.FeedPath)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	registration, err := checkAGHFeedRegistration(ctx, s.deps.AGHHTTPClient, s.deps.AGHSyncConfig, feedURL)
+	if err != nil {
+		code := http.StatusBadGateway
+		if isAGHRefreshConfigError(err) {
+			code = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	resp := map[string]any{
+		"base_url":       registration.BaseURL,
+		"feed_url":       registration.FeedURL,
+		"registered":     registration.Registered,
+		"enabled":        registration.Enabled,
+		"matched_filter": registration.MatchedFilter,
+	}
+
+	preview, err := s.deps.AGHManaged.Generate(ctx, true)
+	if err != nil {
+		resp["message"] = "feed preview unavailable: " + err.Error()
+		writeJSON(w, resp)
+		return
+	}
+	domain := firstIncludedManagedDomain(preview)
+	if domain == "" {
+		resp["message"] = "no included feed item to check"
+		writeJSON(w, resp)
+		return
+	}
+	result, err := checkAGHHost(ctx, s.deps.AGHHTTPClient, s.deps.AGHSyncConfig, domain)
+	if err != nil {
+		code := http.StatusBadGateway
+		if isAGHRefreshConfigError(err) {
+			code = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	resp["check_domain"] = domain
+	resp["check_result"] = result
+	writeJSON(w, resp)
+}
+
+func firstIncludedManagedDomain(preview aghmanaged.Preview) string {
+	for _, item := range preview.Items {
+		if item.Included && item.Domain != "" {
+			return item.Domain
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleAGHManagedFeedPreview(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)

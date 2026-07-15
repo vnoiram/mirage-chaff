@@ -638,6 +638,94 @@ func TestAGHManagedRefreshAGHHandlerConfigError(t *testing.T) {
 	}
 }
 
+func TestAGHManagedAGHStatusHandlerChecksRegistrationAndHost(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||status.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	var sawStatus, sawCheckHost bool
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/control/filtering/status":
+			sawStatus = true
+			return stringResponse(http.StatusOK, `{"filters":[{"id":9,"name":"mirage","url":"https://managed.example/agh/managed-rewrites.txt/","enabled":true}]}`), nil
+		case "/control/filtering/check_host":
+			sawCheckHost = true
+			if got := r.URL.Query().Get("name"); got != "status.example.net" {
+				t.Fatalf("check_host name = %q, want status.example.net", got)
+			}
+			return stringResponse(http.StatusOK, `{"reason":"RewriteRule","rule":"||status.example.net^$dnsrewrite=NOERROR;A;192.0.2.10"}`), nil
+		default:
+			t.Fatalf("unexpected AGH request path %s", r.URL.Path)
+			return nil, nil
+		}
+	})}
+	s := New(store, Deps{
+		AGHManaged:    managed,
+		AGHSyncConfig: config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath},
+		AGHHTTPClient: httpClient,
+	})
+	h := s.Handler()
+	cookie, _ := loginForTest(t, h, "viewer", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/agh-status", nil)
+	req.Host = "managed.example"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("agh status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !sawStatus || !sawCheckHost {
+		t.Fatalf("AGH status/check_host called = %v/%v", sawStatus, sawCheckHost)
+	}
+	var resp struct {
+		FeedURL       string          `json:"feed_url"`
+		Registered    bool            `json:"registered"`
+		Enabled       bool            `json:"enabled"`
+		CheckDomain   string          `json:"check_domain"`
+		MatchedFilter *aghFilterMatch `json:"matched_filter"`
+		CheckResult   struct {
+			Raw map[string]any `json:"raw"`
+		} `json:"check_result"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.FeedURL != "https://managed.example/agh/managed-rewrites.txt" || !resp.Registered || !resp.Enabled || resp.MatchedFilter == nil || resp.MatchedFilter.ID != 9 {
+		t.Fatalf("registration response = %+v", resp)
+	}
+	if resp.CheckDomain != "status.example.net" || resp.CheckResult.Raw["reason"] != "RewriteRule" {
+		t.Fatalf("check_host response = %+v", resp)
+	}
+}
+
 func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "policy")
