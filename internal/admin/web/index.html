@@ -157,6 +157,7 @@ let AGH_MANAGED_BULK_RESULT = null;
 let AGH_MANAGED_ROLLBACK_RESULT = null;
 let AGH_MANAGED_SOURCE_RESULT = null;
 let AGH_MANAGED_CATALOG_RESULT = null;
+let AGH_MANAGED_FEED_PREVIEW_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -577,7 +578,7 @@ async function viewAGHManaged(v){
   </div>
   <div class="row" style="margin-top:12px">
     <button class="act" onclick="previewManagedFeed()">Preview feed</button>
-    <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(null)}</span>
+    <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT)}</span>
     <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
     ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted"></span>`:''}
   </div>
@@ -1526,12 +1527,22 @@ async function showMoreManagedFeedPreviewItems(){
   await fetchManagedFeedPreviewItems(false);
 }
 async function previewManagedFeed(){ try{
+  const out=document.getElementById('agh-feed-preview-result');
+  AGH_MANAGED_FEED_PREVIEW_RESULT={previewing:true};
+  if(out) out.innerHTML=managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT);
   const p=await api('GET','/api/agh/rewrite-feed/preview?limit=500&offset=0');
+  AGH_MANAGED_FEED_PREVIEW_RESULT={status:p.status||{},total:Number(p.total??(p.items||[]).length)};
   window.AGH_MANAGED_FEED_PREVIEW_STATE={items:p.items||[],total:Number(p.total??(p.items||[]).length),limit:500,status:p.status||{},lines:p.lines||''};
   document.getElementById('agh-feed').textContent=p.lines||'';
   document.getElementById('agh-feed-items').innerHTML=managedFeedPreviewDiagnostics(p)+managedFeedPreviewTable(p.items||[]);
+  if(out) out.innerHTML=managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT);
   renderManagedFeedPreviewItems();
-}catch(e){ alert(e.message);} }
+}catch(e){
+  AGH_MANAGED_FEED_PREVIEW_RESULT={error:e.message};
+  const out=document.getElementById('agh-feed-preview-result');
+  if(out) out.innerHTML=managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT);
+  else alert(e.message);
+} }
 function managedCatalogFilterParams(){
   const params=new URLSearchParams();
   const q=document.getElementById('agh-cat-filter')?.value||'';
