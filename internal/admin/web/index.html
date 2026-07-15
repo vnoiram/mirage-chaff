@@ -161,6 +161,8 @@ let AGH_MANAGED_FEED_PREVIEW_RESULT = null;
 let AGH_MANAGED_TARGET_REFRESH_RESULT = null;
 let AGH_MANAGED_TARGET_CONFIG_RESULT = null;
 let AGH_MANAGED_SCHEDULER_CONFIG_RESULT = null;
+let AGH_MANAGED_SOURCE_DETAIL_KIND = '';
+let AGH_MANAGED_SOURCE_PREVIEW_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -183,6 +185,7 @@ function render(){
     filterManagedHistory();
     filterManagedRollbacks();
     filterManagedConflicts();
+    renderManagedSourcePreviewEntries();
   }
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
 }
@@ -548,6 +551,14 @@ function managedSourcePreviewResultHTML(r){
   ];
   return `<div id="agh-source-preview-status"><strong>source preview ready</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedSourceDetailHTML(){
+  if(AGH_MANAGED_SOURCE_DETAIL_KIND==='preview'){
+    const state=window.AGH_MANAGED_SOURCE_PREVIEW_STATE||{};
+    const preview=state.source?managedSourcePreview({source:state.source,entries:state.entries||[],total:state.total}):'';
+    return managedSourcePreviewResultHTML(AGH_MANAGED_SOURCE_PREVIEW_RESULT)+preview;
+  }
+  return '';
+}
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
@@ -701,7 +712,7 @@ async function viewAGHManaged(v){
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>priority</th><th>stale policy</th><th>interval</th><th>health</th><th>enabled</th><th>entries</th><th>diff</th><th>duration ms</th><th>failures</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
     ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}" data-source-health="${esc(managedSourceHealthValue(s))}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${has('agh.manage')?`<input class="agh-src-priority" type="number" value="${Number(s.priority||0)}" style="width:80px">`:Number(s.priority||0)}</td><td>${has('agh.manage')?`<select class="agh-src-stale-policy">${optionHTML('exclude',s.stale_feed_policy||'exclude','exclude')}${optionHTML('keep',s.stale_feed_policy||'exclude','keep')}</select><button class="act" data-cmd="saveManagedSourceSettings" data-id="${esc(s.id)}">save</button>`:esc(s.stale_feed_policy||'exclude')}</td><td>${esc(s.sync_interval||'')}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${Number(s.last_duration_ms||0)}</td><td>${Number(s.consecutive_failures||0)}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
     <td><button class="act" data-cmd="toggleManagedSourceEntries" data-id="${esc(s.id)}">entries</button>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="editManagedSourceRow" data-id="${esc(s.id)}">edit</button><button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
-    </tbody></table></div><div id="agh-source-detail" style="white-space:pre-wrap;max-height:260px;overflow:auto"></div></div>`));
+    </tbody></table></div><div id="agh-source-detail" style="white-space:pre-wrap;max-height:260px;overflow:auto">${managedSourceDetailHTML()}</div></div>`));
   v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="row"><input id="agh-cat-filter" oninput="filterManagedCatalog()" placeholder="filter domain/source/category/review">${managedCatalogFilterSelect('agh-cat-source','source',catalogFacets.sources||[])}${managedCatalogFilterSelect('agh-cat-category','category',catalogFacets.categories||[])}${managedCatalogFilterSelect('agh-cat-resource','resource',catalogFacets.resource_types||[])}${managedCatalogFilterSelect('agh-cat-review','review',catalogFacets.review_statuses||[])}<select id="agh-cat-rewrite" onchange="filterManagedCatalog()"><option value="">rewrite</option><option value="true">rewrite yes</option><option value="false">rewrite no</option></select><select id="agh-cat-unsupported" onchange="filterManagedCatalog()"><option value="">unsupported: ${unsupportedCount}</option><option value="true">unsupported only</option><option value="false">supported only</option></select><button class="act" data-cmd="showMoreManagedCatalogRows">show more</button><span id="agh-cat-count" class="muted"></span></div>
     ${has('agh.manage')?`<div class="row" style="margin-top:10px">
       <button class="act" data-cmd="selectManagedCatalogVisible">select visible</button><button class="act" data-cmd="clearManagedCatalogSelection">clear</button><span id="agh-bulk-selection-count" class="muted"></span>
@@ -812,15 +823,20 @@ async function syncManagedSource(id){ try{
 }catch(e){ managedSourceOperationError('sync source',e);} }
 async function previewManagedSource(id){ try{
   const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id);
+  AGH_MANAGED_SOURCE_DETAIL_KIND='preview';
+  AGH_MANAGED_SOURCE_PREVIEW_RESULT={source:s,previewing:true};
   const detail=document.getElementById('agh-source-detail');
-  if(detail) detail.innerHTML=managedSourcePreviewResultHTML({source:s,previewing:true});
+  if(detail) detail.innerHTML=managedSourceDetailHTML();
   const r=await api('POST','/api/agh/sources/preview?limit=100&offset=0',s);
   window.AGH_MANAGED_SOURCE_PREVIEW_STATE={source:s,entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:100,filter:''};
-  if(detail) detail.innerHTML=managedSourcePreviewResultHTML(r)+managedSourcePreview(r);
+  AGH_MANAGED_SOURCE_PREVIEW_RESULT={source:r.source||s,entries:r.entries||[],total:Number(r.total??(r.entries||[]).length)};
+  if(detail) detail.innerHTML=managedSourceDetailHTML();
   renderManagedSourcePreviewEntries();
 }catch(e){
+  AGH_MANAGED_SOURCE_DETAIL_KIND='preview';
+  AGH_MANAGED_SOURCE_PREVIEW_RESULT={error:e.message};
   const detail=document.getElementById('agh-source-detail');
-  if(detail) detail.innerHTML=managedSourcePreviewResultHTML({error:e.message});
+  if(detail) detail.innerHTML=managedSourceDetailHTML();
   else alert(e.message);
 } }
 function managedSourcePreview(preview){
@@ -851,6 +867,7 @@ async function fetchManagedSourcePreviewEntries(reset){
   state.entries=reset?entries:(state.entries||[]).concat(entries);
   state.total=Number(r.total??state.entries.length);
   state.filter=document.getElementById('agh-source-preview-filter')?.value||'';
+  AGH_MANAGED_SOURCE_PREVIEW_RESULT={source:state.source,entries:state.entries||[],total:state.total};
   renderManagedSourcePreviewEntries();
 }
 function renderManagedSourcePreviewEntries(){
