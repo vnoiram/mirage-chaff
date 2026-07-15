@@ -475,6 +475,32 @@ function managedFeedPreviewResultHTML(r){
   ];
   return `<div id="agh-feed-preview-status"><strong>feed preview ready</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedTargetResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-target-status">error: ${esc(r.error)}</div>`;
+  if(r.running) return `<div id="agh-target-status">${esc(r.action||'target operation')}...</div>`;
+  if(r.action==='save target settings'){
+    const rows=[
+      ['action',r.action],
+      ['target mode',r.target_mode||'resolved_ip'],
+      ['target name',r.target_name||''],
+      ['static IPv4',(r.static_ipv4||[]).join(', ')||'none'],
+      ['static IPv6',(r.static_ipv6||[]).join(', ')||'none'],
+      ['stale target TTL',r.stale_target_ttl||'']
+    ];
+    return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button></div></div>`;
+  }
+  const st=r.status||{};
+  const rows=[
+    ['action',r.action||'refresh target'],
+    ['target output',managedTargetState(st)],
+    ['target mode',st.target_mode||'resolved_ip'],
+    ['resolved IPs',(st.resolved_ips||[]).join(', ')||'none'],
+    ['target cache',st.target_cache_used?'stale cache in use':'fresh or not needed'],
+    ['last resolve error',st.last_resolve_error||'']
+  ];
+  return `<div id="agh-target-status"><strong>target refreshed</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedSourceOperationResultHTML(r){
   if(!r) return '';
   if(r.error) return `<div id="agh-source-status">error: ${esc(r.error)}</div>`;
@@ -1342,12 +1368,11 @@ async function setEmergencyEmpty(on){ try{
 async function refreshManagedTarget(){ try{
   const r=await api('POST','/api/agh/rewrite-feed/refresh-target');
   const out=document.getElementById('agh-target-refresh-result');
-  const st=r.status||{};
-  if(out) out.textContent=r.error?`target refresh failed: ${r.error}`:`target refreshed: ${managedTargetState(st)}`;
+  if(out) out.innerHTML=managedTargetResultHTML(Object.assign({action:'refresh target'},r));
   if(!out) render();
 }catch(e){
   const out=document.getElementById('agh-target-refresh-result');
-  if(out) out.textContent=e.message;
+  if(out) out.innerHTML=managedTargetResultHTML({action:'refresh target',error:e.message});
   else alert(e.message);
 } }
 async function saveManagedTargetConfig(){ try{
@@ -1360,10 +1385,10 @@ async function saveManagedTargetConfig(){ try{
   };
   const r=await api('PUT','/api/agh/rewrite-feed/target',body);
   const out=document.getElementById('agh-target-config-result');
-  if(out) out.innerHTML=`saved; ${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button>`;
+  if(out) out.innerHTML=managedTargetResultHTML(Object.assign({action:'save target settings'},r));
 }catch(e){
   const out=document.getElementById('agh-target-config-result');
-  if(out) out.textContent=e.message;
+  if(out) out.innerHTML=managedTargetResultHTML({action:'save target settings',error:e.message});
   else alert(e.message);
 } }
 async function saveManagedSchedulerConfig(){ try{
