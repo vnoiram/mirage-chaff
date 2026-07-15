@@ -88,6 +88,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='previewManagedSource') previewManagedSource(d.id||'');
   if(d.cmd==='pendingManagedSource') pendingManagedSource(d.id||'');
   if(d.cmd==='toggleManagedSourceEntries') toggleManagedSourceEntries(d.id||'');
+  if(d.cmd==='showMoreManagedSourceEntries') showMoreManagedSourceEntries(d.id||'');
   if(d.cmd==='toggleManagedSource') toggleManagedSource(d.id||'', d.enabled==='true');
   if(d.cmd==='saveManagedSourceSettings') saveManagedSourceSettings(d.id||'');
   if(d.cmd==='approveManagedSource') approveManagedSource(d.id||'');
@@ -464,14 +465,42 @@ async function toggleManagedSourceEntries(id){ try{
   const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
   if(!tr) throw new Error('source row not found');
   const r=await api('GET','/api/agh/sources/'+id+'/entries');
+  window.AGH_SOURCE_ENTRY_STATE=window.AGH_SOURCE_ENTRY_STATE||{};
+  window.AGH_SOURCE_ENTRY_STATE[id]={entries:r.entries||[],limit:200,filter:''};
   tr.insertAdjacentHTML('afterend',managedSourceEntriesRow(id,r.entries||[]));
+  renderManagedSourceEntries(id);
   const b=tr.querySelector(`button[data-cmd="toggleManagedSourceEntries"]`);
   if(b) b.textContent='hide';
 }catch(e){ alert(e.message);} }
 function managedSourceEntriesRow(id,entries){
-  const shown=(entries||[]).slice(0,100);
-  const note=(entries||[]).length>100?`<div class="muted">showing 100 of ${(entries||[]).length}</div>`:'';
-  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="11">${note}<div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody>${shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')}</tbody></table></div></td></tr>`;
+  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="14"><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
+}
+function managedSourceEntrySearch(r){
+  return [r.match?.domain,r.match?.path,r.category,r.resource_type,r.review_status,r.rewrite_enabled?'rewrite':'no-rewrite',r.rewrite_reason,r.original_rule,r.last_feed_included_at].join(' ').toLowerCase();
+}
+function renderManagedSourceEntries(id){
+  const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
+  const body=document.getElementById(`agh-source-entry-body-${id}`);
+  if(!state||!body) return;
+  const filter=(state.filter||'').toLowerCase();
+  const filtered=(state.entries||[]).filter(r=>managedSourceEntrySearch(r).includes(filter));
+  const shown=filtered.slice(0,state.limit||200);
+  body.innerHTML=shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="9" class="muted">none</td></tr>`;
+  const count=document.getElementById(`agh-source-entry-count-${id}`);
+  if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${(state.entries||[]).length} total`;
+}
+function filterManagedSourceEntries(id){
+  const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
+  if(!state) return;
+  state.filter=document.getElementById(`agh-source-entry-filter-${id}`)?.value||'';
+  state.limit=200;
+  renderManagedSourceEntries(id);
+}
+function showMoreManagedSourceEntries(id){
+  const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
+  if(!state) return;
+  state.limit=(state.limit||200)+200;
+  renderManagedSourceEntries(id);
 }
 async function toggleManagedSource(id,on){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); s.enabled=on; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
 async function saveManagedSourceSettings(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`); s.priority=Number(tr?.querySelector('.agh-src-priority')?.value||0); s.stale_feed_policy=tr?.querySelector('.agh-src-stale-policy')?.value||'exclude'; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
