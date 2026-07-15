@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vnoiram/mirage-chaff/internal/config"
+	"github.com/vnoiram/mirage-chaff/internal/rulecatalog"
 )
 
 type fakeResolver struct {
@@ -1232,6 +1233,52 @@ func TestSourceEntriesFiltersAndAppliesOverrides(t *testing.T) {
 	}
 	if _, err := m.SourceEntries("missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing source error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestUnsupportedCatalogRowsRemainVisibleAndExcludedFromFeed(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||dns.example.net^\nexample.net##.ad\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	var unsupported CatalogRow
+	for _, row := range rows {
+		if row.Unsupported {
+			unsupported = row
+		}
+	}
+	if unsupported.ID == "" || unsupported.Layer != rulecatalog.LayerDOM || unsupported.Match.Domain != "example.net" {
+		t.Fatalf("unsupported row not exposed: %+v", rows)
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawUnsupported bool
+	for _, item := range p.Items {
+		if item.EntryID == unsupported.ID {
+			sawUnsupported = item.Reason == "unsupported layer" && !item.Included
+		}
+	}
+	if !sawUnsupported {
+		t.Fatalf("unsupported feed item missing/exposed incorrectly: %+v", p.Items)
+	}
+	if strings.Contains(p.Lines, "||example.net^") {
+		t.Fatalf("unsupported row should not be emitted:\n%s", p.Lines)
 	}
 }
 

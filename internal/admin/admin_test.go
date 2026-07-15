@@ -177,6 +177,9 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"managedCatalogFilterValues",
 		"agh-cat-source",
 		"agh-cat-rewrite",
+		"agh-cat-unsupported",
+		"unsupported only",
+		"supported only",
 		"agh-src-priority",
 		"manual",
 		"source priority",
@@ -750,7 +753,7 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceB, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual-b", Enabled: true, Content: "||b.example.net^\n"})
+	sourceB, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual-b", Enabled: true, Content: "||b.example.net^\nb.example.net##.ad\n"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -798,6 +801,29 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 	if resp.Entries[0].Match.Domain != "a.example.net" || resp.Entries[0].RewriteEnabled || resp.Entries[0].RewriteReason != "viewer read" {
 		t.Fatalf("source entry = %+v", resp.Entries[0])
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/managed-catalog", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer managed catalog status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var catalogResp struct {
+		Entries []aghmanaged.CatalogRow `json:"entries"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &catalogResp); err != nil {
+		t.Fatal(err)
+	}
+	var sawUnsupported bool
+	for _, row := range catalogResp.Entries {
+		if row.Unsupported && row.Match.Domain == "b.example.net" && len(row.SourceIDs) == 1 && row.SourceIDs[0] == sourceB.ID {
+			sawUnsupported = true
+		}
+	}
+	if !sawUnsupported {
+		t.Fatalf("managed catalog response missing unsupported row: %s", rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
