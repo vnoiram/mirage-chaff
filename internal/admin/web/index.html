@@ -153,6 +153,7 @@ let AGH_MANAGED_LAST_BASE_URL = '';
 let AGH_MANAGED_EMERGENCY_RESULT = '';
 let AGH_MANAGED_REFRESH_RESULT = null;
 let AGH_MANAGED_PRESET_RESULT = null;
+let AGH_MANAGED_BULK_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -429,6 +430,17 @@ function managedPresetResultHTML(r){
   ];
   return `<div id="agh-preset-status"><strong>preset saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedCatalogBulkResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-bulk-status">error: ${esc(r.error)}</div>`;
+  if(r.applying) return `<div id="agh-bulk-status">applying bulk edit...</div>`;
+  const keys=(r.override_keys||[]).join(', ')||'none';
+  const rows=[
+    ['updated entries',Number(r.updated||0)],
+    ['changed fields',keys]
+  ];
+  return `<div id="agh-bulk-status"><strong>bulk edit applied</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
@@ -596,6 +608,7 @@ async function viewAGHManaged(v){
       <input id="agh-bulk-notes" placeholder="notes">
       <input id="agh-bulk-reason" placeholder="rewrite reason">
       <button class="act" data-cmd="bulkManagedCatalog">Apply bulk edit</button>
+      <span id="agh-bulk-result" class="muted">${managedCatalogBulkResultHTML(AGH_MANAGED_BULK_RESULT)}</span>
     </div>`:''}
     <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th>changed by</th><th>feed included</th><th></th></tr></thead><tbody id="agh-cat-body">
     </tbody></table></div></div>`));
@@ -1121,9 +1134,19 @@ async function bulkManagedCatalog(){ try{
   if(notes) override.notes=notes;
   if(reason) override.rewrite_reason=reason;
   if(!Object.keys(override).length) throw new Error('choose at least one bulk edit value');
-  await api('POST','/api/agh/managed-catalog/bulk',{ids,override});
+  const out=document.getElementById('agh-bulk-result');
+  const overrideKeys=Object.keys(override);
+  AGH_MANAGED_BULK_RESULT={applying:true};
+  if(out) out.innerHTML=managedCatalogBulkResultHTML(AGH_MANAGED_BULK_RESULT);
+  const r=await api('POST','/api/agh/managed-catalog/bulk',{ids,override});
+  AGH_MANAGED_BULK_RESULT={updated:Number(r.updated||0),override_keys:overrideKeys};
   render();
-}catch(e){ alert(e.message);} }
+}catch(e){
+  AGH_MANAGED_BULK_RESULT={error:e.message};
+  const out=document.getElementById('agh-bulk-result');
+  if(out) out.innerHTML=managedCatalogBulkResultHTML(AGH_MANAGED_BULK_RESULT);
+  else alert(e.message);
+} }
 async function resolveManagedConflict(id,action){ try{
   let body={};
   if(action==='source_priority') body={strategy:'source_priority'};
