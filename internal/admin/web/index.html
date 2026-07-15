@@ -620,7 +620,12 @@ async function showMoreManagedSourcePreviewEntries(){
   if((state.entries||[]).length>=Number(state.total||0)) return;
   await fetchManagedSourcePreviewEntries(false);
 }
-async function pendingManagedSource(id){ try{ const r=await api('GET','/api/agh/sources/'+id+'/pending-diff'); window.AGH_MANAGED_SOURCE_DIFF_STATE={diff:r,limits:{added:100,removed:100,changed:100},filters:{added:'',removed:'',changed:''}}; document.getElementById('agh-source-detail').innerHTML=managedSourcePendingDiff(r); ['added','removed','changed'].forEach(renderManagedPendingDiffKind); }catch(e){ alert(e.message);} }
+async function pendingManagedSource(id){ try{
+  const r=await api('GET','/api/agh/sources/'+id+'/pending-diff');
+  window.AGH_MANAGED_SOURCE_DIFF_STATE={sourceID:id,source:r.source||{},entries:{added:[],removed:[],changed:[]},totals:{added:(r.added||[]).length,removed:(r.removed||[]).length,changed:(r.changed||[]).length},limits:{added:100,removed:100,changed:100},filters:{added:'',removed:'',changed:''}};
+  document.getElementById('agh-source-detail').innerHTML=managedSourcePendingDiff(r);
+  await Promise.all(['added','removed','changed'].map(kind=>fetchManagedPendingDiffKind(kind,true)));
+}catch(e){ alert(e.message);} }
 function managedSourcePendingDiff(diff){
   const source=diff.source||{};
   return `<div><h3>pending diff: ${esc(source.name||source.id||'source')}</h3><div class="kv"><div>added</div><div>${(diff.added||[]).length}</div><div>removed</div><div>${(diff.removed||[]).length}</div><div>changed</div><div>${(diff.changed||[]).length}</div></div>${managedPendingDiffTable('added',diff.added||[])}${managedPendingDiffTable('removed',diff.removed||[])}${managedPendingDiffTable('changed',diff.changed||[])}</div>`;
@@ -631,30 +636,50 @@ function managedPendingDiffTable(kind,entries){
 function managedPendingDiffSearch(e){
   return [e.match?.domain,e.match?.path,managedSourceTraceRefSearch(e.source_refs,e.source_ids||[]),e.category,e.resource_type,e.review_status,managedPendingChangeSummary(e),managedFeedImpact(e.feed_impact),e.original_rule].join(' ').toLowerCase();
 }
+function managedPendingDiffQuery(kind,offset,limit){
+  const params=new URLSearchParams();
+  params.set('kind',kind);
+  const q=document.getElementById(`agh-pending-${kind}-filter`)?.value||'';
+  if(q) params.set('q',q);
+  params.set('limit',String(limit||100));
+  params.set('offset',String(offset||0));
+  return params.toString();
+}
+async function fetchManagedPendingDiffKind(kind,reset){
+  const state=window.AGH_MANAGED_SOURCE_DIFF_STATE;
+  if(!state||!state.sourceID) return;
+  const entries=state.entries?.[kind]||[];
+  const offset=reset?0:entries.length;
+  const r=await api('GET','/api/agh/sources/'+state.sourceID+'/pending-diff?'+managedPendingDiffQuery(kind,offset,state.limits?.[kind]||100));
+  state.entries=state.entries||{};
+  state.entries[kind]=reset?(r[kind]||[]):entries.concat(r[kind]||[]);
+  state.totals=state.totals||{};
+  state.totals[kind]=Number(r.total??state.entries[kind].length);
+  state.filters=state.filters||{};
+  state.filters[kind]=document.getElementById(`agh-pending-${kind}-filter`)?.value||'';
+  renderManagedPendingDiffKind(kind);
+}
 function renderManagedPendingDiffKind(kind){
   const state=window.AGH_MANAGED_SOURCE_DIFF_STATE;
   const body=document.getElementById(`agh-pending-${kind}-body`);
   if(!state||!body) return;
-  const entries=state.diff?.[kind]||[];
-  const filter=(state.filters?.[kind]||'').toLowerCase();
-  const filtered=entries.filter(e=>managedPendingDiffSearch(e).includes(filter));
-  const shown=filtered.slice(0,state.limits?.[kind]||100);
+  const shown=state.entries?.[kind]||[];
   body.innerHTML=shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${managedSourceTraceRefs(e.source_refs,e.source_ids||[e.source?.name].filter(Boolean))}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${managedPendingChangeSummary(e)}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="9" class="muted">none</td></tr>`;
   const count=document.getElementById(`agh-pending-${kind}-count`);
-  if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${entries.length} total`;
+  if(count) count.textContent=`showing ${shown.length} of ${Number(state.totals?.[kind]||0)} matching / ${shown.length} loaded`;
 }
-function filterManagedPendingDiff(kind){
+async function filterManagedPendingDiff(kind){
   const state=window.AGH_MANAGED_SOURCE_DIFF_STATE;
   if(!state) return;
   state.filters[kind]=document.getElementById(`agh-pending-${kind}-filter`)?.value||'';
-  state.limits[kind]=100;
-  renderManagedPendingDiffKind(kind);
+  state.entries[kind]=[];
+  await fetchManagedPendingDiffKind(kind,true);
 }
-function showMoreManagedPendingDiff(kind){
+async function showMoreManagedPendingDiff(kind){
   const state=window.AGH_MANAGED_SOURCE_DIFF_STATE;
   if(!state) return;
-  state.limits[kind]=(state.limits[kind]||100)+100;
-  renderManagedPendingDiffKind(kind);
+  if((state.entries?.[kind]||[]).length>=Number(state.totals?.[kind]||0)) return;
+  await fetchManagedPendingDiffKind(kind,false);
 }
 function managedPendingChangeSummary(e){
   const prev=e.previous||{};
