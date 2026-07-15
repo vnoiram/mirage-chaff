@@ -158,6 +158,8 @@ let AGH_MANAGED_ROLLBACK_RESULT = null;
 let AGH_MANAGED_SOURCE_RESULT = null;
 let AGH_MANAGED_CATALOG_RESULT = null;
 let AGH_MANAGED_FEED_PREVIEW_RESULT = null;
+let AGH_MANAGED_TARGET_REFRESH_RESULT = null;
+let AGH_MANAGED_TARGET_CONFIG_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -526,7 +528,7 @@ function managedTargetConfigForm(target){
     <input id="agh-target-static-ipv6" value="${esc((target.static_ipv6||[]).join(', '))}" placeholder="static IPv6" ${mode==='static_ip'?'':'disabled'}>
     <input id="agh-target-stale-ttl" value="${esc(target.stale_target_ttl||'24h')}" placeholder="stale target TTL" style="width:130px">
     <button class="act" data-cmd="saveManagedTargetConfig">Save target settings</button>
-    <span id="agh-target-config-result" class="muted"></span>
+    <span id="agh-target-config-result" class="muted">${managedTargetResultHTML(AGH_MANAGED_TARGET_CONFIG_RESULT)}</span>
   </div>`;
 }
 function splitTargetIPs(raw){
@@ -606,7 +608,7 @@ async function viewAGHManaged(v){
     <button class="act" onclick="previewManagedFeed()">Preview feed</button>
     <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT)}</span>
     <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
-    ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted"></span>`:''}
+    ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted">${managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT)}</span>`:''}
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
   <div id="agh-feed-items"></div></div>`));
@@ -1366,16 +1368,24 @@ async function setEmergencyEmpty(on){ try{
   else alert(e.message);
 } }
 async function refreshManagedTarget(){ try{
+  AGH_MANAGED_TARGET_REFRESH_RESULT={action:'refresh target',running:true};
+  const running=document.getElementById('agh-target-refresh-result');
+  if(running) running.innerHTML=managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT);
   const r=await api('POST','/api/agh/rewrite-feed/refresh-target');
+  AGH_MANAGED_TARGET_REFRESH_RESULT=Object.assign({action:'refresh target'},r);
   const out=document.getElementById('agh-target-refresh-result');
-  if(out) out.innerHTML=managedTargetResultHTML(Object.assign({action:'refresh target'},r));
+  if(out) out.innerHTML=managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT);
   if(!out) render();
 }catch(e){
+  AGH_MANAGED_TARGET_REFRESH_RESULT={action:'refresh target',error:e.message};
   const out=document.getElementById('agh-target-refresh-result');
-  if(out) out.innerHTML=managedTargetResultHTML({action:'refresh target',error:e.message});
+  if(out) out.innerHTML=managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT);
   else alert(e.message);
 } }
 async function saveManagedTargetConfig(){ try{
+  AGH_MANAGED_TARGET_CONFIG_RESULT={action:'save target settings',running:true};
+  const running=document.getElementById('agh-target-config-result');
+  if(running) running.innerHTML=managedTargetResultHTML(AGH_MANAGED_TARGET_CONFIG_RESULT);
   const body={
     target_mode:document.getElementById('agh-target-mode')?.value||'resolved_ip',
     target_name:document.getElementById('agh-target-name')?.value||'',
@@ -1384,11 +1394,13 @@ async function saveManagedTargetConfig(){ try{
     stale_target_ttl:document.getElementById('agh-target-stale-ttl')?.value||'24h'
   };
   const r=await api('PUT','/api/agh/rewrite-feed/target',body);
+  AGH_MANAGED_TARGET_CONFIG_RESULT=Object.assign({action:'save target settings'},r);
   const out=document.getElementById('agh-target-config-result');
-  if(out) out.innerHTML=managedTargetResultHTML(Object.assign({action:'save target settings'},r));
+  if(out) out.innerHTML=managedTargetResultHTML(AGH_MANAGED_TARGET_CONFIG_RESULT);
 }catch(e){
+  AGH_MANAGED_TARGET_CONFIG_RESULT={action:'save target settings',error:e.message};
   const out=document.getElementById('agh-target-config-result');
-  if(out) out.innerHTML=managedTargetResultHTML({action:'save target settings',error:e.message});
+  if(out) out.innerHTML=managedTargetResultHTML(AGH_MANAGED_TARGET_CONFIG_RESULT);
   else alert(e.message);
 } }
 async function saveManagedSchedulerConfig(){ try{
