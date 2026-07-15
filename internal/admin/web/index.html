@@ -418,6 +418,16 @@ function managedEmergencyEmptyPanel(status){
   const button=has('agh.manage')?` <button class="act danger" onclick="setEmergencyEmpty(${!on})">${action} emergency empty</button>`:'';
   return `<div id="agh-emergency-panel"><strong>${esc(state)}</strong><div class="kv"><div>feed impact</div><div>${esc(impact)}</div><div>next action</div><div>${esc(next)}</div></div>${button} <span id="agh-emergency-result" class="muted">${esc(AGH_MANAGED_EMERGENCY_RESULT)}</span></div>`;
 }
+function managedPresetResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-preset-status">error: ${esc(r.error)}</div>`;
+  if(r.saving) return `<div id="agh-preset-status">saving...</div>`;
+  const rows=[
+    ['saved preset',r.default_preset||'balanced'],
+    ['feed impact','future feed generations use this default preset']
+  ];
+  return `<div id="agh-preset-status"><strong>preset saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
@@ -494,7 +504,7 @@ async function viewAGHManaged(v){
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
     <div>emergency empty</div><div>${managedEmergencyEmptyPanel(status)}</div>
     <div>target mode</div><div>${esc(status.target_mode||'')}</div>
-    <div>default preset</div><div>${has('agh.manage')?`<select id="agh-preset">${['conservative','balanced','aggressive'].map(v=>optionHTML(v,status.default_preset||'balanced')).join('')}</select> <button class="act" data-cmd="saveManagedPreset">save</button>`:esc(status.default_preset||'balanced')}</div>
+    <div>default preset</div><div>${has('agh.manage')?`<select id="agh-preset">${['conservative','balanced','aggressive'].map(v=>optionHTML(v,status.default_preset||'balanced')).join('')}</select> <button class="act" data-cmd="saveManagedPreset">save</button><div id="agh-preset-result" class="muted" style="margin-top:6px">${managedPresetResultHTML(null)}</div>`:esc(status.default_preset||'balanced')}</div>
     <div>target name</div><div>${esc(status.target_name||'')}</div>
     <div>resolved IPs</div><div>${esc((status.resolved_ips||[]).join(', ')||'none')}</div>
     <div>target cache</div><div>${status.target_cache_used?'stale cache in use':'fresh or not needed'}</div>
