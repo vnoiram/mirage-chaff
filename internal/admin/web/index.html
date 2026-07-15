@@ -453,12 +453,13 @@ async function viewAGHManaged(v){
   const conflicts=(await api('GET','/api/agh/managed-catalog/conflicts')).conflicts||[];
   const history=await api('GET','/api/agh/history');
   const rollbacks=(await api('GET','/api/agh/managed-catalog/rollbacks')).rollbacks||[];
-  const rows=(await api('GET','/api/agh/managed-catalog')).entries||[];
+  const catalogPage=await api('GET','/api/agh/managed-catalog?limit=500&offset=0');
+  const rows=catalogPage.entries||[];
   const unsupportedCount=rows.filter(r=>r.unsupported).length;
   window.AGH_MANAGED_SOURCES=sources;
   window.AGH_MANAGED_ROWS=rows;
   window.AGH_MANAGED_ROLLBACKS=rollbacks;
-  window.AGH_MANAGED_CATALOG_STATE={rows,limit:500};
+  window.AGH_MANAGED_CATALOG_STATE={rows,total:Number(catalogPage.total??rows.length),limit:500,offset:0};
   v.appendChild(el(`<div class="card"><h2>AGH Managed Overview</h2><div class="kv">
     <div>feed path</div><div>${esc(status.feed_path||'/agh/managed-rewrites.txt')}</div>
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
@@ -704,9 +705,9 @@ async function toggleManagedSourceEntries(id){ try{
   if(existing){ existing.remove(); const b=document.querySelector(`button[data-cmd="toggleManagedSourceEntries"][data-id="${CSS.escape(id)}"]`); if(b) b.textContent='entries'; return; }
   const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
   if(!tr) throw new Error('source row not found');
-  const r=await api('GET','/api/agh/sources/'+id+'/entries');
+  const r=await api('GET','/api/agh/sources/'+id+'/entries?limit=200&offset=0');
   window.AGH_SOURCE_ENTRY_STATE=window.AGH_SOURCE_ENTRY_STATE||{};
-  window.AGH_SOURCE_ENTRY_STATE[id]={entries:r.entries||[],limit:200,filter:''};
+  window.AGH_SOURCE_ENTRY_STATE[id]={entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:200,filter:''};
   tr.insertAdjacentHTML('afterend',managedSourceEntriesRow(id,r.entries||[]));
   renderManagedSourceEntries(id);
   const b=tr.querySelector(`button[data-cmd="toggleManagedSourceEntries"]`);
@@ -718,29 +719,46 @@ function managedSourceEntriesRow(id,entries){
 function managedSourceEntrySearch(r){
   return [r.match?.domain,r.match?.path,managedSourceTraceRefSearch(r.source_refs,r.source_ids||[]),r.category,r.resource_type,r.review_status,r.rewrite_enabled?'rewrite':'no-rewrite',r.rewrite_reason,r.original_rule,r.last_feed_included_at].join(' ').toLowerCase();
 }
+function managedSourceEntryQuery(id,offset,limit){
+  const params=new URLSearchParams();
+  const q=document.getElementById(`agh-source-entry-filter-${id}`)?.value||'';
+  if(q) params.set('q',q);
+  params.set('limit',String(limit||200));
+  params.set('offset',String(offset||0));
+  return params.toString();
+}
+async function fetchManagedSourceEntries(id,reset){
+  const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
+  if(!state) return;
+  const offset=reset?0:(state.entries||[]).length;
+  const r=await api('GET','/api/agh/sources/'+id+'/entries?'+managedSourceEntryQuery(id,offset,state.limit||200));
+  const entries=r.entries||[];
+  state.entries=reset?entries:(state.entries||[]).concat(entries);
+  state.total=Number(r.total??state.entries.length);
+  state.filter=document.getElementById(`agh-source-entry-filter-${id}`)?.value||'';
+  renderManagedSourceEntries(id);
+}
 function renderManagedSourceEntries(id){
   const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
   const body=document.getElementById(`agh-source-entry-body-${id}`);
   if(!state||!body) return;
-  const filter=(state.filter||'').toLowerCase();
-  const filtered=(state.entries||[]).filter(r=>managedSourceEntrySearch(r).includes(filter));
-  const shown=filtered.slice(0,state.limit||200);
+  const shown=state.entries||[];
   body.innerHTML=shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${managedSourceTraceRefs(r.source_refs,r.source_ids||[])}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="10" class="muted">none</td></tr>`;
   const count=document.getElementById(`agh-source-entry-count-${id}`);
-  if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${(state.entries||[]).length} total`;
+  if(count) count.textContent=`showing ${shown.length} of ${Number(state.total||0)} matching / ${(state.entries||[]).length} loaded`;
 }
-function filterManagedSourceEntries(id){
+async function filterManagedSourceEntries(id){
   const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
   if(!state) return;
   state.filter=document.getElementById(`agh-source-entry-filter-${id}`)?.value||'';
-  state.limit=200;
-  renderManagedSourceEntries(id);
+  state.entries=[];
+  await fetchManagedSourceEntries(id,true);
 }
-function showMoreManagedSourceEntries(id){
+async function showMoreManagedSourceEntries(id){
   const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
   if(!state) return;
-  state.limit=(state.limit||200)+200;
-  renderManagedSourceEntries(id);
+  if((state.entries||[]).length>=Number(state.total||0)) return;
+  await fetchManagedSourceEntries(id,false);
 }
 function managedSourceEditRow(s){
   const isManual=s.type==='manual';
@@ -1030,46 +1048,57 @@ async function previewManagedFeed(){ try{
   document.getElementById('agh-feed-items').innerHTML=managedFeedPreviewDiagnostics(p)+managedFeedPreviewTable(p.items||[]);
   renderManagedFeedPreviewItems();
 }catch(e){ alert(e.message);} }
-function managedCatalogFilteredRows(){
-  const state=window.AGH_MANAGED_CATALOG_STATE||{rows:[]};
-  const q=(document.getElementById('agh-cat-filter')?.value||'').toLowerCase();
+function managedCatalogQuery(offset,limit){
+  const params=new URLSearchParams();
+  const q=document.getElementById('agh-cat-filter')?.value||'';
   const source=document.getElementById('agh-cat-source')?.value||'';
   const category=document.getElementById('agh-cat-category')?.value||'';
   const resource=document.getElementById('agh-cat-resource')?.value||'';
   const review=document.getElementById('agh-cat-review')?.value||'';
   const rewrite=document.getElementById('agh-cat-rewrite')?.value||'';
   const unsupported=document.getElementById('agh-cat-unsupported')?.value||'';
-  return (state.rows||[]).filter(r=>{
-    const search=[r.match?.domain,managedSourceTraceRefSearch(r.source_refs,r.source_ids||[]),r.category,r.resource_type,r.risk,r.review_status,r.confidence,r.expected_catalog,r.action,r.notes,r.rewrite_reason,r.last_changed_by,r.last_feed_included_at].join(' ').toLowerCase();
-    return search.includes(q)
-      && (!source || (r.source_ids||[]).includes(source))
-      && (!category || (r.category||'')===category)
-      && (!resource || (r.resource_type||'')===resource)
-      && (!review || (r.review_status||'')===review)
-      && (!rewrite || String(!!r.rewrite_enabled)===rewrite)
-      && (!unsupported || String(!!r.unsupported)===unsupported);
-  });
+  if(q) params.set('q',q);
+  if(source) params.set('source',source);
+  if(category) params.set('category',category);
+  if(resource) params.set('resource_type',resource);
+  if(review) params.set('review_status',review);
+  if(rewrite) params.set('rewrite_enabled',rewrite);
+  if(unsupported) params.set('unsupported',unsupported);
+  params.set('limit',String(limit||500));
+  params.set('offset',String(offset||0));
+  return params.toString();
+}
+async function fetchManagedCatalogRows(reset){
+  const state=window.AGH_MANAGED_CATALOG_STATE;
+  if(!state) return;
+  const offset=reset?0:(state.rows||[]).length;
+  const page=await api('GET','/api/agh/managed-catalog?'+managedCatalogQuery(offset,state.limit||500));
+  const rows=page.entries||[];
+  state.rows=reset?rows:(state.rows||[]).concat(rows);
+  state.total=Number(page.total??state.rows.length);
+  window.AGH_MANAGED_ROWS=state.rows;
+  renderManagedCatalogRows();
 }
 function renderManagedCatalogRows(){
   const state=window.AGH_MANAGED_CATALOG_STATE;
   const body=document.getElementById('agh-cat-body');
   if(!state||!body) return;
-  const filtered=managedCatalogFilteredRows();
-  const shown=filtered.slice(0,state.limit||500);
+  const shown=state.rows||[];
   body.innerHTML=shown.map(r=>managedCatalogRow(r,false)).join('')||'<tr><td colspan="17" class="muted">none</td></tr>';
   const count=document.getElementById('agh-cat-count');
-  if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${(state.rows||[]).length} total`;
+  if(count) count.textContent=`showing ${shown.length} of ${Number(state.total||0)} matching / ${(state.rows||[]).length} loaded`;
 }
-function filterManagedCatalog(){
-  const state=window.AGH_MANAGED_CATALOG_STATE;
-  if(state) state.limit=500;
-  renderManagedCatalogRows();
-}
-function showMoreManagedCatalogRows(){
+async function filterManagedCatalog(){
   const state=window.AGH_MANAGED_CATALOG_STATE;
   if(!state) return;
-  state.limit=(state.limit||500)+500;
-  renderManagedCatalogRows();
+  state.rows=[];
+  await fetchManagedCatalogRows(true);
+}
+async function showMoreManagedCatalogRows(){
+  const state=window.AGH_MANAGED_CATALOG_STATE;
+  if(!state) return;
+  if((state.rows||[]).length>=Number(state.total||0)) return;
+  await fetchManagedCatalogRows(false);
 }
 
 async function viewCuration(v){
