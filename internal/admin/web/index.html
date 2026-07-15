@@ -534,6 +534,20 @@ function managedSourceOperationResultHTML(r){
   ];
   return `<div id="agh-source-status"><strong>source operation complete</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedSourcePreviewResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-source-preview-status">error: ${esc(r.error)}</div>`;
+  if(r.previewing) return `<div id="agh-source-preview-status">previewing source...</div>`;
+  const s=r.source||{};
+  const rows=[
+    ['source',s.name||s.id||'source'],
+    ['entries',Number(r.total??(r.entries||[]).length)],
+    ['loaded',(r.entries||[]).length],
+    ['unsupported',Number(s.unsupported||0)],
+    ['allow exceptions',Number(s.allow_exceptions||0)]
+  ];
+  return `<div id="agh-source-preview-status"><strong>source preview ready</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
@@ -796,7 +810,19 @@ async function syncManagedSource(id){ try{
   AGH_MANAGED_SOURCE_RESULT={action:'sync source',source:src};
   render();
 }catch(e){ managedSourceOperationError('sync source',e);} }
-async function previewManagedSource(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); const r=await api('POST','/api/agh/sources/preview?limit=100&offset=0',s); window.AGH_MANAGED_SOURCE_PREVIEW_STATE={source:s,entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:100,filter:''}; document.getElementById('agh-source-detail').innerHTML=managedSourcePreview(r); renderManagedSourcePreviewEntries(); }catch(e){ alert(e.message);} }
+async function previewManagedSource(id){ try{
+  const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id);
+  const detail=document.getElementById('agh-source-detail');
+  if(detail) detail.innerHTML=managedSourcePreviewResultHTML({source:s,previewing:true});
+  const r=await api('POST','/api/agh/sources/preview?limit=100&offset=0',s);
+  window.AGH_MANAGED_SOURCE_PREVIEW_STATE={source:s,entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:100,filter:''};
+  if(detail) detail.innerHTML=managedSourcePreviewResultHTML(r)+managedSourcePreview(r);
+  renderManagedSourcePreviewEntries();
+}catch(e){
+  const detail=document.getElementById('agh-source-detail');
+  if(detail) detail.innerHTML=managedSourcePreviewResultHTML({error:e.message});
+  else alert(e.message);
+} }
 function managedSourcePreview(preview){
   const source=preview.source||{};
   const entries=preview.entries||[];
