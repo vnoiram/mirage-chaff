@@ -142,6 +142,27 @@ type CatalogRow struct {
 	LastFeedIncludedAt time.Time   `json:"last_feed_included_at,omitempty"`
 }
 
+// CatalogQuery filters and pages editable catalog rows.
+type CatalogQuery struct {
+	Q              string
+	Source         string
+	Category       string
+	ResourceType   string
+	ReviewStatus   string
+	RewriteEnabled *bool
+	Unsupported    *bool
+	Limit          int
+	Offset         int
+}
+
+// CatalogPage is a filtered catalog row page.
+type CatalogPage struct {
+	Entries []CatalogRow `json:"entries"`
+	Total   int          `json:"total"`
+	Limit   int          `json:"limit"`
+	Offset  int          `json:"offset"`
+}
+
 // Conflict is a grouped domain/path disagreement that blocks feed emission.
 type Conflict struct {
 	ID             string       `json:"id"`
@@ -600,31 +621,49 @@ func (m *Manager) SyncDue(ctx context.Context) {
 }
 
 func (m *Manager) CatalogRows() []CatalogRow {
+	return m.CatalogPage(CatalogQuery{}).Entries
+}
+
+func (m *Manager) CatalogPage(q CatalogQuery) CatalogPage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	rows := make([]CatalogRow, 0, len(m.entries))
 	for _, e := range m.entries {
-		rows = append(rows, m.catalogRowLocked(e))
+		row := m.catalogRowLocked(e)
+		if catalogRowMatchesQuery(row, q) {
+			rows = append(rows, row)
+		}
 	}
 	sortCatalogRows(rows)
-	return rows
+	return catalogPage(rows, q)
 }
 
 func (m *Manager) SourceEntries(id string) ([]CatalogRow, error) {
+	page, err := m.SourceEntriesPage(id, CatalogQuery{})
+	if err != nil {
+		return nil, err
+	}
+	return page.Entries, nil
+}
+
+func (m *Manager) SourceEntriesPage(id string, q CatalogQuery) (CatalogPage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if _, ok := m.sources[id]; !ok {
-		return nil, os.ErrNotExist
+		return CatalogPage{}, os.ErrNotExist
 	}
 	rows := make([]CatalogRow, 0)
 	for _, e := range m.entries {
 		if e.Source.Name != id {
 			continue
 		}
-		rows = append(rows, m.catalogRowLocked(e))
+		row := m.catalogRowLocked(e)
+		if catalogRowMatchesQuery(row, q) {
+			rows = append(rows, row)
+		}
 	}
 	sortCatalogRows(rows)
-	return rows, nil
+	return catalogPage(rows, q), nil
 }
 
 func (m *Manager) catalogRowLocked(e rulecatalog.Entry) CatalogRow {
@@ -700,6 +739,70 @@ func sortCatalogRows(rows []CatalogRow) {
 		}
 		return rows[i].ID < rows[j].ID
 	})
+}
+
+func catalogPage(rows []CatalogRow, q CatalogQuery) CatalogPage {
+	total := len(rows)
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	limit := q.Limit
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return CatalogPage{Entries: rows[offset:end], Total: total, Limit: limit, Offset: offset}
+}
+
+func catalogRowMatchesQuery(row CatalogRow, q CatalogQuery) bool {
+	if q.Source != "" && !stringInSlice(q.Source, row.SourceIDs) {
+		return false
+	}
+	if q.Category != "" && row.Category != q.Category {
+		return false
+	}
+	if q.ResourceType != "" && row.ResourceType != q.ResourceType {
+		return false
+	}
+	if q.ReviewStatus != "" && row.ReviewStatus != q.ReviewStatus {
+		return false
+	}
+	if q.RewriteEnabled != nil && row.RewriteEnabled != *q.RewriteEnabled {
+		return false
+	}
+	if q.Unsupported != nil && row.Unsupported != *q.Unsupported {
+		return false
+	}
+	if strings.TrimSpace(q.Q) != "" && !strings.Contains(catalogRowSearchText(row), strings.ToLower(strings.TrimSpace(q.Q))) {
+		return false
+	}
+	return true
+}
+
+func catalogRowSearchText(row CatalogRow) string {
+	var refs []string
+	for _, ref := range row.SourceRefs {
+		refs = append(refs, ref.ID, ref.Name, ref.Type, ref.URL, fmt.Sprint(ref.Priority))
+	}
+	parts := []string{
+		row.ID, row.Match.Domain, row.Match.Path, strings.Join(row.SourceIDs, " "), strings.Join(refs, " "),
+		row.Category, row.ResourceType, row.Risk, row.ReviewStatus, row.Confidence,
+		row.ExpectedCatalog, row.Action, row.Notes, row.RewriteReason, row.LastChangedBy, row.OriginalRule,
+	}
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func stringInSlice(needle string, haystack []string) bool {
+	for _, item := range haystack {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) ListConflicts() []Conflict {

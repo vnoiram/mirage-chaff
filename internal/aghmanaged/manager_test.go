@@ -1457,6 +1457,63 @@ func TestSourceEntriesFiltersAndAppliesOverrides(t *testing.T) {
 	}
 }
 
+func TestCatalogPageFiltersAndPaginatesRows(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceA, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual-a", Enabled: true, Content: "||b.example.net^\n||a.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceB, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual-b", Enabled: true, Content: "||c.example.net^\nc.example.net##.ad\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), sourceA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), sourceB.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := m.SourceEntries(sourceA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	if _, err := m.PatchEntry(rows[0].ID, CatalogOverride{RewriteEnabled: &off, RewriteReason: "manual disable", ReviewStatus: "needs_test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	page := m.CatalogPage(CatalogQuery{Limit: 2, Offset: 1})
+	if page.Total != 4 || page.Limit != 2 || page.Offset != 1 || len(page.Entries) != 2 || page.Entries[0].Match.Domain != "b.example.net" {
+		t.Fatalf("catalog page = %+v", page)
+	}
+	page = m.CatalogPage(CatalogQuery{Source: sourceB.ID, Unsupported: boolPtr(true)})
+	if page.Total != 1 || len(page.Entries) != 1 || page.Entries[0].Match.Domain != "c.example.net" {
+		t.Fatalf("unsupported source page = %+v", page)
+	}
+	page = m.CatalogPage(CatalogQuery{Q: "manual disable", RewriteEnabled: boolPtr(false), ReviewStatus: "needs_test"})
+	if page.Total != 1 || len(page.Entries) != 1 || page.Entries[0].RewriteReason != "manual disable" {
+		t.Fatalf("override filtered page = %+v", page)
+	}
+	sourcePage, err := m.SourceEntriesPage(sourceA.ID, CatalogQuery{Q: "example", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourcePage.Total != 2 || len(sourcePage.Entries) != 1 || sourcePage.Entries[0].SourceIDs[0] != sourceA.ID {
+		t.Fatalf("source page = %+v", sourcePage)
+	}
+	if _, err := m.SourceEntriesPage("missing", CatalogQuery{}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing source page error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
 func TestUnsupportedCatalogRowsRemainVisibleAndExcludedFromFeed(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"
