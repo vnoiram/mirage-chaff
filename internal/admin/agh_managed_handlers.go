@@ -243,16 +243,30 @@ func (s *Server) handleAGHManagedConflictResolve(w http.ResponseWriter, r *http.
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	var req aghmanaged.CatalogOverride
+	var req struct {
+		Strategy string `json:"strategy,omitempty"`
+		aghmanaged.CatalogOverride
+	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	row, err := s.deps.AGHManaged.ResolveConflict(r.PathValue("id"), req)
+	if req.Strategy == "source_priority" {
+		rows, err := s.deps.AGHManaged.ResolveConflictByPriority(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.store.Audit(sess.username, "agh_managed.conflict.resolve", fmt.Sprintf("id=%s strategy=source_priority updated=%d", r.PathValue("id"), len(rows)))
+		writeJSON(w, map[string]any{"updated": len(rows), "entries": rows})
+		return
+	}
+	ov := req.CatalogOverride
+	row, err := s.deps.AGHManaged.ResolveConflict(r.PathValue("id"), ov)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.Audit(sess.username, "agh_managed.conflict.resolve", aghManagedCatalogAuditDetail(row.ID, req))
+	s.store.Audit(sess.username, "agh_managed.conflict.resolve", aghManagedCatalogAuditDetail(row.ID, ov))
 	writeJSON(w, row)
 }
 
@@ -360,7 +374,7 @@ func mapErr(err error) string {
 
 func aghManagedSourceAuditDetail(src aghmanaged.Source) string {
 	return fmt.Sprintf(
-		"id=%s type=%s enabled=%s pending=%s entries=%d unsupported=%d allow_exceptions=%d",
+		"id=%s type=%s enabled=%s pending=%s entries=%d unsupported=%d allow_exceptions=%d priority=%d",
 		src.ID,
 		src.Type,
 		mapBool(src.Enabled),
@@ -368,6 +382,7 @@ func aghManagedSourceAuditDetail(src aghmanaged.Source) string {
 		src.Entries,
 		src.Unsupported,
 		src.AllowExceptions,
+		src.Priority,
 	)
 }
 

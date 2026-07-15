@@ -95,6 +95,41 @@ func TestManagedFeedCNAME(t *testing.T) {
 	}
 }
 
+func TestSourcePriorityPersistsAndAppearsOnRows(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	path := filepath.Join(t.TempDir(), "managed.json")
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Priority: 7, Content: "||priority.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 1 || rows[0].SourcePriority != 7 {
+		t.Fatalf("rows = %+v", rows)
+	}
+
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := reopened.ListSources()
+	if len(sources) != 1 || sources[0].Priority != 7 {
+		t.Fatalf("sources = %+v", sources)
+	}
+	rows = reopened.CatalogRows()
+	if len(rows) != 1 || rows[0].SourcePriority != 7 {
+		t.Fatalf("reopened rows = %+v", rows)
+	}
+}
+
 func TestManagedFeedExcludesHTTPPathRules(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"
@@ -637,6 +672,197 @@ func TestConflictsListExcludeAndResolve(t *testing.T) {
 	}
 	if !sawDisabled || sawStillUnresolved {
 		t.Fatalf("preview items after resolve = %+v", p.Items)
+	}
+}
+
+func TestResolveConflictByPriorityAppliesWinnerClassification(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	low, err := m.UpsertSource(Source{Type: SourceManual, Name: "low", Enabled: true, Priority: 1, Content: "@@||priority-conflict.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	high, err := m.UpsertSource(Source{Type: SourceManual, Name: "high", Enabled: true, Priority: 10, Content: "||priority-conflict.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), low.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), high.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	verified := true
+	for _, row := range rows {
+		if row.SourcePriority == 10 {
+			if _, err := m.PatchEntry(row.ID, CatalogOverride{Category: "winner_category", ResourceType: "script", Risk: "high", Confidence: "high", ReviewStatus: "approved", Verified: &verified, ExpectedCatalog: "winner-catalog", Action: "stub"}); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if _, err := m.PatchEntry(row.ID, CatalogOverride{Category: "loser_category", ReviewStatus: "needs_test"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	conflicts := m.ListConflicts()
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	updated, err := m.ResolveConflictByPriority(conflicts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) != 1 {
+		t.Fatalf("updated = %+v", updated)
+	}
+	if got := m.ListConflicts(); len(got) != 0 {
+		t.Fatalf("conflict still listed: %+v", got)
+	}
+	var loser CatalogRow
+	for _, row := range m.CatalogRows() {
+		if row.SourcePriority == 1 {
+			loser = row
+		}
+	}
+	if loser.Category != "winner_category" || loser.ResourceType != "script" || loser.Risk != "high" || loser.Confidence != "high" || loser.ReviewStatus != "approved" || !loser.Verified || loser.ExpectedCatalog != "winner-catalog" || loser.Action != "stub" {
+		t.Fatalf("loser did not receive winner classification: %+v", loser)
+	}
+	rollbacks := m.ListRollbacks()
+	if len(rollbacks) == 0 || rollbacks[0].Action != "conflict source priority resolve" || !strings.Contains(rollbacks[0].Summary, high.ID) {
+		t.Fatalf("rollbacks = %+v", rollbacks)
+	}
+}
+
+func TestResolveConflictByPriorityAllowExceptionWinsAndExcludesFeed(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker, err := m.UpsertSource(Source{Type: SourceManual, Name: "tracker", Enabled: true, Priority: 1, Content: "||priority-allow.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := m.UpsertSource(Source{Type: SourceManual, Name: "allow", Enabled: true, Priority: 5, Content: "@@||priority-allow.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), tracker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), allow.ID); err != nil {
+		t.Fatal(err)
+	}
+	conflicts := m.ListConflicts()
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	if _, err := m.ResolveConflictByPriority(conflicts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.ListConflicts(); len(got) != 0 {
+		t.Fatalf("conflict still listed: %+v", got)
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p.Lines, "priority-allow.example.net") {
+		t.Fatalf("allow-priority conflict should be excluded:\n%s", p.Lines)
+	}
+	for _, row := range m.CatalogRows() {
+		if row.Category != "allow_exception" {
+			t.Fatalf("row should align to allow_exception: %+v", row)
+		}
+	}
+}
+
+func TestResolveConflictByPriorityTieDoesNotMutate(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker, err := m.UpsertSource(Source{Type: SourceManual, Name: "tracker", Enabled: true, Priority: 3, Content: "||priority-tie.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := m.UpsertSource(Source{Type: SourceManual, Name: "allow", Enabled: true, Priority: 3, Content: "@@||priority-tie.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), tracker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), allow.ID); err != nil {
+		t.Fatal(err)
+	}
+	conflicts := m.ListConflicts()
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	if _, err := m.ResolveConflictByPriority(conflicts[0].ID); err == nil || !strings.Contains(err.Error(), "tie") {
+		t.Fatalf("ResolveConflictByPriority error = %v, want tie", err)
+	}
+	if len(m.ListRollbacks()) != 0 {
+		t.Fatalf("tie should not record rollback: %+v", m.ListRollbacks())
+	}
+	if got := m.ListConflicts(); len(got) != 1 {
+		t.Fatalf("tie should leave conflict unchanged: %+v", got)
+	}
+}
+
+func TestRollbackRestoresPriorityConflictResolution(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker, err := m.UpsertSource(Source{Type: SourceManual, Name: "tracker", Enabled: true, Priority: 1, Content: "||priority-rollback.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := m.UpsertSource(Source{Type: SourceManual, Name: "allow", Enabled: true, Priority: 5, Content: "@@||priority-rollback.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), tracker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), allow.ID); err != nil {
+		t.Fatal(err)
+	}
+	conflicts := m.ListConflicts()
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	if _, err := m.ResolveConflictByPriority(conflicts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	rollbacks := m.ListRollbacks()
+	if len(rollbacks) == 0 {
+		t.Fatal("expected rollback")
+	}
+	if _, err := m.Rollback(rollbacks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.ListConflicts(); len(got) != 1 {
+		t.Fatalf("rollback should restore conflict: %+v", got)
 	}
 }
 

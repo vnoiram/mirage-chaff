@@ -58,7 +58,7 @@ type Source struct {
 	Unsupported      int       `json:"unsupported"`
 	AllowExceptions  int       `json:"allow_exceptions"`
 	PendingReview    bool      `json:"pending_review,omitempty"`
-	Priority         int       `json:"priority,omitempty"`
+	Priority         int       `json:"priority"`
 	Health           string    `json:"health,omitempty"`
 }
 
@@ -111,6 +111,7 @@ type FeedItem struct {
 type CatalogRow struct {
 	rulecatalog.Entry
 	SourceIDs      []string `json:"source_ids,omitempty"`
+	SourcePriority int      `json:"source_priority"`
 	Action         string   `json:"action,omitempty"`
 	Notes          string   `json:"notes,omitempty"`
 	RewriteEnabled bool     `json:"rewrite_enabled"`
@@ -551,11 +552,27 @@ func (m *Manager) catalogRowFromEntryLocked(e rulecatalog.Entry, ov CatalogOverr
 	return CatalogRow{
 		Entry:          e,
 		SourceIDs:      []string{e.Source.Name},
+		SourcePriority: m.sourcePriorityLocked(e.Source.Name),
 		Action:         ov.Action,
 		Notes:          ov.Notes,
 		RewriteEnabled: rewriteEnabled(e, ov, m.cfg),
 		RewriteReason:  ov.RewriteReason,
 	}
+}
+
+func (m *Manager) sourcePriorityLocked(id string) int {
+	if src, ok := m.sources[id]; ok {
+		return src.Priority
+	}
+	return 0
+}
+
+func (m *Manager) sourcePrioritiesLocked() map[string]int {
+	out := make(map[string]int, len(m.sources))
+	for id, src := range m.sources {
+		out[id] = src.Priority
+	}
+	return out
 }
 
 func sortCatalogRows(rows []CatalogRow) {
@@ -574,7 +591,7 @@ func (m *Manager) ListConflicts() []Conflict {
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	return buildConflicts(entries, m.overrides, m.cfg)
+	return buildConflicts(entries, m.overrides, m.cfg, m.sourcePrioritiesLocked())
 }
 
 func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogRow, error) {
@@ -584,7 +601,7 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogR
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	conflicts := buildConflicts(entries, m.overrides, m.cfg)
+	conflicts := buildConflicts(entries, m.overrides, m.cfg, m.sourcePrioritiesLocked())
 	var targetID string
 	for _, c := range conflicts {
 		if c.ID != id {
@@ -618,6 +635,83 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogR
 	}
 	e = m.applyOverrideLocked(e)
 	return m.catalogRowFromEntryLocked(e, cur), nil
+}
+
+func (m *Manager) ResolveConflictByPriority(id string) ([]CatalogRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries := make([]rulecatalog.Entry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, m.applyOverrideLocked(e))
+	}
+	conflicts := buildConflicts(entries, m.overrides, m.cfg, m.sourcePrioritiesLocked())
+	var target *Conflict
+	for i := range conflicts {
+		if conflicts[i].ID == id {
+			target = &conflicts[i]
+			break
+		}
+	}
+	if target == nil {
+		return nil, os.ErrNotExist
+	}
+	var winner CatalogRow
+	var winnerSet, tied bool
+	for _, row := range target.Entries {
+		if !conflictParticipant(row) {
+			continue
+		}
+		if !winnerSet || row.SourcePriority > winner.SourcePriority {
+			winner = row
+			winnerSet = true
+			tied = false
+			continue
+		}
+		if row.SourcePriority == winner.SourcePriority {
+			tied = true
+		}
+	}
+	if !winnerSet {
+		return nil, os.ErrNotExist
+	}
+	if tied {
+		return nil, fmt.Errorf("source priority tie for conflict %s at priority %d; resolve manually", id, winner.SourcePriority)
+	}
+	ids := make([]string, 0, len(target.Entries)-1)
+	for _, row := range target.Entries {
+		if row.ID != winner.ID {
+			ids = append(ids, row.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, os.ErrNotExist
+	}
+	before, beforeExists := captureOverrides(m.overrides, ids)
+	winnerVerified := winner.Verified
+	ov := CatalogOverride{
+		Category:        winner.Category,
+		ResourceType:    winner.ResourceType,
+		Risk:            winner.Risk,
+		Confidence:      winner.Confidence,
+		ReviewStatus:    winner.ReviewStatus,
+		Verified:        &winnerVerified,
+		ExpectedCatalog: winner.ExpectedCatalog,
+		Action:          winner.Action,
+	}
+	for _, entryID := range ids {
+		cur := m.overrides[entryID]
+		mergeOverride(&cur, ov)
+		m.overrides[entryID] = cur
+	}
+	source := ""
+	if len(winner.SourceIDs) > 0 {
+		source = winner.SourceIDs[0]
+	}
+	m.recordRollbackLocked("conflict source priority resolve", ids, before, beforeExists, fmt.Sprintf("resolved %s with source %s priority %d", id, source, winner.SourcePriority))
+	if err := m.saveLocked(); err != nil {
+		return nil, err
+	}
+	return m.rowsForIDsLocked(ids), nil
 }
 
 func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) {
@@ -874,7 +968,11 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		TargetName: cfg.TargetName, ResolvedIPs: ipStrings(ips), LastResolve: lastResolve,
 		LastResolveErr: lastResolveErr, TargetCacheUsed: targetCacheUsed, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
 	}
-	conflicts := buildConflicts(entries, overrides, cfg)
+	sourcePriorities := make(map[string]int, len(sources))
+	for _, src := range sources {
+		sourcePriorities[src.ID] = src.Priority
+	}
+	conflicts := buildConflicts(entries, overrides, cfg, sourcePriorities)
 	conflictKeys := map[string]bool{}
 	for _, conflict := range conflicts {
 		conflictKeys[domainPathKey(conflict.Domain, conflict.Path)] = true
@@ -1240,7 +1338,7 @@ func sortEntries(entries []rulecatalog.Entry) {
 	})
 }
 
-func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOverride, cfg config.AGHManagedConfig) []Conflict {
+func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOverride, cfg config.AGHManagedConfig, sourcePriorities map[string]int) []Conflict {
 	grouped := map[string][]CatalogRow{}
 	for _, e := range entries {
 		if e.Match.Domain == "" {
@@ -1250,6 +1348,9 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 		row := CatalogRow{
 			Entry:          e,
 			SourceIDs:      []string{e.Source.Name},
+			SourcePriority: sourcePriorities[e.Source.Name],
+			Action:         ov.Action,
+			Notes:          ov.Notes,
 			RewriteEnabled: rewriteEnabled(e, ov, cfg),
 			RewriteReason:  ov.RewriteReason,
 		}
@@ -1262,7 +1363,7 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 		}
 		var participants []CatalogRow
 		for _, row := range rows {
-			if row.Category == "allow_exception" || row.RewriteEnabled {
+			if conflictParticipant(row) {
 				participants = append(participants, row)
 			}
 		}
@@ -1320,6 +1421,10 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func conflictParticipant(row CatalogRow) bool {
+	return row.Category == "allow_exception" || row.RewriteEnabled
 }
 
 func entryKey(e rulecatalog.Entry) string {

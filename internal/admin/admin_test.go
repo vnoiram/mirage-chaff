@@ -152,13 +152,16 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"toggleManagedSourceEntries",
 		"managedSourceEntriesRow",
 		"toggleManagedSource",
+		"saveManagedSourcePriority",
 		"refreshManagedTarget",
 		"filterManagedCatalog",
 		"managedCatalogFilterSelect",
 		"managedCatalogFilterValues",
 		"agh-cat-source",
 		"agh-cat-rewrite",
+		"agh-src-priority",
 		"manual",
+		"source priority",
 		"health",
 		"never synced",
 		"target_cache_used",
@@ -210,6 +213,7 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"disable rewrite",
 		"needs test",
 		"allow exception wins",
+		"strategy:'source_priority'",
 		"/api/agh/sources/'+id+'/approve",
 		"/api/agh/sources/'+id+'/reject",
 		"/api/agh/sources/'+id+'/pending-diff",
@@ -361,14 +365,36 @@ func TestAGHManagedSourceSyncAuditDetail(t *testing.T) {
 	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/agh/sources/"+src.ID+"/sync", nil)
+	src.Priority = 9
+	body, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/agh/sources/"+src.ID, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin source upsert status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.source.upsert")
+	if !ok {
+		t.Fatalf("source upsert audit missing: %+v", store.AuditLog(20))
+	}
+	if !strings.Contains(entry.Detail, "priority=9") {
+		t.Fatalf("source upsert audit detail = %q", entry.Detail)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/sources/"+src.ID+"/sync", nil)
 	req.Header.Set("X-CSRF-Token", adminCSRF)
 	req.AddCookie(adminCookie)
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("admin sync status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}
-	entry, ok := auditEntryForAction(store, "agh_managed.source.sync")
+	entry, ok = auditEntryForAction(store, "agh_managed.source.sync")
 	if !ok {
 		t.Fatalf("source sync audit missing: %+v", store.AuditLog(20))
 	}
@@ -497,6 +523,41 @@ func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	}
 	if !strings.Contains(entry.Detail, "id=") || !strings.Contains(entry.Detail, "fields=rewrite_enabled") {
 		t.Fatalf("conflict resolve audit detail = %q", entry.Detail)
+	}
+
+	tracker2, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "tracker-priority", Enabled: true, Priority: 10, Content: "||priority-handler.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow2, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "allow-priority", Enabled: true, Priority: 1, Content: "@@||priority-handler.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), tracker2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), allow2.ID); err != nil {
+		t.Fatal(err)
+	}
+	priorityConflicts := managed.ListConflicts()
+	if len(priorityConflicts) != 1 {
+		t.Fatalf("priority conflicts = %+v", priorityConflicts)
+	}
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/managed-catalog/conflicts/"+priorityConflicts[0].ID+"/resolve", strings.NewReader(`{"strategy":"source_priority"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin source priority resolve status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := managed.ListConflicts(); len(got) != 0 {
+		t.Fatalf("priority conflict still listed after admin resolve: %+v", got)
+	}
+	entry, ok = auditEntryForAction(store, "agh_managed.conflict.resolve")
+	if !ok || !strings.Contains(entry.Detail, "strategy=source_priority") {
+		t.Fatalf("source priority resolve audit detail = %q ok=%v", entry.Detail, ok)
 	}
 }
 

@@ -89,6 +89,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='pendingManagedSource') pendingManagedSource(d.id||'');
   if(d.cmd==='toggleManagedSourceEntries') toggleManagedSourceEntries(d.id||'');
   if(d.cmd==='toggleManagedSource') toggleManagedSource(d.id||'', d.enabled==='true');
+  if(d.cmd==='saveManagedSourcePriority') saveManagedSourcePriority(d.id||'');
   if(d.cmd==='approveManagedSource') approveManagedSource(d.id||'');
   if(d.cmd==='rejectManagedSource') rejectManagedSource(d.id||'');
   if(d.cmd==='deleteManagedSource') deleteManagedSource(d.id||'');
@@ -277,6 +278,7 @@ function managedCatalogDetailRow(r){
   return `<tr class="agh-cat-detail" data-managed-detail="${id}"><td></td><td colspan="14"><div class="kv">
     <div>entry id</div><div>${id}</div>
     <div>source</div><div>${esc(r.source?.name||'')} ${esc(r.source?.type?`(${r.source.type})`:'')}</div>
+    <div>source priority</div><div>${Number(r.source_priority||0)}</div>
     <div>source URL</div><div>${esc(r.source?.url||'')}</div>
     <div>original_rule</div><div>${esc(r.original_rule||'')}</div>
     <div>match</div><div>${esc(r.match?.domain||'')}${r.match?.path?esc(' '+r.match.path):''}</div>
@@ -295,7 +297,7 @@ function managedCatalogRow(r,editing){
   const id=esc(r.id);
   const attrs=`data-source="${esc((r.source_ids||[]).join(','))}" data-category="${esc(r.category||'')}" data-resource="${esc(r.resource_type||'')}" data-review="${esc(r.review_status||'')}" data-rewrite="${r.rewrite_enabled?'true':'false'}"`;
   if(editing){
-    return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td>
+    return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))} (${Number(r.source_priority||0)})</td>
     <td><input class="agh-edit-category" value="${esc(r.category||'')}" placeholder="category"></td>
     <td><input class="agh-edit-resource" value="${esc(r.resource_type||'')}" placeholder="resource"></td>
     <td><select class="agh-edit-risk">${optionHTML('',r.risk,'')}${['low','medium','high'].map(v=>optionHTML(v,r.risk)).join('')}</select></td>
@@ -309,7 +311,7 @@ function managedCatalogRow(r,editing){
     <td><input class="agh-edit-reason" value="${esc(r.rewrite_reason||'')}" placeholder="rewrite reason"></td>
     <td><button class="act" data-cmd="saveManagedCatalogRow" data-id="${id}">save</button><button class="act" data-cmd="cancelManagedCatalogRow" data-id="${id}">cancel</button></td></tr>`;
   }
-  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.risk||'')}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.notes||'')}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
+  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))} (${Number(r.source_priority||0)})</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.risk||'')}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.notes||'')}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
     <td><button class="act" data-cmd="toggleManagedCatalogDetails" data-id="${id}">details</button>${has('agh.manage')?`<button class="act" data-cmd="editManagedCatalogRow" data-id="${id}">edit</button><button class="act" data-cmd="managedRewrite" data-id="${id}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`;
 }
 function managedCatalogFilterSelect(id,label,values){
@@ -357,20 +359,21 @@ async function viewAGHManaged(v){
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>domain</th><th>path</th><th>reason</th><th>sources</th><th>entries</th><th></th></tr></thead><tbody>
-    ${conflicts.slice(0,200).map(c=>`<tr><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
-    <td>${has('agh.manage')?`<button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="disable">disable rewrite</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="needs_test">needs test</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="allow_exception">allow exception wins</button>`:''}</td></tr>`).join('')}
+    ${conflicts.slice(0,200).map(c=>`<tr><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
+    <td>${has('agh.manage')?`<button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="source_priority">source priority</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="disable">disable rewrite</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="needs_test">needs test</button><button class="act" data-cmd="resolveManagedConflict" data-id="${esc(c.id)}" data-action="allow_exception">allow exception wins</button>`:''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Sources</h2>
     ${has('agh.manage')?`<div class="row">
       <select id="agh-src-type"><option value="filter_url">filter URL</option><option value="manual">manual</option><option value="agh_custom_rules">AGH custom rules</option><option value="agh_query_log_cname">AGH query log CNAME</option></select>
       <input id="agh-src-name" placeholder="name">
       <input id="agh-src-url" placeholder="filter URL or AGH base URL" style="min-width:320px">
+      <input id="agh-src-priority" type="number" value="0" title="higher priority wins conflicts" style="width:90px">
       <input id="agh-src-interval" placeholder="sync interval" value="12h" style="width:110px">
       <textarea id="agh-src-content" placeholder="manual domains or rules" style="min-height:80px"></textarea>
       <button class="act" onclick="addManagedSource()">Add source</button>
     </div>`:''}
-    <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>health</th><th>enabled</th><th>entries</th><th>diff</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
-    ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>priority</th><th>health</th><th>enabled</th><th>entries</th><th>diff</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
+    ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${has('agh.manage')?`<input class="agh-src-priority" type="number" value="${Number(s.priority||0)}" style="width:80px"><button class="act" data-cmd="saveManagedSourcePriority" data-id="${esc(s.id)}">save</button>`:Number(s.priority||0)}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
     <td><button class="act" data-cmd="toggleManagedSourceEntries" data-id="${esc(s.id)}">entries</button>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
     </tbody></table></div><div id="agh-source-detail" style="white-space:pre-wrap;max-height:260px;overflow:auto"></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="row"><input id="agh-cat-filter" oninput="filterManagedCatalog()" placeholder="filter domain/source/category/review">${managedCatalogFilterSelect('agh-cat-source','source',managedCatalogFilterValues(rows,r=>r.source_ids||[]))}${managedCatalogFilterSelect('agh-cat-category','category',managedCatalogFilterValues(rows,r=>r.category||''))}${managedCatalogFilterSelect('agh-cat-resource','resource',managedCatalogFilterValues(rows,r=>r.resource_type||''))}${managedCatalogFilterSelect('agh-cat-review','review',managedCatalogFilterValues(rows,r=>r.review_status||''))}<select id="agh-cat-rewrite" onchange="filterManagedCatalog()"><option value="">rewrite</option><option value="true">rewrite yes</option><option value="false">rewrite no</option></select></div>
@@ -395,7 +398,7 @@ async function viewAGHManaged(v){
 }
 async function addManagedSource(){ try{
   const type=document.getElementById('agh-src-type').value;
-  const body={type,name:document.getElementById('agh-src-name').value,enabled:true,sync_interval:document.getElementById('agh-src-interval').value};
+  const body={type,name:document.getElementById('agh-src-name').value,enabled:true,priority:Number(document.getElementById('agh-src-priority')?.value||0),sync_interval:document.getElementById('agh-src-interval').value};
   if(type==='manual') body.content=document.getElementById('agh-src-content').value;
   else body.url=document.getElementById('agh-src-url').value;
   await api('POST','/api/agh/sources',body);
@@ -436,9 +439,10 @@ async function toggleManagedSourceEntries(id){ try{
 function managedSourceEntriesRow(id,entries){
   const shown=(entries||[]).slice(0,100);
   const note=(entries||[]).length>100?`<div class="muted">showing 100 of ${(entries||[]).length}</div>`:'';
-  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="10">${note}<div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>original_rule</th></tr></thead><tbody>${shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')}</tbody></table></div></td></tr>`;
+  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="11">${note}<div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>original_rule</th></tr></thead><tbody>${shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')}</tbody></table></div></td></tr>`;
 }
 async function toggleManagedSource(id,on){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); s.enabled=on; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
+async function saveManagedSourcePriority(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`); s.priority=Number(tr?.querySelector('.agh-src-priority')?.value||0); await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
 async function approveManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/approve'); render(); }catch(e){ alert(e.message);} }
 async function rejectManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/reject'); render(); }catch(e){ alert(e.message);} }
 async function deleteManagedSource(id){ if(!confirm('Delete source '+id+'?'))return; try{ await api('DELETE','/api/agh/sources/'+id); render(); }catch(e){ alert(e.message);} }
@@ -523,6 +527,7 @@ async function bulkManagedCatalog(){ try{
 }catch(e){ alert(e.message);} }
 async function resolveManagedConflict(id,action){ try{
   let body={};
+  if(action==='source_priority') body={strategy:'source_priority'};
   if(action==='disable') body={rewrite_enabled:false,rewrite_reason:'conflict resolution'};
   if(action==='needs_test') body={review_status:'needs_test',rewrite_reason:'conflict needs test'};
   if(action==='allow_exception') body={category:'allow_exception',review_status:'approved',rewrite_enabled:false,rewrite_reason:'allow exception wins'};
