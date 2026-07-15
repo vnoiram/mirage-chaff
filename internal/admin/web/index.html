@@ -406,6 +406,15 @@ function managedTargetDiagnostics(status){
     <div>last resolve error</div><div>${esc(status.last_resolve_error||'')}</div>
   </div>`;
 }
+function managedEmergencyEmptyPanel(status){
+  const on=!!status.emergency_empty;
+  const state=on?'enabled':'disabled';
+  const impact=on?'managed rewrite feed serves no rewrite rules':'managed rewrite feed can include eligible rewrite rules';
+  const next=on?'Refresh AGH filters to remove active rewrites in AGH':'Refresh AGH filters after enabling rewrites again';
+  const action=on?'Disable':'Enable';
+  const button=has('agh.manage')?` <button class="act danger" onclick="setEmergencyEmpty(${!on})">${action} emergency empty</button>`:'';
+  return `<div id="agh-emergency-panel"><strong>${esc(state)}</strong><div class="kv"><div>feed impact</div><div>${esc(impact)}</div><div>next action</div><div>${esc(next)}</div></div>${button} <span id="agh-emergency-result" class="muted"></span></div>`;
+}
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
@@ -480,7 +489,7 @@ async function viewAGHManaged(v){
   v.appendChild(el(`<div class="card"><h2>AGH Managed Overview</h2><div class="kv">
     <div>feed path</div><div>${esc(status.feed_path||'/agh/managed-rewrites.txt')}</div>
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
-    <div>emergency empty</div><div>${status.emergency_empty?'yes':'no'}</div>
+    <div>emergency empty</div><div>${managedEmergencyEmptyPanel(status)}</div>
     <div>target mode</div><div>${esc(status.target_mode||'')}</div>
     <div>default preset</div><div>${has('agh.manage')?`<select id="agh-preset">${['conservative','balanced','aggressive'].map(v=>optionHTML(v,status.default_preset||'balanced')).join('')}</select> <button class="act" data-cmd="saveManagedPreset">save</button>`:esc(status.default_preset||'balanced')}</div>
     <div>target name</div><div>${esc(status.target_name||'')}</div>
@@ -497,7 +506,6 @@ async function viewAGHManaged(v){
     <button class="act" onclick="previewManagedFeed()">Preview feed</button>
     <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
     ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted"></span>`:''}
-    ${has('agh.manage')?`<button class="act danger" onclick="setEmergencyEmpty(${!status.emergency_empty})">${status.emergency_empty?'Disable':'Enable'} emergency empty</button>`:''}
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
   <div id="agh-feed-items"></div></div>`));
