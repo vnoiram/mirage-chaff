@@ -191,6 +191,7 @@ function render(){
     filterManagedConflicts();
     renderManagedSourcePreviewEntries();
     ['added','removed','changed'].forEach(renderManagedPendingDiffKind);
+    restoreManagedSourceEntryRows();
   }
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
 }
@@ -1177,22 +1178,31 @@ function filterManagedConflicts(){
 }
 async function toggleManagedSourceEntries(id){ try{
   const existing=document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`);
-  if(existing){ existing.remove(); const b=document.querySelector(`button[data-cmd="toggleManagedSourceEntries"][data-id="${CSS.escape(id)}"]`); if(b) b.textContent='entries'; return; }
+  if(existing){
+    existing.remove();
+    if(window.AGH_SOURCE_ENTRY_STATE?.[id]) window.AGH_SOURCE_ENTRY_STATE[id].expanded=false;
+    const b=document.querySelector(`button[data-cmd="toggleManagedSourceEntries"][data-id="${CSS.escape(id)}"]`);
+    if(b) b.textContent='entries';
+    return;
+  }
   const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
   if(!tr) throw new Error('source row not found');
+  window.AGH_SOURCE_ENTRY_STATE=window.AGH_SOURCE_ENTRY_STATE||{};
+  window.AGH_SOURCE_ENTRY_STATE[id]=Object.assign({},window.AGH_SOURCE_ENTRY_STATE[id]||{entries:[],total:0,limit:200,filter:''},{expanded:true,loading:true,error:''});
   tr.insertAdjacentHTML('afterend',managedSourceEntriesRow(id,[]));
   const status=document.getElementById(`agh-source-entry-status-${id}`);
-  if(status) status.innerHTML=managedSourceEntriesResultHTML({id,loading:true});
+  if(status) status.innerHTML=managedSourceEntriesResultHTML(window.AGH_SOURCE_ENTRY_STATE[id]);
   const r=await api('GET','/api/agh/sources/'+id+'/entries?limit=200&offset=0');
-  window.AGH_SOURCE_ENTRY_STATE=window.AGH_SOURCE_ENTRY_STATE||{};
-  window.AGH_SOURCE_ENTRY_STATE[id]={source:r.source||{},entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:200,filter:''};
+  window.AGH_SOURCE_ENTRY_STATE[id]={source:r.source||{},entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:200,filter:'',expanded:true,loading:false,error:''};
   if(status) status.innerHTML=managedSourceEntriesResultHTML(window.AGH_SOURCE_ENTRY_STATE[id]);
   renderManagedSourceEntries(id);
   const b=tr.querySelector(`button[data-cmd="toggleManagedSourceEntries"]`);
   if(b) b.textContent='hide';
 }catch(e){
+  window.AGH_SOURCE_ENTRY_STATE=window.AGH_SOURCE_ENTRY_STATE||{};
+  window.AGH_SOURCE_ENTRY_STATE[id]=Object.assign({},window.AGH_SOURCE_ENTRY_STATE[id]||{entries:[],total:0,limit:200,filter:''},{expanded:true,loading:false,error:e.message});
   const status=document.getElementById(`agh-source-entry-status-${id}`);
-  if(status) status.innerHTML=managedSourceEntriesResultHTML({id,error:e.message});
+  if(status) status.innerHTML=managedSourceEntriesResultHTML(window.AGH_SOURCE_ENTRY_STATE[id]);
   else alert(e.message);
 } }
 function managedSourceEntriesResultHTML(r){
@@ -1210,6 +1220,19 @@ function managedSourceEntriesResultHTML(r){
 }
 function managedSourceEntriesRow(id,entries){
   return `<tr data-managed-source-entries="${esc(id)}"><td colspan="15"><div id="agh-source-entry-status-${esc(id)}" class="muted">${managedSourceEntriesResultHTML(window.AGH_SOURCE_ENTRY_STATE?.[id])}</div><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
+}
+function restoreManagedSourceEntryRows(){
+  const states=window.AGH_SOURCE_ENTRY_STATE||{};
+  Object.keys(states).forEach(id=>{
+    const state=states[id];
+    if(!state||!state.expanded) return;
+    const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
+    if(!tr) return;
+    if(!document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`)) tr.insertAdjacentHTML('afterend',managedSourceEntriesRow(id,state.entries||[]));
+    const b=tr.querySelector(`button[data-cmd="toggleManagedSourceEntries"]`);
+    if(b) b.textContent='hide';
+    renderManagedSourceEntries(id);
+  });
 }
 function managedSourceEntrySearch(r){
   return [r.match?.domain,r.match?.path,managedSourceTraceRefSearch(r.source_refs,r.source_ids||[]),r.category,r.resource_type,r.review_status,r.rewrite_enabled?'rewrite':'no-rewrite',r.rewrite_reason,r.original_rule,r.last_feed_included_at].join(' ').toLowerCase();
