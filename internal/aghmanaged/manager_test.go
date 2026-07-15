@@ -859,6 +859,73 @@ func TestConflictsListExcludeAndResolve(t *testing.T) {
 	}
 }
 
+func TestRewriteActionConflictsExcludeAndResolve(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||missing-action.example.net^\n||unsafe-action.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	var missingID, unsafeID string
+	for _, row := range m.CatalogRows() {
+		switch row.Match.Domain {
+		case "missing-action.example.net":
+			missingID = row.ID
+			m.mu.Lock()
+			e := m.entries[row.ID]
+			e.ActionCandidates = nil
+			m.entries[row.ID] = e
+			m.mu.Unlock()
+		case "unsafe-action.example.net":
+			unsafeID = row.ID
+			if _, err := m.PatchEntry(row.ID, CatalogOverride{Action: "forward-asis"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if missingID == "" || unsafeID == "" {
+		t.Fatalf("test rows not found: missing=%q unsafe=%q", missingID, unsafeID)
+	}
+	conflicts := m.ListConflicts()
+	if len(conflicts) != 2 {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	reasons := map[string]string{}
+	for _, conflict := range conflicts {
+		reasons[conflict.Domain] = strings.Join(conflict.Reasons, ",")
+	}
+	if !strings.Contains(reasons["missing-action.example.net"], "missing mirage action") {
+		t.Fatalf("missing action reasons = %+v", conflicts)
+	}
+	if !strings.Contains(reasons["unsafe-action.example.net"], "unsafe mirage action") {
+		t.Fatalf("unsafe action reasons = %+v", conflicts)
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status.ConflictCount != 2 || strings.Contains(p.Lines, "missing-action.example.net") || strings.Contains(p.Lines, "unsafe-action.example.net") {
+		t.Fatalf("conflicting actions should be excluded: status=%+v\n%s", p.Status, p.Lines)
+	}
+	off := false
+	for _, conflict := range conflicts {
+		if _, err := m.ResolveConflict(conflict.ID, CatalogOverride{RewriteEnabled: &off, RewriteReason: "action conflict"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := m.ListConflicts(); len(got) != 0 {
+		t.Fatalf("resolved action conflicts still listed: %+v", got)
+	}
+}
+
 func TestResolveConflictByPriorityAppliesWinnerClassification(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"

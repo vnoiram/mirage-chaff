@@ -1516,21 +1516,27 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 	}
 	var out []Conflict
 	for key, rows := range grouped {
-		if len(rows) < 2 {
-			continue
-		}
 		var participants []CatalogRow
+		actionReasons := map[string]bool{}
+		sourceIDs := map[string]bool{}
 		for _, row := range rows {
+			if reason := rewriteActionConflictReason(row); reason != "" {
+				actionReasons[reason] = true
+				participants = append(participants, row)
+				for _, id := range row.SourceIDs {
+					sourceIDs[id] = true
+				}
+				continue
+			}
 			if conflictParticipant(row) {
 				participants = append(participants, row)
 			}
 		}
-		if len(participants) < 2 {
+		if len(participants) < 2 && len(actionReasons) == 0 {
 			continue
 		}
 		categories := map[string]bool{}
 		reviews := map[string]bool{}
-		sourceIDs := map[string]bool{}
 		var hasAllow, hasRewrite bool
 		for _, row := range participants {
 			categories[row.Category] = true
@@ -1553,6 +1559,9 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 		}
 		if hasAllow && hasRewrite {
 			reasons = append(reasons, "allow_exception conflicts with rewrite candidate")
+		}
+		for _, reason := range sortedKeys(actionReasons) {
+			reasons = append(reasons, reason)
 		}
 		if len(reasons) == 0 {
 			continue
@@ -1583,6 +1592,30 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 
 func conflictParticipant(row CatalogRow) bool {
 	return row.Category == "allow_exception" || row.RewriteEnabled
+}
+
+func rewriteActionConflictReason(row CatalogRow) string {
+	if !row.RewriteEnabled || row.Category == "allow_exception" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(effectiveMirageAction(row))) {
+	case "":
+		return "missing mirage action"
+	case "passthrough", "forward-asis", "forward_as_is":
+		return "unsafe mirage action"
+	default:
+		return ""
+	}
+}
+
+func effectiveMirageAction(row CatalogRow) string {
+	if row.Action != "" {
+		return row.Action
+	}
+	if len(row.ActionCandidates) > 0 {
+		return row.ActionCandidates[0]
+	}
+	return ""
 }
 
 func entryKey(e rulecatalog.Entry) string {
