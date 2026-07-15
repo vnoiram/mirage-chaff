@@ -192,6 +192,138 @@ func TestSourceURLSync(t *testing.T) {
 	}
 }
 
+func TestAGHCustomRulesSourceSync(t *testing.T) {
+	agh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/control/filtering/status" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"user_rules":["||custom.example.net^"],"allowlist_rules":["@@||allowed.example.net^"]}`))
+	}))
+	defer agh.Close()
+
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceAGHCustomRules, Name: "agh-custom", URL: agh.URL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.SyncSource(context.Background(), src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Entries != 2 || got.Added != 2 || got.AllowExceptions != 1 {
+		t.Fatalf("source = %+v", got)
+	}
+	byDomain := map[string]CatalogRow{}
+	for _, row := range m.CatalogRows() {
+		byDomain[row.Match.Domain] = row
+	}
+	if got := byDomain["custom.example.net"]; got.Source.Type != "adguard_custom" || !got.RewriteEnabled {
+		t.Fatalf("custom row = %+v", got)
+	}
+	if got := byDomain["allowed.example.net"]; got.Category != "allow_exception" {
+		t.Fatalf("allow row = %+v", got)
+	}
+}
+
+func TestAGHQueryLogCNAMESourceSync(t *testing.T) {
+	var sawQueryLog bool
+	agh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/control/filtering/status" {
+			t.Fatal("query log source must not fetch filtering status")
+		}
+		if r.URL.Path != "/control/querylog" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		sawQueryLog = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"question":{"name":"cloak.example.net."},"answer":[{"type":"CNAME","value":"tracker.vendor.net."}],"reason":"Filtered"}]}`))
+	}))
+	defer agh.Close()
+
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceAGHQueryLogCNAME, Name: "agh-querylog", URL: agh.URL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !sawQueryLog {
+		t.Fatal("query log endpoint was not called")
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	row := rows[0]
+	if row.Match.Domain != "cloak.example.net" || row.CNAMETarget != "tracker.vendor.net" || !row.CloakingDetected || row.Source.Type != "adguard_query_log" {
+		t.Fatalf("query log row = %+v", row)
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Lines, "||cloak.example.net^$dnsrewrite=NOERROR;A;192.0.2.10") {
+		t.Fatalf("feed missing CNAME candidate rewrite:\n%s", p.Lines)
+	}
+}
+
+func TestSyncDueSyncsAGHSourceTypes(t *testing.T) {
+	agh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/control/filtering/status":
+			_, _ = w.Write([]byte(`{"user_rules":["||custom.example.net^"]}`))
+		case "/control/querylog":
+			_, _ = w.Write([]byte(`{"data":[{"question":{"name":"cloak.example.net."},"answer":[{"type":"CNAME","value":"tracker.vendor.net."}],"reason":"Filtered"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer agh.Close()
+
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	cfg.Scheduler.MaxParallelSyncs = 1
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UpsertSource(Source{Type: SourceAGHCustomRules, Name: "agh-custom", URL: agh.URL, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UpsertSource(Source{Type: SourceAGHQueryLogCNAME, Name: "agh-querylog", URL: agh.URL, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	m.SyncDue(context.Background())
+
+	byDomain := map[string]CatalogRow{}
+	for _, row := range m.CatalogRows() {
+		byDomain[row.Match.Domain] = row
+	}
+	if _, ok := byDomain["custom.example.net"]; !ok {
+		t.Fatalf("custom source was not synced: %+v", byDomain)
+	}
+	if _, ok := byDomain["cloak.example.net"]; !ok {
+		t.Fatalf("query log source was not synced: %+v", byDomain)
+	}
+}
+
 func TestPendingReviewApproveRejectAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "managed.json")
 	cfg := testConfig()
@@ -780,6 +912,10 @@ func TestListSourcesIncludesDerivedHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	staleAGH, err := m.UpsertSource(Source{Type: SourceAGHCustomRules, Name: "stale-agh", URL: "https://example.test", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	healthy, err := m.UpsertSource(Source{Type: SourceManual, Name: "healthy", Enabled: true, Content: "||healthy.example.net^\n"})
 	if err != nil {
 		t.Fatal(err)
@@ -794,6 +930,9 @@ func TestListSourcesIncludesDerivedHealth(t *testing.T) {
 	src = m.sources[stale.ID]
 	src.LastSuccess = time.Now().Add(-2 * time.Hour)
 	m.sources[stale.ID] = src
+	src = m.sources[staleAGH.ID]
+	src.LastSuccess = time.Now().Add(-2 * time.Hour)
+	m.sources[staleAGH.ID] = src
 	src = m.sources[healthy.ID]
 	src.LastSuccess = time.Now()
 	m.sources[healthy.ID] = src
@@ -802,19 +941,20 @@ func TestListSourcesIncludesDerivedHealth(t *testing.T) {
 	got := map[string]string{}
 	for _, src := range m.ListSources() {
 		got[src.Name] = src.Health
-		if src.ID == paused.ID || src.ID == never.ID || src.ID == failing.ID || src.ID == pending.ID || src.ID == stale.ID || src.ID == healthy.ID {
+		if src.ID == paused.ID || src.ID == never.ID || src.ID == failing.ID || src.ID == pending.ID || src.ID == stale.ID || src.ID == staleAGH.ID || src.ID == healthy.ID {
 			if src.Health == "" {
 				t.Fatalf("source missing health: %+v", src)
 			}
 		}
 	}
 	want := map[string]string{
-		"paused":  "paused",
-		"never":   "never synced",
-		"failing": "failing",
-		"pending": "pending",
-		"stale":   "stale",
-		"healthy": "healthy",
+		"paused":    "paused",
+		"never":     "never synced",
+		"failing":   "failing",
+		"pending":   "pending",
+		"stale":     "stale",
+		"stale-agh": "stale",
+		"healthy":   "healthy",
 	}
 	for name, health := range want {
 		if got[name] != health {

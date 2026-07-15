@@ -25,8 +25,10 @@ import (
 )
 
 const (
-	SourceFilterURL = "filter_url"
-	SourceManual    = "manual"
+	SourceFilterURL        = "filter_url"
+	SourceManual           = "manual"
+	SourceAGHCustomRules   = "agh_custom_rules"
+	SourceAGHQueryLogCNAME = "agh_query_log_cname"
 )
 
 // Resolver resolves the managed rewrite target name.
@@ -266,7 +268,7 @@ func (m *Manager) sourceHealthLocked(src Source) string {
 		return "paused"
 	case src.PendingReview:
 		return "pending"
-	case src.Type == SourceFilterURL && isStaleSource(src, staleSourceDuration(m.cfg.Scheduler.StaleSourceTTL)):
+	case isRemoteSource(src.Type) && isStaleSource(src, staleSourceDuration(m.cfg.Scheduler.StaleSourceTTL)):
 		return "stale"
 	case src.LastError != "":
 		return "failing"
@@ -290,11 +292,14 @@ func (m *Manager) UpsertSource(src Source) (Source, error) {
 	if src.SyncInterval == "" {
 		src.SyncInterval = m.Config().Scheduler.DefaultSyncInterval
 	}
-	if src.Type != SourceFilterURL && src.Type != SourceManual {
+	if !validSourceType(src.Type) {
 		return Source{}, fmt.Errorf("invalid source type %q", src.Type)
 	}
 	if src.Type == SourceFilterURL && src.URL == "" {
 		return Source{}, fmt.Errorf("url required")
+	}
+	if (src.Type == SourceAGHCustomRules || src.Type == SourceAGHQueryLogCNAME) && src.URL == "" {
+		return Source{}, fmt.Errorf("agh base url required")
 	}
 	if src.Type == SourceManual && src.Content == "" {
 		return Source{}, fmt.Errorf("content required")
@@ -952,6 +957,25 @@ func (m *Manager) fetchSource(ctx context.Context, src Source) ([]rulecatalog.En
 			return nil, err
 		}
 		content = string(b)
+	case SourceAGHCustomRules:
+		entries, _, err := rulecatalog.Build(rulecatalog.SyncConfig{
+			Enabled:         true,
+			BaseURL:         src.URL,
+			SyncCustomRules: true,
+			SyncAllowDeny:   true,
+			Client:          m.client,
+		})
+		return entries, err
+	case SourceAGHQueryLogCNAME:
+		entries, _, err := rulecatalog.Build(rulecatalog.SyncConfig{
+			Enabled:          true,
+			BaseURL:          src.URL,
+			SyncQueryLog:     true,
+			CNAMEEnabled:     true,
+			CNAMEUseQueryLog: true,
+			Client:           m.client,
+		})
+		return entries, err
 	default:
 		return nil, fmt.Errorf("unsupported source type %q", src.Type)
 	}
@@ -1453,8 +1477,26 @@ func staleSourceDuration(raw string) time.Duration {
 	return durationOr(raw, 72*time.Hour)
 }
 
+func validSourceType(typ string) bool {
+	switch typ {
+	case SourceFilterURL, SourceManual, SourceAGHCustomRules, SourceAGHQueryLogCNAME:
+		return true
+	default:
+		return false
+	}
+}
+
+func isRemoteSource(typ string) bool {
+	switch typ {
+	case SourceFilterURL, SourceAGHCustomRules, SourceAGHQueryLogCNAME:
+		return true
+	default:
+		return false
+	}
+}
+
 func isStaleSource(src Source, ttl time.Duration) bool {
-	return ttl > 0 && src.Type == SourceFilterURL && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > ttl
+	return ttl > 0 && isRemoteSource(src.Type) && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > ttl
 }
 
 func ipStrings(ips []net.IP) []string {

@@ -19,7 +19,7 @@ func Build(cfg SyncConfig) ([]Entry, int, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	if cfg.Enabled && cfg.BaseURL != "" {
+	if cfg.Enabled && cfg.BaseURL != "" && (cfg.SyncFilters || cfg.SyncCustomRules) {
 		filterURLs, customRules, err := fetchAGHFilteringStatus(client, cfg.BaseURL)
 		if err != nil {
 			return nil, sources, err

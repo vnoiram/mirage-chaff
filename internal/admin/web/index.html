@@ -353,9 +353,9 @@ async function viewAGHManaged(v){
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Sources</h2>
     ${has('agh.manage')?`<div class="row">
-      <select id="agh-src-type"><option value="filter_url">filter URL</option><option value="manual">manual</option></select>
+      <select id="agh-src-type"><option value="filter_url">filter URL</option><option value="manual">manual</option><option value="agh_custom_rules">AGH custom rules</option><option value="agh_query_log_cname">AGH query log CNAME</option></select>
       <input id="agh-src-name" placeholder="name">
-      <input id="agh-src-url" placeholder="filter URL" style="min-width:320px">
+      <input id="agh-src-url" placeholder="filter URL or AGH base URL" style="min-width:320px">
       <input id="agh-src-interval" placeholder="sync interval" value="12h" style="width:110px">
       <textarea id="agh-src-content" placeholder="manual domains or rules" style="min-height:80px"></textarea>
       <button class="act" onclick="addManagedSource()">Add source</button>
