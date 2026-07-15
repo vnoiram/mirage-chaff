@@ -109,6 +109,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='refreshAGHFilters') refreshAGHFilters();
   if(d.cmd==='checkManagedAGHStatus') checkManagedAGHStatus();
   if(d.cmd==='saveManagedTargetConfig') saveManagedTargetConfig();
+  if(d.cmd==='saveManagedSchedulerConfig') saveManagedSchedulerConfig();
   if(d.cmd==='applyConfigReload') reload();
   if(d.cmd==='editManagedCatalogRow') editManagedCatalogRow(d.id||'');
   if(d.cmd==='saveManagedCatalogRow') saveManagedCatalogRow(d.id||'');
@@ -398,10 +399,27 @@ function updateManagedTargetModeFields(){
   if(v4) v4.disabled=!staticMode;
   if(v6) v6.disabled=!staticMode;
 }
+function managedSchedulerConfigForm(scheduler){
+  if(!has('config.edit')) return `<div class="kv"><div>enabled</div><div>${scheduler.enabled?'yes':'no'}</div><div>default interval</div><div>${esc(scheduler.default_sync_interval||'')}</div><div>sync timeout</div><div>${esc(scheduler.sync_timeout||'')}</div><div>max parallel</div><div>${Number(scheduler.max_parallel_syncs||0)}</div><div>jitter</div><div>${esc(scheduler.jitter||'')}</div><div>stale source TTL</div><div>${esc(scheduler.stale_source_ttl||'')}</div><div>large change review</div><div>${scheduler.large_change_requires_review?'enabled':'disabled'}</div></div>`;
+  return `<div class="row">
+    <label><input id="agh-scheduler-enabled" type="checkbox" ${scheduler.enabled?'checked':''}> scheduler enabled</label>
+    <input id="agh-scheduler-default-interval" value="${esc(scheduler.default_sync_interval||'12h')}" placeholder="default interval" style="width:120px">
+    <input id="agh-scheduler-timeout" value="${esc(scheduler.sync_timeout||'30s')}" placeholder="sync timeout" style="width:110px">
+    <input id="agh-scheduler-max-parallel" type="number" value="${Number(scheduler.max_parallel_syncs||0)}" placeholder="max parallel" style="width:110px">
+    <input id="agh-scheduler-jitter" value="${esc(scheduler.jitter||'10m')}" placeholder="jitter" style="width:90px">
+    <input id="agh-scheduler-stale-ttl" value="${esc(scheduler.stale_source_ttl||'72h')}" placeholder="stale source TTL" style="width:130px">
+    <label><input id="agh-scheduler-large-review" type="checkbox" ${scheduler.large_change_requires_review?'checked':''}> large change review</label>
+    <input id="agh-scheduler-large-percent" type="number" value="${Number(scheduler.large_change_threshold_percent||0)}" placeholder="large %" style="width:90px">
+    <input id="agh-scheduler-large-count" type="number" value="${Number(scheduler.large_change_threshold_count||0)}" placeholder="large count" style="width:110px">
+    <button class="act" data-cmd="saveManagedSchedulerConfig">Save scheduler settings</button>
+    <span id="agh-scheduler-config-result" class="muted"></span>
+  </div>`;
+}
 
 async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
   const target=await api('GET','/api/agh/rewrite-feed/target');
+  const scheduler=await api('GET','/api/agh/rewrite-feed/scheduler');
   const sources=(await api('GET','/api/agh/sources')).sources||[];
   const conflicts=(await api('GET','/api/agh/managed-catalog/conflicts')).conflicts||[];
   const history=await api('GET','/api/agh/history');
@@ -467,6 +485,7 @@ async function viewAGHManaged(v){
     ${conflicts.slice(0,200).map(c=>`<tr data-managed-conflict="${esc(c.id)}"><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
     <td>${has('agh.manage')?managedConflictControls(c):''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Scheduler Settings</h2>${managedSchedulerConfigForm(scheduler)}</div>`));
   v.appendChild(el(`<div class="card"><h2>Sources</h2>
     ${has('agh.manage')?`<div class="row">
       <select id="agh-src-type"><option value="filter_url">filter URL</option><option value="manual">manual</option><option value="agh_custom_rules">AGH custom rules</option><option value="agh_query_log_cname">AGH query log CNAME</option></select>
@@ -793,6 +812,26 @@ async function saveManagedTargetConfig(){ try{
   if(out) out.innerHTML=`saved; ${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button>`;
 }catch(e){
   const out=document.getElementById('agh-target-config-result');
+  if(out) out.textContent=e.message;
+  else alert(e.message);
+} }
+async function saveManagedSchedulerConfig(){ try{
+  const body={
+    enabled:!!document.getElementById('agh-scheduler-enabled')?.checked,
+    default_sync_interval:document.getElementById('agh-scheduler-default-interval')?.value||'12h',
+    sync_timeout:document.getElementById('agh-scheduler-timeout')?.value||'30s',
+    max_parallel_syncs:Number(document.getElementById('agh-scheduler-max-parallel')?.value||0),
+    jitter:document.getElementById('agh-scheduler-jitter')?.value||'10m',
+    stale_source_ttl:document.getElementById('agh-scheduler-stale-ttl')?.value||'72h',
+    large_change_requires_review:!!document.getElementById('agh-scheduler-large-review')?.checked,
+    large_change_threshold_percent:Number(document.getElementById('agh-scheduler-large-percent')?.value||0),
+    large_change_threshold_count:Number(document.getElementById('agh-scheduler-large-count')?.value||0)
+  };
+  const r=await api('PUT','/api/agh/rewrite-feed/scheduler',body);
+  const out=document.getElementById('agh-scheduler-config-result');
+  if(out) out.innerHTML=`saved; ${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button>`;
+}catch(e){
+  const out=document.getElementById('agh-scheduler-config-result');
   if(out) out.textContent=e.message;
   else alert(e.message);
 } }
