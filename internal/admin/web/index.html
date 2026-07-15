@@ -154,6 +154,7 @@ let AGH_MANAGED_EMERGENCY_RESULT = '';
 let AGH_MANAGED_REFRESH_RESULT = null;
 let AGH_MANAGED_PRESET_RESULT = null;
 let AGH_MANAGED_BULK_RESULT = null;
+let AGH_MANAGED_ROLLBACK_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -560,7 +561,7 @@ async function viewAGHManaged(v){
     ${(status.history||[]).slice(0,20).map(h=>`<tr><td>${esc(h.time?new Date(h.time).toLocaleString():'')}</td><td>${esc(h.target_mode||'')}</td><td>${h.included_count||0}</td><td>+${h.added_count||0} -${h.removed_count||0}</td><td>${h.excluded_count||0}</td><td>${h.conflict_count||0}</td><td>${h.emergency_empty?'yes':'no'}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">none</td></tr>'}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Rollback Candidates</h2>
-    <div class="row"><input id="agh-rollback-filter" oninput="filterManagedRollbacks()" placeholder="filter rollback time/action/summary/entry">${managedRollbackActionFilter(rollbacks)}<span id="agh-rollback-count" class="muted"></span><span id="agh-rollback-action-summary" class="muted">${esc(managedRollbackActionSummary(rollbacks))}</span><span id="agh-rollback-result" class="muted">${managedRollbackResultHTML(null)}</span></div>
+    <div class="row"><input id="agh-rollback-filter" oninput="filterManagedRollbacks()" placeholder="filter rollback time/action/summary/entry">${managedRollbackActionFilter(rollbacks)}<span id="agh-rollback-count" class="muted"></span><span id="agh-rollback-action-summary" class="muted">${esc(managedRollbackActionSummary(rollbacks))}</span><span id="agh-rollback-result" class="muted">${managedRollbackResultHTML(AGH_MANAGED_ROLLBACK_RESULT)}</span></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>action</th><th>summary</th><th>entries</th><th></th></tr></thead><tbody>
     ${rollbacks.slice(0,50).map(r=>`<tr data-managed-rollback="${esc(r.id)}" data-action="${esc(r.action||'')}" data-search="${esc(managedRollbackSearch(r))}"><td>${esc(r.time?new Date(r.time).toLocaleString():'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.summary||'')}</td><td>${(r.entry_ids||[]).length}</td>
     <td><button class="act" data-cmd="toggleManagedRollbackDetails" data-id="${esc(r.id)}">details</button>${has('agh.manage')?`<button class="act danger" data-cmd="applyManagedRollback" data-id="${esc(r.id)}">rollback</button>`:''}</td></tr>`).join('')}
@@ -1328,7 +1329,19 @@ async function checkManagedAGHStatus(){ try{
   else alert(e.message);
 } }
 function exportManagedFeedSnapshot(){ window.location.href='/api/agh/rewrite-feed/export'; }
-async function applyManagedRollback(id){ if(!confirm('Apply rollback '+id+'?'))return; try{ await api('POST','/api/agh/managed-catalog/rollbacks/'+id+'/apply'); render(); }catch(e){ alert(e.message);} }
+async function applyManagedRollback(id){ if(!confirm('Apply rollback '+id+'?'))return; try{
+  const out=document.getElementById('agh-rollback-result');
+  AGH_MANAGED_ROLLBACK_RESULT={id,applying:true};
+  if(out) out.innerHTML=managedRollbackResultHTML(AGH_MANAGED_ROLLBACK_RESULT);
+  const r=await api('POST','/api/agh/managed-catalog/rollbacks/'+id+'/apply');
+  AGH_MANAGED_ROLLBACK_RESULT={id,updated:Number(r.updated||0)};
+  render();
+}catch(e){
+  AGH_MANAGED_ROLLBACK_RESULT={id,error:e.message};
+  const out=document.getElementById('agh-rollback-result');
+  if(out) out.innerHTML=managedRollbackResultHTML(AGH_MANAGED_ROLLBACK_RESULT);
+  else alert(e.message);
+} }
 function managedFeedPreviewDiagnostics(p){
   const st=p.status||{};
   return `<div class="kv" style="margin-bottom:10px">
