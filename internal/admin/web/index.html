@@ -163,6 +163,7 @@ let AGH_MANAGED_TARGET_CONFIG_RESULT = null;
 let AGH_MANAGED_SCHEDULER_CONFIG_RESULT = null;
 let AGH_MANAGED_SOURCE_DETAIL_KIND = '';
 let AGH_MANAGED_SOURCE_PREVIEW_RESULT = null;
+let AGH_MANAGED_PENDING_DIFF_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -186,6 +187,7 @@ function render(){
     filterManagedRollbacks();
     filterManagedConflicts();
     renderManagedSourcePreviewEntries();
+    ['added','removed','changed'].forEach(renderManagedPendingDiffKind);
   }
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
 }
@@ -557,6 +559,10 @@ function managedSourceDetailHTML(){
     const preview=state.source?managedSourcePreview({source:state.source,entries:state.entries||[],total:state.total}):'';
     return managedSourcePreviewResultHTML(AGH_MANAGED_SOURCE_PREVIEW_RESULT)+preview;
   }
+  if(AGH_MANAGED_SOURCE_DETAIL_KIND==='pending_diff'){
+    const state=window.AGH_MANAGED_SOURCE_DIFF_STATE||{};
+    return managedPendingDiffResultHTML(AGH_MANAGED_PENDING_DIFF_RESULT)+(state.source?managedSourcePendingDiff({source:state.source,added:state.entries?.added||[],removed:state.entries?.removed||[],changed:state.entries?.changed||[]}):'');
+  }
   return '';
 }
 function managedTargetConfigForm(target){
@@ -893,15 +899,20 @@ async function showMoreManagedSourcePreviewEntries(){
   await fetchManagedSourcePreviewEntries(false);
 }
 async function pendingManagedSource(id){ try{
+  AGH_MANAGED_SOURCE_DETAIL_KIND='pending_diff';
+  AGH_MANAGED_PENDING_DIFF_RESULT={sourceID:id,loading:true};
   const detail=document.getElementById('agh-source-detail');
-  if(detail) detail.innerHTML=managedPendingDiffResultHTML({sourceID:id,loading:true});
+  if(detail) detail.innerHTML=managedSourceDetailHTML();
   const r=await api('GET','/api/agh/sources/'+id+'/pending-diff');
   window.AGH_MANAGED_SOURCE_DIFF_STATE={sourceID:id,source:r.source||{},entries:{added:[],removed:[],changed:[]},totals:{added:(r.added||[]).length,removed:(r.removed||[]).length,changed:(r.changed||[]).length},limits:{added:100,removed:100,changed:100},filters:{added:'',removed:'',changed:''}};
-  if(detail) detail.innerHTML=managedPendingDiffResultHTML(r)+managedSourcePendingDiff(r);
+  AGH_MANAGED_PENDING_DIFF_RESULT={source:r.source||{},totals:{added:(r.added||[]).length,removed:(r.removed||[]).length,changed:(r.changed||[]).length}};
+  if(detail) detail.innerHTML=managedSourceDetailHTML();
   await Promise.all(['added','removed','changed'].map(kind=>fetchManagedPendingDiffKind(kind,true)));
 }catch(e){
+  AGH_MANAGED_SOURCE_DETAIL_KIND='pending_diff';
+  AGH_MANAGED_PENDING_DIFF_RESULT={error:e.message};
   const detail=document.getElementById('agh-source-detail');
-  if(detail) detail.innerHTML=managedPendingDiffResultHTML({error:e.message});
+  if(detail) detail.innerHTML=managedSourceDetailHTML();
   else alert(e.message);
 } }
 function managedSourcePendingDiff(diff){
@@ -949,6 +960,7 @@ async function fetchManagedPendingDiffKind(kind,reset){
   state.totals[kind]=Number(r.total??state.entries[kind].length);
   state.filters=state.filters||{};
   state.filters[kind]=document.getElementById(`agh-pending-${kind}-filter`)?.value||'';
+  AGH_MANAGED_PENDING_DIFF_RESULT={source:state.source||{},totals:state.totals||{}};
   renderManagedPendingDiffKind(kind);
 }
 function renderManagedPendingDiffKind(kind){
