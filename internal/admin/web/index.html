@@ -355,6 +355,22 @@ function managedTargetState(status){
   if(mode==='cname') return status.target_name?`CNAME ${status.target_name}`:'CNAME target missing';
   return (status.resolved_ips||[]).join(', ')||'not resolved';
 }
+function managedTargetRuleExample(status){
+  const mode=status.target_mode||'resolved_ip';
+  if(mode==='cname') return status.target_name?`||example.test^$dnsrewrite=NOERROR;CNAME;${status.target_name}`:'target_name required';
+  const ips=mode==='static_ip'?(status.static_ips||[]):(status.resolved_ips||[]);
+  if(!ips.length) return mode==='static_ip'?'no static IPs configured':'target resolution failed';
+  return ips.map(ip=>`||example.test^$dnsrewrite=NOERROR;${String(ip).includes(':')?'AAAA':'A'};${ip}`).join('\n');
+}
+function managedTargetDiagnostics(status){
+  return `<div class="kv">
+    <div>target output</div><div>${esc(managedTargetState(status))}</div>
+    <div>rule example</div><div><code style="white-space:pre-wrap">${esc(managedTargetRuleExample(status))}</code></div>
+    <div>target cache</div><div>${status.target_cache_used?'stale cache in use':'fresh or not needed'}</div>
+    <div>last resolve</div><div>${esc(status.last_resolve?new Date(status.last_resolve).toLocaleString():'never')}</div>
+    <div>last resolve error</div><div>${esc(status.last_resolve_error||'')}</div>
+  </div>`;
+}
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
@@ -413,7 +429,7 @@ async function viewAGHManaged(v){
   <div class="row" style="margin-top:12px">
     <button class="act" onclick="previewManagedFeed()">Preview feed</button>
     <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
-    ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button>`:''}
+    ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted"></span>`:''}
     ${has('agh.manage')?`<button class="act danger" onclick="setEmergencyEmpty(${!status.emergency_empty})">${status.emergency_empty?'Disable':'Enable'} emergency empty</button>`:''}
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
@@ -427,6 +443,7 @@ async function viewAGHManaged(v){
     <div>fetch check</div><div><code>curl -fsS ${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')} | head</code></div>
     <div>expected feed header</div><div><code>! mirage-chaff managed rewrites</code></div>
     <div>target output</div><div>${esc(managedTargetState(status))}</div>
+    <div>target diagnostics</div><div>${managedTargetDiagnostics(status)}</div>
     <div>target settings</div><div>${managedTargetConfigForm(target)}</div>
     <div>target mode</div><div>${esc(status.target_mode||'resolved_ip')}</div>
     <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
@@ -752,7 +769,17 @@ async function resolveManagedConflictCustom(id){ try{
   render();
 }catch(e){ alert(e.message);} }
 async function setEmergencyEmpty(on){ try{ await api('POST','/api/agh/rewrite-feed/emergency-empty',{enabled:on}); render(); }catch(e){ alert(e.message);} }
-async function refreshManagedTarget(){ try{ const r=await api('POST','/api/agh/rewrite-feed/refresh-target'); if(r.error) alert(r.error); render(); }catch(e){ alert(e.message);} }
+async function refreshManagedTarget(){ try{
+  const r=await api('POST','/api/agh/rewrite-feed/refresh-target');
+  const out=document.getElementById('agh-target-refresh-result');
+  const st=r.status||{};
+  if(out) out.textContent=r.error?`target refresh failed: ${r.error}`:`target refreshed: ${managedTargetState(st)}`;
+  if(!out) render();
+}catch(e){
+  const out=document.getElementById('agh-target-refresh-result');
+  if(out) out.textContent=e.message;
+  else alert(e.message);
+} }
 async function saveManagedTargetConfig(){ try{
   const body={
     target_mode:document.getElementById('agh-target-mode')?.value||'resolved_ip',
