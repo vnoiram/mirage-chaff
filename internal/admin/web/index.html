@@ -108,6 +108,8 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='saveManagedPreset') saveManagedPreset();
   if(d.cmd==='refreshAGHFilters') refreshAGHFilters();
   if(d.cmd==='checkManagedAGHStatus') checkManagedAGHStatus();
+  if(d.cmd==='saveManagedTargetConfig') saveManagedTargetConfig();
+  if(d.cmd==='applyConfigReload') reload();
   if(d.cmd==='editManagedCatalogRow') editManagedCatalogRow(d.id||'');
   if(d.cmd==='saveManagedCatalogRow') saveManagedCatalogRow(d.id||'');
   if(d.cmd==='cancelManagedCatalogRow') cancelManagedCatalogRow(d.id||'');
@@ -353,9 +355,37 @@ function managedTargetState(status){
   if(mode==='cname') return status.target_name?`CNAME ${status.target_name}`:'CNAME target missing';
   return (status.resolved_ips||[]).join(', ')||'not resolved';
 }
+function managedTargetConfigForm(target){
+  const mode=target.target_mode||'resolved_ip';
+  const readonly=!has('config.edit');
+  if(readonly) return `<div class="kv"><div>mode</div><div>${esc(mode)}</div><div>target name</div><div>${esc(target.target_name||'')}</div><div>static IPv4</div><div>${esc((target.static_ipv4||[]).join(', ')||'none')}</div><div>static IPv6</div><div>${esc((target.static_ipv6||[]).join(', ')||'none')}</div><div>stale target TTL</div><div>${esc(target.stale_target_ttl||'')}</div></div>`;
+  return `<div class="row">
+    <select id="agh-target-mode" onchange="updateManagedTargetModeFields()"><option value="resolved_ip" ${mode==='resolved_ip'?'selected':''}>resolved_ip</option><option value="cname" ${mode==='cname'?'selected':''}>cname</option><option value="static_ip" ${mode==='static_ip'?'selected':''}>static_ip</option></select>
+    <input id="agh-target-name" value="${esc(target.target_name||'')}" placeholder="target name" ${mode==='static_ip'?'disabled':''}>
+    <input id="agh-target-static-ipv4" value="${esc((target.static_ipv4||[]).join(', '))}" placeholder="static IPv4" ${mode==='static_ip'?'':'disabled'}>
+    <input id="agh-target-static-ipv6" value="${esc((target.static_ipv6||[]).join(', '))}" placeholder="static IPv6" ${mode==='static_ip'?'':'disabled'}>
+    <input id="agh-target-stale-ttl" value="${esc(target.stale_target_ttl||'24h')}" placeholder="stale target TTL" style="width:130px">
+    <button class="act" data-cmd="saveManagedTargetConfig">Save target settings</button>
+    <span id="agh-target-config-result" class="muted"></span>
+  </div>`;
+}
+function splitTargetIPs(raw){
+  return String(raw||'').split(/[,\n]/).map(x=>x.trim()).filter(Boolean);
+}
+function updateManagedTargetModeFields(){
+  const mode=document.getElementById('agh-target-mode')?.value||'resolved_ip';
+  const staticMode=mode==='static_ip';
+  const target=document.getElementById('agh-target-name');
+  const v4=document.getElementById('agh-target-static-ipv4');
+  const v6=document.getElementById('agh-target-static-ipv6');
+  if(target) target.disabled=staticMode;
+  if(v4) v4.disabled=!staticMode;
+  if(v6) v6.disabled=!staticMode;
+}
 
 async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
+  const target=await api('GET','/api/agh/rewrite-feed/target');
   const sources=(await api('GET','/api/agh/sources')).sources||[];
   const conflicts=(await api('GET','/api/agh/managed-catalog/conflicts')).conflicts||[];
   const history=await api('GET','/api/agh/history');
@@ -397,6 +427,7 @@ async function viewAGHManaged(v){
     <div>fetch check</div><div><code>curl -fsS ${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')} | head</code></div>
     <div>expected feed header</div><div><code>! mirage-chaff managed rewrites</code></div>
     <div>target output</div><div>${esc(managedTargetState(status))}</div>
+    <div>target settings</div><div>${managedTargetConfigForm(target)}</div>
     <div>target mode</div><div>${esc(status.target_mode||'resolved_ip')}</div>
     <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
     <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
@@ -722,6 +753,22 @@ async function resolveManagedConflictCustom(id){ try{
 }catch(e){ alert(e.message);} }
 async function setEmergencyEmpty(on){ try{ await api('POST','/api/agh/rewrite-feed/emergency-empty',{enabled:on}); render(); }catch(e){ alert(e.message);} }
 async function refreshManagedTarget(){ try{ const r=await api('POST','/api/agh/rewrite-feed/refresh-target'); if(r.error) alert(r.error); render(); }catch(e){ alert(e.message);} }
+async function saveManagedTargetConfig(){ try{
+  const body={
+    target_mode:document.getElementById('agh-target-mode')?.value||'resolved_ip',
+    target_name:document.getElementById('agh-target-name')?.value||'',
+    static_ipv4:splitTargetIPs(document.getElementById('agh-target-static-ipv4')?.value||''),
+    static_ipv6:splitTargetIPs(document.getElementById('agh-target-static-ipv6')?.value||''),
+    stale_target_ttl:document.getElementById('agh-target-stale-ttl')?.value||'24h'
+  };
+  const r=await api('PUT','/api/agh/rewrite-feed/target',body);
+  const out=document.getElementById('agh-target-config-result');
+  if(out) out.innerHTML=`saved; ${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload">Apply reload</button>`;
+}catch(e){
+  const out=document.getElementById('agh-target-config-result');
+  if(out) out.textContent=e.message;
+  else alert(e.message);
+} }
 async function refreshAGHFilters(){ try{
   const force=!!document.getElementById('agh-refresh-force')?.checked;
   const r=await api('POST','/api/agh/rewrite-feed/refresh-agh',{force});
