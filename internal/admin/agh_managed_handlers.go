@@ -434,6 +434,35 @@ func (s *Server) handleAGHManagedPreset(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, status)
 }
 
+func (s *Server) handleAGHManagedRefreshAGH(w http.ResponseWriter, r *http.Request, sess *session) {
+	var req struct {
+		Force bool `json:"force"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	result, err := refreshAGHFilters(ctx, s.deps.AGHHTTPClient, s.deps.AGHSyncConfig, req.Force)
+	if err != nil {
+		detail := fmt.Sprintf("force=%s result=%s", mapBool(req.Force), err.Error())
+		s.store.Audit(sess.username, "agh_managed.agh_refresh", detail)
+		status := http.StatusBadGateway
+		if isAGHRefreshConfigError(err) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.agh_refresh", fmt.Sprintf("base_url=%s force=%s result=ok", result.BaseURL, mapBool(result.Force)))
+	writeJSON(w, map[string]any{"status": "ok", "force": result.Force, "base_url": result.BaseURL})
+}
+
+func isAGHRefreshConfigError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "base_url required") || strings.Contains(msg, "credentials required") || strings.Contains(msg, "env file")
+}
+
 func mapBool(v bool) string {
 	if v {
 		return "true"

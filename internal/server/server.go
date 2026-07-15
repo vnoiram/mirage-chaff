@@ -280,6 +280,7 @@ func (s *Server) startAdmin(ctx context.Context, wg *sync.WaitGroup, fatal chan<
 		SecureCookies: s.cfg.Admin.SecureCookies,
 		RuleCatalog:   s.rules,
 		AGHSync:       func() rulecatalog.Status { return s.rules.Sync(syncConfig(s.cfg)) },
+		AGHSyncConfig: s.cfg.AGHSync,
 		AGHManaged:    s.managed,
 	})
 	srv := &http.Server{

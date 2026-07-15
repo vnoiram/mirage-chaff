@@ -549,6 +549,89 @@ func TestAGHManagedSourceSyncAuditDetail(t *testing.T) {
 	}
 }
 
+func TestAGHManagedRefreshAGHHandlerRBACAndAudit(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	var sawRefresh bool
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		sawRefresh = r.URL.Path == "/control/filtering/refresh"
+		return stringResponse(http.StatusOK, `{"updated":1}`), nil
+	})}
+	s := New(store, Deps{
+		AGHSyncConfig: config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath},
+		AGHHTTPClient: httpClient,
+	})
+	h := s.Handler()
+
+	viewerCookie, viewerCSRF := loginForTest(t, h, "viewer", "password123")
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/refresh-agh", strings.NewReader(`{"force":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", viewerCSRF)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer refresh status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/refresh-agh", strings.NewReader(`{"force":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin refresh status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !sawRefresh {
+		t.Fatal("refresh endpoint was not called")
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.agh_refresh")
+	if !ok || !strings.Contains(entry.Detail, "base_url=http://agh.test") || !strings.Contains(entry.Detail, "force=true") || strings.Contains(entry.Detail, "secret") {
+		t.Fatalf("refresh audit = %+v ok=%v", entry, ok)
+	}
+}
+
+func TestAGHManagedRefreshAGHHandlerConfigError(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{AGHSyncConfig: config.AGHSyncConfig{BaseURL: "http://agh.test"}})
+	h := s.Handler()
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/refresh-agh", strings.NewReader(`{"force":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("config error status = %d, want %d: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.agh_refresh")
+	if !ok || !strings.Contains(entry.Detail, "credentials required") {
+		t.Fatalf("refresh failure audit = %+v ok=%v", entry, ok)
+	}
+}
+
 func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "policy")
