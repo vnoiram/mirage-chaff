@@ -1219,7 +1219,8 @@ function managedSourceEntriesResultHTML(r){
   return `<div id="agh-source-entry-status-${esc(source.id||r.id||'source')}"><strong>source entries loaded</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
 function managedSourceEntriesRow(id,entries){
-  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="15"><div id="agh-source-entry-status-${esc(id)}" class="muted">${managedSourceEntriesResultHTML(window.AGH_SOURCE_ENTRY_STATE?.[id])}</div><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
+  const state=window.AGH_SOURCE_ENTRY_STATE?.[id]||{};
+  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="15"><div id="agh-source-entry-status-${esc(id)}" class="muted">${managedSourceEntriesResultHTML(state)}</div><div class="row"><input id="agh-source-entry-filter-${esc(id)}" value="${esc(state.filter||'')}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
 }
 function restoreManagedSourceEntryRows(){
   const states=window.AGH_SOURCE_ENTRY_STATE||{};
@@ -1253,6 +1254,10 @@ async function fetchManagedSourceEntries(id,reset){
   const entries=r.entries||[];
   state.entries=reset?entries:(state.entries||[]).concat(entries);
   state.total=Number(r.total??state.entries.length);
+  state.source=r.source||state.source||{};
+  state.expanded=true;
+  state.loading=false;
+  state.error='';
   state.filter=document.getElementById(`agh-source-entry-filter-${id}`)?.value||'';
   renderManagedSourceEntries(id);
 }
@@ -1262,6 +1267,8 @@ function renderManagedSourceEntries(id){
   if(!state||!body) return;
   const shown=state.entries||[];
   body.innerHTML=shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${managedSourceTraceRefs(r.source_refs,r.source_ids||[])}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="10" class="muted">none</td></tr>`;
+  const status=document.getElementById(`agh-source-entry-status-${id}`);
+  if(status) status.innerHTML=managedSourceEntriesResultHTML(state);
   const count=document.getElementById(`agh-source-entry-count-${id}`);
   if(count) count.textContent=`showing ${shown.length} of ${Number(state.total||0)} matching / ${(state.entries||[]).length} loaded`;
 }
