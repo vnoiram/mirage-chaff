@@ -90,6 +90,9 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='toggleManagedSourceEntries') toggleManagedSourceEntries(d.id||'');
   if(d.cmd==='showMoreManagedSourceEntries') showMoreManagedSourceEntries(d.id||'');
   if(d.cmd==='toggleManagedSource') toggleManagedSource(d.id||'', d.enabled==='true');
+  if(d.cmd==='editManagedSourceRow') editManagedSourceRow(d.id||'');
+  if(d.cmd==='saveManagedSourceRow') saveManagedSourceRow(d.id||'');
+  if(d.cmd==='cancelManagedSourceRow') cancelManagedSourceRow(d.id||'');
   if(d.cmd==='saveManagedSourceSettings') saveManagedSourceSettings(d.id||'');
   if(d.cmd==='approveManagedSource') approveManagedSource(d.id||'');
   if(d.cmd==='rejectManagedSource') rejectManagedSource(d.id||'');
@@ -412,9 +415,9 @@ async function viewAGHManaged(v){
       <textarea id="agh-src-content" placeholder="manual domains or rules" style="min-height:80px"></textarea>
       <button class="act" onclick="addManagedSource()">Add source</button>
     </div>`:''}
-    <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>priority</th><th>stale policy</th><th>health</th><th>enabled</th><th>entries</th><th>diff</th><th>duration ms</th><th>failures</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
-    ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${has('agh.manage')?`<input class="agh-src-priority" type="number" value="${Number(s.priority||0)}" style="width:80px">`:Number(s.priority||0)}</td><td>${has('agh.manage')?`<select class="agh-src-stale-policy">${optionHTML('exclude',s.stale_feed_policy||'exclude','exclude')}${optionHTML('keep',s.stale_feed_policy||'exclude','keep')}</select><button class="act" data-cmd="saveManagedSourceSettings" data-id="${esc(s.id)}">save</button>`:esc(s.stale_feed_policy||'exclude')}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${Number(s.last_duration_ms||0)}</td><td>${Number(s.consecutive_failures||0)}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
-    <td><button class="act" data-cmd="toggleManagedSourceEntries" data-id="${esc(s.id)}">entries</button>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>priority</th><th>stale policy</th><th>interval</th><th>health</th><th>enabled</th><th>entries</th><th>diff</th><th>duration ms</th><th>failures</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
+    ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${has('agh.manage')?`<input class="agh-src-priority" type="number" value="${Number(s.priority||0)}" style="width:80px">`:Number(s.priority||0)}</td><td>${has('agh.manage')?`<select class="agh-src-stale-policy">${optionHTML('exclude',s.stale_feed_policy||'exclude','exclude')}${optionHTML('keep',s.stale_feed_policy||'exclude','keep')}</select><button class="act" data-cmd="saveManagedSourceSettings" data-id="${esc(s.id)}">save</button>`:esc(s.stale_feed_policy||'exclude')}</td><td>${esc(s.sync_interval||'')}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${Number(s.last_duration_ms||0)}</td><td>${Number(s.consecutive_failures||0)}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
+    <td><button class="act" data-cmd="toggleManagedSourceEntries" data-id="${esc(s.id)}">entries</button>${has('agh.manage')?`${s.pending_review?`<button class="act" data-cmd="pendingManagedSource" data-id="${esc(s.id)}">diff</button><button class="act" data-cmd="approveManagedSource" data-id="${esc(s.id)}">approve (+${s.added||0} -${s.removed||0} ~${s.changed||0})</button><button class="act danger" data-cmd="rejectManagedSource" data-id="${esc(s.id)}">reject</button>`:''}<button class="act" data-cmd="editManagedSourceRow" data-id="${esc(s.id)}">edit</button><button class="act" data-cmd="previewManagedSource" data-id="${esc(s.id)}">preview</button><button class="act" data-cmd="syncManagedSource" data-id="${esc(s.id)}">sync</button><button class="act" data-cmd="toggleManagedSource" data-id="${esc(s.id)}" data-enabled="${!s.enabled}">${s.enabled?'pause':'resume'}</button><button class="act danger" data-cmd="deleteManagedSource" data-id="${esc(s.id)}">delete</button>`:''}</td></tr>`).join('')}
     </tbody></table></div><div id="agh-source-detail" style="white-space:pre-wrap;max-height:260px;overflow:auto"></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Catalog</h2><div class="row"><input id="agh-cat-filter" oninput="filterManagedCatalog()" placeholder="filter domain/source/category/review">${managedCatalogFilterSelect('agh-cat-source','source',managedCatalogFilterValues(rows,r=>r.source_ids||[]))}${managedCatalogFilterSelect('agh-cat-category','category',managedCatalogFilterValues(rows,r=>r.category||''))}${managedCatalogFilterSelect('agh-cat-resource','resource',managedCatalogFilterValues(rows,r=>r.resource_type||''))}${managedCatalogFilterSelect('agh-cat-review','review',managedCatalogFilterValues(rows,r=>r.review_status||''))}<select id="agh-cat-rewrite" onchange="filterManagedCatalog()"><option value="">rewrite</option><option value="true">rewrite yes</option><option value="false">rewrite no</option></select><select id="agh-cat-unsupported" onchange="filterManagedCatalog()"><option value="">unsupported: ${unsupportedCount}</option><option value="true">unsupported only</option><option value="false">supported only</option></select></div>
     ${has('agh.manage')?`<div class="row" style="margin-top:10px">
@@ -519,7 +522,7 @@ async function toggleManagedSourceEntries(id){ try{
   if(b) b.textContent='hide';
 }catch(e){ alert(e.message);} }
 function managedSourceEntriesRow(id,entries){
-  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="14"><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
+  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="15"><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
 }
 function managedSourceEntrySearch(r){
   return [r.match?.domain,r.match?.path,r.category,r.resource_type,r.review_status,r.rewrite_enabled?'rewrite':'no-rewrite',r.rewrite_reason,r.original_rule,r.last_feed_included_at].join(' ').toLowerCase();
@@ -548,6 +551,40 @@ function showMoreManagedSourceEntries(id){
   state.limit=(state.limit||200)+200;
   renderManagedSourceEntries(id);
 }
+function managedSourceEditRow(s){
+  const isManual=s.type==='manual';
+  return `<tr data-managed-source-edit="${esc(s.id)}"><td colspan="15"><div class="row">
+    <input class="agh-src-edit-name" value="${esc(s.name||'')}" placeholder="name">
+    <input class="agh-src-edit-url" value="${esc(s.url||'')}" placeholder="filter URL or AGH base URL" style="min-width:320px" ${isManual?'disabled':''}>
+    <input class="agh-src-edit-interval" value="${esc(s.sync_interval||'')}" placeholder="sync interval" style="width:110px">
+    <input class="agh-src-edit-priority" type="number" value="${Number(s.priority||0)}" style="width:90px">
+    <select class="agh-src-edit-stale-policy">${optionHTML('exclude',s.stale_feed_policy||'exclude','exclude')}${optionHTML('keep',s.stale_feed_policy||'exclude','keep')}</select>
+    <button class="act" data-cmd="saveManagedSourceRow" data-id="${esc(s.id)}">save source</button>
+    <button class="act" data-cmd="cancelManagedSourceRow" data-id="${esc(s.id)}">cancel</button>
+    <textarea class="agh-src-edit-content" placeholder="manual domains or rules" style="min-height:80px" ${isManual?'':'disabled'}>${esc(s.content||'')}</textarea>
+  </div></td></tr>`;
+}
+function editManagedSourceRow(id){
+  cancelManagedSourceRow(id);
+  const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id);
+  const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
+  if(s&&tr) tr.insertAdjacentHTML('afterend',managedSourceEditRow(s));
+}
+function cancelManagedSourceRow(id){ document.querySelector(`tr[data-managed-source-edit="${CSS.escape(id)}"]`)?.remove(); }
+async function saveManagedSourceRow(id){ try{
+  const s={...(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id)};
+  if(!s.id) throw new Error('source not found');
+  const tr=document.querySelector(`tr[data-managed-source-edit="${CSS.escape(id)}"]`);
+  if(!tr) throw new Error('source edit row not found');
+  s.name=tr.querySelector('.agh-src-edit-name')?.value||'';
+  s.sync_interval=tr.querySelector('.agh-src-edit-interval')?.value||'';
+  s.priority=Number(tr.querySelector('.agh-src-edit-priority')?.value||0);
+  s.stale_feed_policy=tr.querySelector('.agh-src-edit-stale-policy')?.value||'exclude';
+  if(s.type==='manual') s.content=tr.querySelector('.agh-src-edit-content')?.value||'';
+  else s.url=tr.querySelector('.agh-src-edit-url')?.value||'';
+  await api('PUT','/api/agh/sources/'+id,s);
+  render();
+}catch(e){ alert(e.message);} }
 async function toggleManagedSource(id,on){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); s.enabled=on; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
 async function saveManagedSourceSettings(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`); s.priority=Number(tr?.querySelector('.agh-src-priority')?.value||0); s.stale_feed_policy=tr?.querySelector('.agh-src-stale-policy')?.value||'exclude'; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
 async function approveManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/approve'); render(); }catch(e){ alert(e.message);} }

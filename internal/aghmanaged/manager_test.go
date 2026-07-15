@@ -131,6 +131,50 @@ func TestSourcePriorityPersistsAndAppearsOnRows(t *testing.T) {
 	}
 }
 
+func TestUpsertSourceSettingsPreservesSyncMetadata(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{
+		Type:            SourceManual,
+		Name:            "manual",
+		Enabled:         true,
+		SyncInterval:    "12h",
+		Priority:        1,
+		StaleFeedPolicy: StaleFeedPolicyExclude,
+		Content:         "||source-settings.example.net^\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	synced, err := m.SyncSource(context.Background(), src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	synced.Name = "renamed"
+	synced.SyncInterval = "30m"
+	synced.Priority = 9
+	synced.StaleFeedPolicy = StaleFeedPolicyKeep
+	synced.Content = "||source-settings.example.net^\n||second.example.net^\n"
+	updated, err := m.UpsertSource(synced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "renamed" || updated.SyncInterval != "30m" || updated.Priority != 9 || updated.StaleFeedPolicy != StaleFeedPolicyKeep {
+		t.Fatalf("updated source settings = %+v", updated)
+	}
+	if updated.LastSuccess.IsZero() || updated.LastSyncStarted.IsZero() || updated.Entries != 1 {
+		t.Fatalf("sync metadata was not preserved: %+v", updated)
+	}
+	if updated.Content != "||source-settings.example.net^\n||second.example.net^\n" {
+		t.Fatalf("content was not updated: %q", updated.Content)
+	}
+}
+
 func TestPresetOverridePersistsAndAffectsFeed(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"
