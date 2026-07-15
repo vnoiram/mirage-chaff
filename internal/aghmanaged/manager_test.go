@@ -614,6 +614,17 @@ func TestStaleSourceTTLDefaultAndDisable(t *testing.T) {
 	if strings.Contains(p.Lines, "remote.example.net") || p.Status.StaleSources != 1 {
 		t.Fatalf("default stale_source_ttl should exclude old remote source: status=%+v lines=\n%s", p.Status, p.Lines)
 	}
+	src.StaleFeedPolicy = StaleFeedPolicyKeep
+	if _, err := m.UpsertSource(src); err != nil {
+		t.Fatal(err)
+	}
+	p, err = m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Lines, "remote.example.net") || p.Status.StaleSources != 1 {
+		t.Fatalf("keep stale policy should include old remote source while warning: status=%+v lines=\n%s", p.Status, p.Lines)
+	}
 	cfg.Scheduler.StaleSourceTTL = "0"
 	m.SetConfig(cfg)
 	p, err = m.Generate(context.Background(), false)

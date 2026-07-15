@@ -374,7 +374,7 @@ func mapErr(err error) string {
 
 func aghManagedSourceAuditDetail(src aghmanaged.Source) string {
 	return fmt.Sprintf(
-		"id=%s type=%s enabled=%s pending=%s entries=%d unsupported=%d allow_exceptions=%d priority=%d",
+		"id=%s type=%s enabled=%s pending=%s entries=%d unsupported=%d allow_exceptions=%d priority=%d stale_feed_policy=%s",
 		src.ID,
 		src.Type,
 		mapBool(src.Enabled),
@@ -383,6 +383,7 @@ func aghManagedSourceAuditDetail(src aghmanaged.Source) string {
 		src.Unsupported,
 		src.AllowExceptions,
 		src.Priority,
+		src.StaleFeedPolicy,
 	)
 }
 

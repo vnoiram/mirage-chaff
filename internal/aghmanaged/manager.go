@@ -29,6 +29,9 @@ const (
 	SourceManual           = "manual"
 	SourceAGHCustomRules   = "agh_custom_rules"
 	SourceAGHQueryLogCNAME = "agh_query_log_cname"
+
+	StaleFeedPolicyExclude = "exclude"
+	StaleFeedPolicyKeep    = "keep"
 )
 
 // Resolver resolves the managed rewrite target name.
@@ -59,6 +62,7 @@ type Source struct {
 	AllowExceptions  int       `json:"allow_exceptions"`
 	PendingReview    bool      `json:"pending_review,omitempty"`
 	Priority         int       `json:"priority"`
+	StaleFeedPolicy  string    `json:"stale_feed_policy,omitempty"`
 	Health           string    `json:"health,omitempty"`
 }
 
@@ -304,8 +308,14 @@ func (m *Manager) UpsertSource(src Source) (Source, error) {
 	if src.SyncInterval == "" {
 		src.SyncInterval = m.Config().Scheduler.DefaultSyncInterval
 	}
+	if src.StaleFeedPolicy == "" {
+		src.StaleFeedPolicy = StaleFeedPolicyExclude
+	}
 	if !validSourceType(src.Type) {
 		return Source{}, fmt.Errorf("invalid source type %q", src.Type)
+	}
+	if !validStaleFeedPolicy(src.StaleFeedPolicy) {
+		return Source{}, fmt.Errorf("invalid stale feed policy %q", src.StaleFeedPolicy)
 	}
 	if src.Type == SourceFilterURL && src.URL == "" {
 		return Source{}, fmt.Errorf("url required")
@@ -1034,9 +1044,11 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		item := m.feedItem(e, ov, cfg, ips, conflictKeys[entryKey(e)])
 		if staleSourceTTL > 0 {
 			if src, ok := sourceByID[e.Source.Name]; ok && isStaleSource(src, staleSourceTTL) {
-				item.Included = false
-				item.Reason = "stale source"
 				staleSources[src.ID] = true
+				if staleFeedPolicy(src) == StaleFeedPolicyExclude {
+					item.Included = false
+					item.Reason = "stale source"
+				}
 			}
 		}
 		if item.Included {
@@ -1642,6 +1654,15 @@ func validSourceType(typ string) bool {
 	}
 }
 
+func validStaleFeedPolicy(policy string) bool {
+	switch policy {
+	case StaleFeedPolicyExclude, StaleFeedPolicyKeep:
+		return true
+	default:
+		return false
+	}
+}
+
 func isRemoteSource(typ string) bool {
 	switch typ {
 	case SourceFilterURL, SourceAGHCustomRules, SourceAGHQueryLogCNAME:
@@ -1653,6 +1674,13 @@ func isRemoteSource(typ string) bool {
 
 func isStaleSource(src Source, ttl time.Duration) bool {
 	return ttl > 0 && isRemoteSource(src.Type) && !src.LastSuccess.IsZero() && time.Since(src.LastSuccess) > ttl
+}
+
+func staleFeedPolicy(src Source) string {
+	if src.StaleFeedPolicy == "" {
+		return StaleFeedPolicyExclude
+	}
+	return src.StaleFeedPolicy
 }
 
 func ipStrings(ips []net.IP) []string {
