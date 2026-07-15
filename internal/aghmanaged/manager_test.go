@@ -203,6 +203,56 @@ func TestManagedFeedExcludesHTTPPathRules(t *testing.T) {
 	}
 }
 
+func TestManagedFeedTracksLastIncludedAt(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	path := filepath.Join(t.TempDir(), "managed.json")
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||included.example.net^\n@@||excluded.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Generate(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	var includedSeen, excludedSeen time.Time
+	for _, row := range rows {
+		switch row.Match.Domain {
+		case "included.example.net":
+			includedSeen = row.LastFeedIncludedAt
+		case "excluded.example.net":
+			excludedSeen = row.LastFeedIncludedAt
+		}
+	}
+	if includedSeen.IsZero() {
+		t.Fatalf("included row missing LastFeedIncludedAt: %+v", rows)
+	}
+	if !excludedSeen.IsZero() {
+		t.Fatalf("excluded row should not have LastFeedIncludedAt: %+v", rows)
+	}
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows = reopened.CatalogRows()
+	for _, row := range rows {
+		if row.Match.Domain == "included.example.net" && row.LastFeedIncludedAt.IsZero() {
+			t.Fatalf("reopened row missing LastFeedIncludedAt: %+v", rows)
+		}
+	}
+}
+
 func TestBalancedPresetRequiresMediumConfidenceCandidate(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"

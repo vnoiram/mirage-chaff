@@ -275,7 +275,7 @@ function optionHTML(value,current,label){
 }
 function managedCatalogDetailRow(r){
   const id=esc(r.id);
-  return `<tr class="agh-cat-detail" data-managed-detail="${id}"><td></td><td colspan="15"><div class="kv">
+  return `<tr class="agh-cat-detail" data-managed-detail="${id}"><td></td><td colspan="16"><div class="kv">
     <div>entry id</div><div>${id}</div>
     <div>source</div><div>${esc(r.source?.name||'')} ${esc(r.source?.type?`(${r.source.type})`:'')}</div>
     <div>source priority</div><div>${Number(r.source_priority||0)}</div>
@@ -290,11 +290,12 @@ function managedCatalogDetailRow(r){
     <div>action</div><div>${esc(r.action||'')}</div>
     <div>notes</div><div>${esc(r.notes||'')}</div>
     <div>last changed by</div><div>${esc(r.last_changed_by||'')}</div>
+    <div>last feed included</div><div>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</div>
   </div></td></tr>`;
 }
 function managedSourceHealthLabel(h){ return h||'never synced'; }
 function managedCatalogRow(r,editing){
-  const search=esc([r.match?.domain,(r.source_ids||[]).join(','),r.category,r.resource_type,r.risk,r.review_status,r.confidence,r.expected_catalog,r.action,r.notes,r.rewrite_reason,r.last_changed_by].join(' ').toLowerCase());
+  const search=esc([r.match?.domain,(r.source_ids||[]).join(','),r.category,r.resource_type,r.risk,r.review_status,r.confidence,r.expected_catalog,r.action,r.notes,r.rewrite_reason,r.last_changed_by,r.last_feed_included_at].join(' ').toLowerCase());
   const id=esc(r.id);
   const attrs=`data-source="${esc((r.source_ids||[]).join(','))}" data-category="${esc(r.category||'')}" data-resource="${esc(r.resource_type||'')}" data-review="${esc(r.review_status||'')}" data-rewrite="${r.rewrite_enabled?'true':'false'}"`;
   if(editing){
@@ -311,9 +312,10 @@ function managedCatalogRow(r,editing){
     <td><select class="agh-edit-rewrite">${optionHTML('true',String(!!r.rewrite_enabled),'yes')}${optionHTML('false',String(!!r.rewrite_enabled),'no')}</select></td>
     <td><input class="agh-edit-reason" value="${esc(r.rewrite_reason||'')}" placeholder="rewrite reason"></td>
     <td>${esc(r.last_changed_by||'')}</td>
+    <td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td>
     <td><button class="act" data-cmd="saveManagedCatalogRow" data-id="${id}">save</button><button class="act" data-cmd="cancelManagedCatalogRow" data-id="${id}">cancel</button></td></tr>`;
   }
-  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))} (${Number(r.source_priority||0)})</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.risk||'')}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.notes||'')}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_changed_by||'')}</td>
+  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))} (${Number(r.source_priority||0)})</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.risk||'')}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.notes||'')}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_changed_by||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td>
     <td><button class="act" data-cmd="toggleManagedCatalogDetails" data-id="${id}">details</button>${has('agh.manage')?`<button class="act" data-cmd="editManagedCatalogRow" data-id="${id}">edit</button><button class="act" data-cmd="managedRewrite" data-id="${id}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`;
 }
 function managedCatalogFilterSelect(id,label,values){
@@ -394,7 +396,7 @@ async function viewAGHManaged(v){
       <input id="agh-bulk-reason" placeholder="rewrite reason">
       <button class="act" data-cmd="bulkManagedCatalog">Apply bulk edit</button>
     </div>`:''}
-    <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th>changed by</th><th></th></tr></thead><tbody>
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th>changed by</th><th>feed included</th><th></th></tr></thead><tbody>
     ${rows.slice(0,500).map(r=>managedCatalogRow(r,false)).join('')}
     </tbody></table></div></div>`));
 }
@@ -441,7 +443,7 @@ async function toggleManagedSourceEntries(id){ try{
 function managedSourceEntriesRow(id,entries){
   const shown=(entries||[]).slice(0,100);
   const note=(entries||[]).length>100?`<div class="muted">showing 100 of ${(entries||[]).length}</div>`:'';
-  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="11">${note}<div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>original_rule</th></tr></thead><tbody>${shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')}</tbody></table></div></td></tr>`;
+  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="11">${note}<div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody>${shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')}</tbody></table></div></td></tr>`;
 }
 async function toggleManagedSource(id,on){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); s.enabled=on; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
 async function saveManagedSourcePriority(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`); s.priority=Number(tr?.querySelector('.agh-src-priority')?.value||0); await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }

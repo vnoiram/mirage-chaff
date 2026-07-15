@@ -110,13 +110,14 @@ type FeedItem struct {
 // CatalogRow is an editable catalog row exposed to the admin UI.
 type CatalogRow struct {
 	rulecatalog.Entry
-	SourceIDs      []string `json:"source_ids,omitempty"`
-	SourcePriority int      `json:"source_priority"`
-	Action         string   `json:"action,omitempty"`
-	Notes          string   `json:"notes,omitempty"`
-	RewriteEnabled bool     `json:"rewrite_enabled"`
-	RewriteReason  string   `json:"rewrite_reason,omitempty"`
-	LastChangedBy  string   `json:"last_changed_by,omitempty"`
+	SourceIDs          []string  `json:"source_ids,omitempty"`
+	SourcePriority     int       `json:"source_priority"`
+	Action             string    `json:"action,omitempty"`
+	Notes              string    `json:"notes,omitempty"`
+	RewriteEnabled     bool      `json:"rewrite_enabled"`
+	RewriteReason      string    `json:"rewrite_reason,omitempty"`
+	LastChangedBy      string    `json:"last_changed_by,omitempty"`
+	LastFeedIncludedAt time.Time `json:"last_feed_included_at,omitempty"`
 }
 
 // Conflict is a grouped domain/path disagreement that blocks feed emission.
@@ -151,12 +152,13 @@ type RollbackRecord struct {
 }
 
 type state struct {
-	Sources        []Source                       `json:"sources"`
-	Entries        []rulecatalog.Entry            `json:"entries"`
-	Pending        map[string][]rulecatalog.Entry `json:"pending,omitempty"`
-	Overrides      map[string]CatalogOverride     `json:"overrides,omitempty"`
-	EmergencyEmpty *bool                          `json:"emergency_empty,omitempty"`
-	Rollbacks      []RollbackRecord               `json:"rollbacks,omitempty"`
+	Sources            []Source                       `json:"sources"`
+	Entries            []rulecatalog.Entry            `json:"entries"`
+	Pending            map[string][]rulecatalog.Entry `json:"pending,omitempty"`
+	Overrides          map[string]CatalogOverride     `json:"overrides,omitempty"`
+	EmergencyEmpty     *bool                          `json:"emergency_empty,omitempty"`
+	Rollbacks          []RollbackRecord               `json:"rollbacks,omitempty"`
+	FeedIncludedAtByID map[string]time.Time           `json:"feed_included_at_by_id,omitempty"`
 }
 
 // CatalogOverride holds admin-owned state over imported entries.
@@ -188,6 +190,7 @@ type Manager struct {
 	pending   map[string][]rulecatalog.Entry
 	overrides map[string]CatalogOverride
 	rollbacks []RollbackRecord
+	feedSeen  map[string]time.Time
 
 	targetIPs      []net.IP
 	lastResolve    time.Time
@@ -206,6 +209,7 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		entries:   map[string]rulecatalog.Entry{},
 		pending:   map[string][]rulecatalog.Entry{},
 		overrides: map[string]CatalogOverride{},
+		feedSeen:  map[string]time.Time{},
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -233,6 +237,9 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		}
 		if st.Rollbacks != nil {
 			m.rollbacks = st.Rollbacks
+		}
+		if st.FeedIncludedAtByID != nil {
+			m.feedSeen = st.FeedIncludedAtByID
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -340,6 +347,7 @@ func (m *Manager) DeleteSource(id string) error {
 		if e.Source.Name == id {
 			delete(m.entries, eid)
 			delete(m.overrides, eid)
+			delete(m.feedSeen, eid)
 		}
 	}
 	err := m.saveLocked()
@@ -552,14 +560,15 @@ func (m *Manager) catalogRowLocked(e rulecatalog.Entry) CatalogRow {
 
 func (m *Manager) catalogRowFromEntryLocked(e rulecatalog.Entry, ov CatalogOverride) CatalogRow {
 	return CatalogRow{
-		Entry:          e,
-		SourceIDs:      []string{e.Source.Name},
-		SourcePriority: m.sourcePriorityLocked(e.Source.Name),
-		Action:         ov.Action,
-		Notes:          ov.Notes,
-		RewriteEnabled: rewriteEnabled(e, ov, m.cfg),
-		RewriteReason:  ov.RewriteReason,
-		LastChangedBy:  ov.LastChangedBy,
+		Entry:              e,
+		SourceIDs:          []string{e.Source.Name},
+		SourcePriority:     m.sourcePriorityLocked(e.Source.Name),
+		Action:             ov.Action,
+		Notes:              ov.Notes,
+		RewriteEnabled:     rewriteEnabled(e, ov, m.cfg),
+		RewriteReason:      ov.RewriteReason,
+		LastChangedBy:      ov.LastChangedBy,
+		LastFeedIncludedAt: m.feedSeen[e.ID],
 	}
 }
 
@@ -936,6 +945,10 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	for k, v := range m.overrides {
 		overrides[k] = v
 	}
+	feedSeen := make(map[string]time.Time, len(m.feedSeen))
+	for k, v := range m.feedSeen {
+		feedSeen[k] = v
+	}
 	sources := make([]Source, 0, len(m.sources))
 	for _, src := range m.sources {
 		sources = append(sources, src)
@@ -1030,6 +1043,7 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 			for _, line := range item.Lines {
 				fmt.Fprintf(&b, "! entry_id=%s source=%s category=%s confidence=%s\n%s\n", item.EntryID, strings.Join(item.SourceIDs, ","), item.Category, item.Confidence, line)
 			}
+			feedSeen[item.EntryID] = now
 			status.ItemCount++
 		} else {
 			status.ExcludedCount++
@@ -1037,9 +1051,17 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		items = append(items, item)
 	}
 	status.StaleSources = len(staleSources)
+	var saveErr error
 	m.mu.Lock()
 	m.lastGenerated = now
+	if !includeRows {
+		m.feedSeen = feedSeen
+		saveErr = m.saveLocked()
+	}
 	m.mu.Unlock()
+	if saveErr != nil {
+		return Preview{Status: status, Items: items, Lines: b.String(), Sources: sources}, saveErr
+	}
 	p := Preview{Status: status, Items: items, Lines: b.String(), Sources: sources}
 	if includeRows {
 		p.Entries = m.CatalogRows()
@@ -1239,6 +1261,9 @@ func (m *Manager) saveLocked() error {
 	for _, e := range m.entries {
 		st.Entries = append(st.Entries, e)
 	}
+	if len(m.feedSeen) > 0 {
+		st.FeedIncludedAtByID = m.feedSeen
+	}
 	sort.Slice(st.Sources, func(i, j int) bool { return st.Sources[i].ID < st.Sources[j].ID })
 	sort.Slice(st.Entries, func(i, j int) bool { return st.Entries[i].ID < st.Entries[j].ID })
 	raw, err := json.MarshalIndent(st, "", "  ")
@@ -1256,6 +1281,7 @@ func (m *Manager) applyEntriesLocked(sourceID string, entries []rulecatalog.Entr
 	for eid, e := range m.entries {
 		if e.Source.Name == sourceID {
 			delete(m.entries, eid)
+			delete(m.feedSeen, eid)
 		}
 	}
 	for _, e := range entries {
