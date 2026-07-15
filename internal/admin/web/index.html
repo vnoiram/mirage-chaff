@@ -895,7 +895,26 @@ async function checkManagedAGHStatus(){ try{
 } }
 function exportManagedFeedSnapshot(){ window.location.href='/api/agh/rewrite-feed/export'; }
 async function applyManagedRollback(id){ if(!confirm('Apply rollback '+id+'?'))return; try{ await api('POST','/api/agh/managed-catalog/rollbacks/'+id+'/apply'); render(); }catch(e){ alert(e.message);} }
-async function previewManagedFeed(){ try{ const p=await api('GET','/api/agh/rewrite-feed/preview'); document.getElementById('agh-feed').textContent=p.lines||''; document.getElementById('agh-feed-items').innerHTML=`<div class="grid"><table><thead><tr><th>domain</th><th>included</th><th>reason</th><th>source</th></tr></thead><tbody>${(p.items||[]).slice(0,500).map(i=>`<tr><td>${esc(i.domain)}</td><td>${i.included?'yes':'no'}</td><td>${esc(i.reason)}</td><td>${esc((i.source_ids||[]).join(','))}</td></tr>`).join('')}</tbody></table></div>`; }catch(e){ alert(e.message);} }
+function managedFeedPreviewDiagnostics(p){
+  const st=p.status||{};
+  return `<div class="kv" style="margin-bottom:10px">
+    <div>target output</div><div>${esc(managedTargetState(st))}</div>
+    <div>target mode</div><div>${esc(st.target_mode||'resolved_ip')}</div>
+    <div>default preset</div><div>${esc(st.default_preset||'balanced')}</div>
+    <div>preview counts</div><div>${Number(st.item_count||0)} included / ${Number(st.excluded_count||0)} excluded / ${Number(st.conflict_count||0)} conflicts</div>
+  </div>`;
+}
+function managedFeedItemLineCount(i){ return (i.lines||[]).length; }
+function managedFeedPreviewTable(items){
+  const shown=(items||[]).slice(0,500);
+  const note=(items||[]).length>500?` <span class="muted">showing 500 of ${(items||[]).length}</span>`:'';
+  return `<h3>feed items${note}</h3><div class="grid"><table><thead><tr><th>domain</th><th>included</th><th>reason</th><th>source trace</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite</th><th>lines</th></tr></thead><tbody>${shown.map(i=>`<tr><td>${esc(i.domain)}</td><td>${i.included?'yes':'no'}</td><td>${esc(i.reason)}</td><td>${managedSourceTraceRefs(i.source_refs,i.source_ids||[])}</td><td>${esc(i.category||'')}</td><td>${esc(i.resource_type||'')}</td><td>${esc(i.review_status||'')}</td><td>${i.rewrite_enabled?'yes':'no'}</td><td>${managedFeedItemLineCount(i)}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">none</td></tr>'}</tbody></table></div>`;
+}
+async function previewManagedFeed(){ try{
+  const p=await api('GET','/api/agh/rewrite-feed/preview');
+  document.getElementById('agh-feed').textContent=p.lines||'';
+  document.getElementById('agh-feed-items').innerHTML=managedFeedPreviewDiagnostics(p)+managedFeedPreviewTable(p.items||[]);
+}catch(e){ alert(e.message);} }
 function filterManagedCatalog(){
   const q=(document.getElementById('agh-cat-filter')?.value||'').toLowerCase();
   const source=document.getElementById('agh-cat-source')?.value||'';
