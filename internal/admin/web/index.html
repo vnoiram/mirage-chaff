@@ -415,6 +415,13 @@ function managedSchedulerConfigForm(scheduler){
     <span id="agh-scheduler-config-result" class="muted"></span>
   </div>`;
 }
+function managedSchedulerDiagnostics(scheduler){
+  const h=scheduler.source_health||{};
+  const health=['healthy','pending','stale','failing','paused','never synced','unknown'].map(k=>`${k}: ${Number(h[k]||0)}`).join(' / ');
+  const next=scheduler.next_sync?new Date(scheduler.next_sync).toLocaleString():'none scheduled';
+  const large=scheduler.large_change_requires_review?`review if removed+changed >= ${Number(scheduler.large_change_threshold_count||0)} or ${Number(scheduler.large_change_threshold_percent||0)}%`:'large change review disabled';
+  return `<div class="kv"><div>scheduler</div><div>${scheduler.enabled?'enabled':'disabled'}</div><div>source health</div><div>${esc(health)} / total: ${Number(h.total||0)}</div><div>next sync</div><div>${esc(next)}</div><div>large change rule</div><div>${esc(large)}</div></div>`;
+}
 
 async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
@@ -485,7 +492,7 @@ async function viewAGHManaged(v){
     ${conflicts.slice(0,200).map(c=>`<tr data-managed-conflict="${esc(c.id)}"><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
     <td>${has('agh.manage')?managedConflictControls(c):''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
-  v.appendChild(el(`<div class="card"><h2>Scheduler Settings</h2>${managedSchedulerConfigForm(scheduler)}</div>`));
+  v.appendChild(el(`<div class="card"><h2>Scheduler Settings</h2>${managedSchedulerDiagnostics(scheduler)}<div style="margin-top:10px">${managedSchedulerConfigForm(scheduler)}</div></div>`));
   v.appendChild(el(`<div class="card"><h2>Sources</h2>
     ${has('agh.manage')?`<div class="row">
       <select id="agh-src-type"><option value="filter_url">filter URL</option><option value="manual">manual</option><option value="agh_custom_rules">AGH custom rules</option><option value="agh_query_log_cname">AGH query log CNAME</option></select>
