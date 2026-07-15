@@ -95,6 +95,8 @@ type FeedGenerationRecord struct {
 	Time           time.Time `json:"time"`
 	IncludedCount  int       `json:"included_count"`
 	ExcludedCount  int       `json:"excluded_count"`
+	AddedCount     int       `json:"added_count"`
+	RemovedCount   int       `json:"removed_count"`
 	ConflictCount  int       `json:"conflict_count"`
 	TargetMode     string    `json:"target_mode"`
 	EmergencyEmpty bool      `json:"emergency_empty"`
@@ -177,6 +179,7 @@ type state struct {
 	Rollbacks          []RollbackRecord               `json:"rollbacks,omitempty"`
 	FeedIncludedAtByID map[string]time.Time           `json:"feed_included_at_by_id,omitempty"`
 	FeedHistory        []FeedGenerationRecord         `json:"feed_history,omitempty"`
+	FeedSnapshotIDs    []string                       `json:"feed_snapshot_entry_ids,omitempty"`
 }
 
 // CatalogOverride holds admin-owned state over imported entries.
@@ -202,14 +205,15 @@ type Manager struct {
 	resolver Resolver
 	client   *http.Client
 
-	mu          sync.RWMutex
-	sources     map[string]Source
-	entries     map[string]rulecatalog.Entry
-	pending     map[string][]rulecatalog.Entry
-	overrides   map[string]CatalogOverride
-	rollbacks   []RollbackRecord
-	feedSeen    map[string]time.Time
-	feedHistory []FeedGenerationRecord
+	mu           sync.RWMutex
+	sources      map[string]Source
+	entries      map[string]rulecatalog.Entry
+	pending      map[string][]rulecatalog.Entry
+	overrides    map[string]CatalogOverride
+	rollbacks    []RollbackRecord
+	feedSeen     map[string]time.Time
+	feedSnapshot map[string]bool
+	feedHistory  []FeedGenerationRecord
 
 	targetIPs      []net.IP
 	lastResolve    time.Time
@@ -220,15 +224,16 @@ type Manager struct {
 // Open loads or creates a manager store.
 func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, error) {
 	m := &Manager{
-		path:      path,
-		cfg:       cfg,
-		resolver:  res,
-		client:    &http.Client{Timeout: durationOr(cfg.Scheduler.SyncTimeout, 30*time.Second)},
-		sources:   map[string]Source{},
-		entries:   map[string]rulecatalog.Entry{},
-		pending:   map[string][]rulecatalog.Entry{},
-		overrides: map[string]CatalogOverride{},
-		feedSeen:  map[string]time.Time{},
+		path:         path,
+		cfg:          cfg,
+		resolver:     res,
+		client:       &http.Client{Timeout: durationOr(cfg.Scheduler.SyncTimeout, 30*time.Second)},
+		sources:      map[string]Source{},
+		entries:      map[string]rulecatalog.Entry{},
+		pending:      map[string][]rulecatalog.Entry{},
+		overrides:    map[string]CatalogOverride{},
+		feedSeen:     map[string]time.Time{},
+		feedSnapshot: map[string]bool{},
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -262,6 +267,9 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		}
 		if st.FeedHistory != nil {
 			m.feedHistory = st.FeedHistory
+		}
+		for _, id := range st.FeedSnapshotIDs {
+			m.feedSnapshot[id] = true
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -1042,7 +1050,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 		status.ExcludedCount = len(entries)
 		if recordHistory {
 			m.mu.Lock()
-			err := m.persistGenerationLocked(status, nil, now, false)
+			err := m.persistGenerationLocked(status, nil, nil, now, false)
 			status.History = feedHistoryNewestFirst(m.feedHistory)
 			m.mu.Unlock()
 			if err != nil {
@@ -1073,6 +1081,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 		return entries[i].ID < entries[j].ID
 	})
 	var items []FeedItem
+	var includedIDs []string
 	for _, e := range entries {
 		ov := overrides[e.ID]
 		item := m.feedItem(e, ov, cfg, ips, conflictKeys[entryKey(e)])
@@ -1090,6 +1099,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 				fmt.Fprintf(&b, "! entry_id=%s source=%s category=%s confidence=%s\n%s\n", item.EntryID, strings.Join(item.SourceIDs, ","), item.Category, item.Confidence, line)
 			}
 			feedSeen[item.EntryID] = now
+			includedIDs = append(includedIDs, item.EntryID)
 			status.ItemCount++
 		} else {
 			status.ExcludedCount++
@@ -1100,7 +1110,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	var saveErr error
 	m.mu.Lock()
 	if recordHistory {
-		saveErr = m.persistGenerationLocked(status, feedSeen, now, true)
+		saveErr = m.persistGenerationLocked(status, feedSeen, includedIDs, now, true)
 		status.History = feedHistoryNewestFirst(m.feedHistory)
 	} else {
 		m.lastGenerated = now
@@ -1122,15 +1132,19 @@ func (m *Manager) ListFeedHistory() []FeedGenerationRecord {
 	return feedHistoryNewestFirst(m.feedHistory)
 }
 
-func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string]time.Time, generatedAt time.Time, updateFeedSeen bool) error {
+func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string]time.Time, includedIDs []string, generatedAt time.Time, updateFeedSeen bool) error {
 	m.lastGenerated = generatedAt
 	if updateFeedSeen {
 		m.feedSeen = feedSeen
 	}
+	added, removed := feedSnapshotDelta(m.feedSnapshot, includedIDs)
+	m.feedSnapshot = feedSnapshotFromIDs(includedIDs)
 	m.feedHistory = append(m.feedHistory, FeedGenerationRecord{
 		Time:           generatedAt,
 		IncludedCount:  status.ItemCount,
 		ExcludedCount:  status.ExcludedCount,
+		AddedCount:     added,
+		RemovedCount:   removed,
 		ConflictCount:  status.ConflictCount,
 		TargetMode:     status.TargetMode,
 		EmergencyEmpty: status.EmergencyEmpty,
@@ -1139,6 +1153,31 @@ func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string
 		m.feedHistory = m.feedHistory[len(m.feedHistory)-50:]
 	}
 	return m.saveLocked()
+}
+
+func feedSnapshotDelta(prev map[string]bool, nextIDs []string) (added, removed int) {
+	next := feedSnapshotFromIDs(nextIDs)
+	for id := range next {
+		if !prev[id] {
+			added++
+		}
+	}
+	for id := range prev {
+		if !next[id] {
+			removed++
+		}
+	}
+	return added, removed
+}
+
+func feedSnapshotFromIDs(ids []string) map[string]bool {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 func feedHistoryNewestFirst(history []FeedGenerationRecord) []FeedGenerationRecord {
@@ -1345,6 +1384,9 @@ func (m *Manager) saveLocked() error {
 	}
 	if len(m.feedHistory) > 0 {
 		st.FeedHistory = m.feedHistory
+	}
+	if len(m.feedSnapshot) > 0 {
+		st.FeedSnapshotIDs = sortedKeys(m.feedSnapshot)
 	}
 	sort.Slice(st.Sources, func(i, j int) bool { return st.Sources[i].ID < st.Sources[j].ID })
 	sort.Slice(st.Entries, func(i, j int) bool { return st.Entries[i].ID < st.Entries[j].ID })

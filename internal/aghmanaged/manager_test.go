@@ -286,14 +286,54 @@ func TestManagedFeedRecordsGenerationHistory(t *testing.T) {
 		t.Fatalf("history = %+v", p.Status.History)
 	}
 	rec := p.Status.History[0]
-	if rec.IncludedCount != 1 || rec.ExcludedCount != 1 || rec.TargetMode != "static_ip" || rec.EmergencyEmpty {
+	if rec.IncludedCount != 1 || rec.ExcludedCount != 1 || rec.AddedCount != 1 || rec.RemovedCount != 0 || rec.TargetMode != "static_ip" || rec.EmergencyEmpty {
 		t.Fatalf("history record = %+v", rec)
+	}
+	src.Content = "||included.example.net^\n||new.example.net^\n"
+	if _, err := m.UpsertSource(src); err != nil {
+		t.Fatal(err)
+	}
+	synced, err := m.SyncSource(context.Background(), src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if synced.PendingReview {
+		if _, err := m.ApproveSource(src.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err = m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Status.History) != 2 {
+		t.Fatalf("history after second generation = %+v", p.Status.History)
+	}
+	rec = p.Status.History[0]
+	if rec.IncludedCount != 2 || rec.ExcludedCount != 0 || rec.AddedCount != 1 || rec.RemovedCount != 0 {
+		t.Fatalf("second history record = %+v", rec)
+	}
+	off := false
+	for _, row := range m.CatalogRows() {
+		if row.Match.Domain == "included.example.net" {
+			if _, err := m.PatchEntry(row.ID, CatalogOverride{RewriteEnabled: &off}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	p, err = m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = p.Status.History[0]
+	if rec.IncludedCount != 1 || rec.ExcludedCount != 1 || rec.AddedCount != 0 || rec.RemovedCount != 1 {
+		t.Fatalf("third history record = %+v", rec)
 	}
 	reopened, err := Open(path, cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := reopened.ListFeedHistory(); len(got) != 1 || got[0].IncludedCount != 1 {
+	if got := reopened.ListFeedHistory(); len(got) != 3 || got[0].IncludedCount != 1 || got[0].RemovedCount != 1 {
 		t.Fatalf("reopened history = %+v", got)
 	}
 }
