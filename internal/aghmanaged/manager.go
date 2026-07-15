@@ -1299,7 +1299,13 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 				ips = cachedIPs
 				targetCacheUsed = true
 			}
+			m.mu.Lock()
+			m.lastResolveErr = lastResolveErr
+			m.mu.Unlock()
 		}
+	}
+	if (cfg.TargetMode == "" || cfg.TargetMode == "resolved_ip") && len(ips) == 0 && lastResolveErr == "" {
+		lastResolveErr = "no target IPs resolved"
 	}
 
 	var b bytes.Buffer
@@ -1325,6 +1331,15 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	fmt.Fprintf(&b, "! mirage-chaff managed rewrites\n! generated_at=%s\n! target_mode=%s target_name=%s\n", now.Format(time.RFC3339), status.TargetMode, cfg.TargetName)
 	if targetCacheUsed {
 		fmt.Fprintf(&b, "! target_resolution=stale-cache last_success=%s error=%s\n", lastResolve.Format(time.RFC3339), lastResolveErr)
+	}
+	if (cfg.TargetMode == "" || cfg.TargetMode == "resolved_ip") && len(ips) == 0 && cfg.AutoEmergencyEmptyOnTargetFailure && recordHistory {
+		cfg.EmergencyEmpty = true
+		status.EmergencyEmpty = true
+		fmt.Fprintf(&b, "! target_resolution=failed error=%s\n! emergency_empty=auto target_resolution_failed=true\n", lastResolveErr)
+		m.mu.Lock()
+		m.cfg.EmergencyEmpty = true
+		m.lastResolveErr = lastResolveErr
+		m.mu.Unlock()
 	}
 	if cfg.EmergencyEmpty || !cfg.Enabled {
 		fmt.Fprintf(&b, "! feed empty: enabled=%v emergency_empty=%v\n", cfg.Enabled, cfg.EmergencyEmpty)

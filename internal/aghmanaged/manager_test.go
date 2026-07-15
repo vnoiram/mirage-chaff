@@ -857,6 +857,40 @@ func TestStaleTargetTTLRejectsExpiredCachedIPs(t *testing.T) {
 	}
 }
 
+func TestAutoEmergencyEmptyOnTargetFailure(t *testing.T) {
+	cfg := testConfig()
+	cfg.AutoEmergencyEmptyOnTargetFailure = true
+	path := filepath.Join(t.TempDir(), "managed.json")
+	m, err := Open(path, cfg, fakeResolver{err: errors.New("dns down")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||ads.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Status.EmergencyEmpty || !strings.Contains(p.Lines, "emergency_empty=auto target_resolution_failed=true") {
+		t.Fatalf("target failure did not auto-enable emergency empty: status=%+v lines=\n%s", p.Status, p.Lines)
+	}
+	if !m.Config().EmergencyEmpty {
+		t.Fatal("manager emergency state was not updated")
+	}
+	reopened, err := Open(path, cfg, fakeResolver{ips: []net.IP{net.ParseIP("192.0.2.10")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.Config().EmergencyEmpty {
+		t.Fatal("auto emergency state was not persisted")
+	}
+}
+
 func TestFreshCachedTargetIsMarkedStaleCache(t *testing.T) {
 	cfg := testConfig()
 	cfg.StaleTargetTTL = "1h"

@@ -521,7 +521,8 @@ function managedTargetResultHTML(r){
       ['target name',r.target_name||''],
       ['static IPv4',(r.static_ipv4||[]).join(', ')||'none'],
       ['static IPv6',(r.static_ipv6||[]).join(', ')||'none'],
-      ['stale target TTL',r.stale_target_ttl||'']
+      ['stale target TTL',r.stale_target_ttl||''],
+      ['auto emergency on target failure',r.auto_emergency_empty_on_target_failure?'enabled':'disabled']
     ];
     return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload" data-scope="target settings">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(AGH_MANAGED_CONFIG_RELOAD_RESULT)}</span></div></div>`;
   }
@@ -595,13 +596,14 @@ function managedSourceDetailHTML(){
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
-  if(readonly) return `<div class="kv"><div>mode</div><div>${esc(mode)}</div><div>target name</div><div>${esc(target.target_name||'')}</div><div>static IPv4</div><div>${esc((target.static_ipv4||[]).join(', ')||'none')}</div><div>static IPv6</div><div>${esc((target.static_ipv6||[]).join(', ')||'none')}</div><div>stale target TTL</div><div>${esc(target.stale_target_ttl||'')}</div></div>`;
+  if(readonly) return `<div class="kv"><div>mode</div><div>${esc(mode)}</div><div>target name</div><div>${esc(target.target_name||'')}</div><div>static IPv4</div><div>${esc((target.static_ipv4||[]).join(', ')||'none')}</div><div>static IPv6</div><div>${esc((target.static_ipv6||[]).join(', ')||'none')}</div><div>stale target TTL</div><div>${esc(target.stale_target_ttl||'')}</div><div>auto emergency on target failure</div><div>${target.auto_emergency_empty_on_target_failure?'enabled':'disabled'}</div></div>`;
   return `<div class="row">
     <select id="agh-target-mode" onchange="updateManagedTargetModeFields()"><option value="resolved_ip" ${mode==='resolved_ip'?'selected':''}>resolved_ip</option><option value="cname" ${mode==='cname'?'selected':''}>cname</option><option value="static_ip" ${mode==='static_ip'?'selected':''}>static_ip</option></select>
     <input id="agh-target-name" value="${esc(target.target_name||'')}" placeholder="target name" ${mode==='static_ip'?'disabled':''}>
     <input id="agh-target-static-ipv4" value="${esc((target.static_ipv4||[]).join(', '))}" placeholder="static IPv4" ${mode==='static_ip'?'':'disabled'}>
     <input id="agh-target-static-ipv6" value="${esc((target.static_ipv6||[]).join(', '))}" placeholder="static IPv6" ${mode==='static_ip'?'':'disabled'}>
     <input id="agh-target-stale-ttl" value="${esc(target.stale_target_ttl||'24h')}" placeholder="stale target TTL" style="width:130px">
+    <label><input type="checkbox" id="agh-target-auto-emergency" ${target.auto_emergency_empty_on_target_failure?'checked':''}> auto emergency on target failure</label>
     <button class="act" data-cmd="saveManagedTargetConfig">Save target settings</button>
     <span id="agh-target-config-result" class="muted">${managedTargetResultHTML(AGH_MANAGED_TARGET_CONFIG_RESULT)}</span>
   </div>`;
@@ -1561,7 +1563,8 @@ async function saveManagedTargetConfig(){ try{
     target_name:document.getElementById('agh-target-name')?.value||'',
     static_ipv4:splitTargetIPs(document.getElementById('agh-target-static-ipv4')?.value||''),
     static_ipv6:splitTargetIPs(document.getElementById('agh-target-static-ipv6')?.value||''),
-    stale_target_ttl:document.getElementById('agh-target-stale-ttl')?.value||'24h'
+    stale_target_ttl:document.getElementById('agh-target-stale-ttl')?.value||'24h',
+    auto_emergency_empty_on_target_failure:!!document.getElementById('agh-target-auto-emergency')?.checked
   };
   const r=await api('PUT','/api/agh/rewrite-feed/target',body);
   AGH_MANAGED_TARGET_CONFIG_RESULT=Object.assign({action:'save target settings'},r);

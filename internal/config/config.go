@@ -179,16 +179,17 @@ type AGHSyncConfig struct {
 // AGHManagedConfig controls the managed rewrite feed that AdGuard Home can
 // subscribe to as a normal DNS blocklist/filter list.
 type AGHManagedConfig struct {
-	Enabled        bool                `toml:"enabled" reload:"safe"`
-	FeedPath       string              `toml:"feed_path" reload:"safe"`
-	TargetName     string              `toml:"target_name" reload:"safe"`
-	TargetMode     string              `toml:"target_mode" reload:"safe"` // resolved_ip|cname|static_ip
-	StaticIPv4     []string            `toml:"static_ipv4" reload:"safe"`
-	StaticIPv6     []string            `toml:"static_ipv6" reload:"safe"`
-	EmergencyEmpty bool                `toml:"emergency_empty" reload:"safe"`
-	DefaultPreset  string              `toml:"default_preset" reload:"safe"` // conservative|balanced|aggressive
-	StaleTargetTTL string              `toml:"stale_target_ttl" reload:"safe"`
-	Scheduler      AGHManagedScheduler `toml:"scheduler" reload:"safe"`
+	Enabled                           bool                `toml:"enabled" reload:"safe"`
+	FeedPath                          string              `toml:"feed_path" reload:"safe"`
+	TargetName                        string              `toml:"target_name" reload:"safe"`
+	TargetMode                        string              `toml:"target_mode" reload:"safe"` // resolved_ip|cname|static_ip
+	StaticIPv4                        []string            `toml:"static_ipv4" reload:"safe"`
+	StaticIPv6                        []string            `toml:"static_ipv6" reload:"safe"`
+	EmergencyEmpty                    bool                `toml:"emergency_empty" reload:"safe"`
+	AutoEmergencyEmptyOnTargetFailure bool                `toml:"auto_emergency_empty_on_target_failure" reload:"safe"`
+	DefaultPreset                     string              `toml:"default_preset" reload:"safe"` // conservative|balanced|aggressive
+	StaleTargetTTL                    string              `toml:"stale_target_ttl" reload:"safe"`
+	Scheduler                         AGHManagedScheduler `toml:"scheduler" reload:"safe"`
 }
 
 // AGHManagedScheduler controls periodic import of managed rewrite sources.

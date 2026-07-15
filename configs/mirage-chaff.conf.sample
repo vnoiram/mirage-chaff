@@ -107,6 +107,7 @@ target_mode = "resolved_ip" # resolved_ip | cname | static_ip
 static_ipv4 = []
 static_ipv6 = []
 emergency_empty = false
+auto_emergency_empty_on_target_failure = false
 default_preset = "balanced" # conservative | balanced | aggressive
 stale_target_ttl = "24h"
 

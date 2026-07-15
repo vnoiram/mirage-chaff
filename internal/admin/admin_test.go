@@ -1038,18 +1038,20 @@ target_mode = "resolved_ip"
 target_name = "old.lan"
 static_ipv4 = []
 static_ipv6 = []
+auto_emergency_empty_on_target_failure = false
 stale_target_ttl = "24h"
 
 [agh_managed_rewrites.scheduler]
 default_sync_interval = "12h"
 `)
 	cfg := config.AGHManagedConfig{
-		Enabled:        true,
-		FeedPath:       "/agh/managed-rewrites.txt",
-		TargetName:     "old.lan",
-		TargetMode:     "resolved_ip",
-		StaleTargetTTL: "24h",
-		Scheduler:      config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+		Enabled:                           true,
+		FeedPath:                          "/agh/managed-rewrites.txt",
+		TargetName:                        "old.lan",
+		TargetMode:                        "resolved_ip",
+		StaleTargetTTL:                    "24h",
+		AutoEmergencyEmptyOnTargetFailure: false,
+		Scheduler:                         config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
 	}
 	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
 	if err != nil {
@@ -1078,7 +1080,7 @@ default_sync_interval = "12h"
 
 	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
 	rr = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPut, "/api/agh/rewrite-feed/target", strings.NewReader(`{"target_mode":"static_ip","target_name":"new.lan","static_ipv4":["192.0.2.55"],"static_ipv6":["2001:db8::55"],"stale_target_ttl":"6h"}`))
+	req = httptest.NewRequest(http.MethodPut, "/api/agh/rewrite-feed/target", strings.NewReader(`{"target_mode":"static_ip","target_name":"new.lan","static_ipv4":["192.0.2.55"],"static_ipv6":["2001:db8::55"],"stale_target_ttl":"6h","auto_emergency_empty_on_target_failure":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CSRF-Token", adminCSRF)
 	req.AddCookie(adminCookie)
@@ -1097,6 +1099,7 @@ default_sync_interval = "12h"
 		`target_name = "new.lan"`,
 		`static_ipv4 = ["192.0.2.55"]`,
 		`static_ipv6 = ["2001:db8::55"]`,
+		`auto_emergency_empty_on_target_failure = true`,
 		`stale_target_ttl = "6h"`,
 		`[agh_managed_rewrites.scheduler]`,
 	} {

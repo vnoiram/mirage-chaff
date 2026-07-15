@@ -445,11 +445,12 @@ func (s *Server) handleAGHManagedFeedStatus(w http.ResponseWriter, r *http.Reque
 }
 
 type aghManagedTargetConfigRequest struct {
-	TargetMode     string   `json:"target_mode"`
-	TargetName     string   `json:"target_name"`
-	StaticIPv4     []string `json:"static_ipv4"`
-	StaticIPv6     []string `json:"static_ipv6"`
-	StaleTargetTTL string   `json:"stale_target_ttl"`
+	TargetMode                        string   `json:"target_mode"`
+	TargetName                        string   `json:"target_name"`
+	StaticIPv4                        []string `json:"static_ipv4"`
+	StaticIPv6                        []string `json:"static_ipv6"`
+	StaleTargetTTL                    string   `json:"stale_target_ttl"`
+	AutoEmergencyEmptyOnTargetFailure bool     `json:"auto_emergency_empty_on_target_failure"`
 }
 
 type aghManagedSchedulerConfigRequest struct {
@@ -473,12 +474,13 @@ func (s *Server) handleAGHManagedTargetConfig(w http.ResponseWriter, r *http.Req
 	status := s.deps.AGHManaged.Status(r.Context())
 	status.FeedURL = aghManagedFeedURL(r, status.FeedPath)
 	writeJSON(w, map[string]any{
-		"target_mode":      cfg.TargetMode,
-		"target_name":      cfg.TargetName,
-		"static_ipv4":      cfg.StaticIPv4,
-		"static_ipv6":      cfg.StaticIPv6,
-		"stale_target_ttl": cfg.StaleTargetTTL,
-		"status":           status,
+		"target_mode":                            cfg.TargetMode,
+		"target_name":                            cfg.TargetName,
+		"static_ipv4":                            cfg.StaticIPv4,
+		"static_ipv6":                            cfg.StaticIPv6,
+		"stale_target_ttl":                       cfg.StaleTargetTTL,
+		"auto_emergency_empty_on_target_failure": cfg.AutoEmergencyEmptyOnTargetFailure,
+		"status":                                 status,
 	})
 }
 
@@ -505,14 +507,15 @@ func (s *Server) handleAGHManagedTargetConfigPut(w http.ResponseWriter, r *http.
 	status := s.deps.AGHManaged.Status(r.Context())
 	status.FeedURL = aghManagedFeedURL(r, status.FeedPath)
 	writeJSON(w, map[string]any{
-		"status":           "ok",
-		"note":             "call /api/reload to apply",
-		"target_mode":      cfg.AGHManaged.TargetMode,
-		"target_name":      cfg.AGHManaged.TargetName,
-		"static_ipv4":      cfg.AGHManaged.StaticIPv4,
-		"static_ipv6":      cfg.AGHManaged.StaticIPv6,
-		"stale_target_ttl": cfg.AGHManaged.StaleTargetTTL,
-		"feed_status":      status,
+		"status":                                 "ok",
+		"note":                                   "call /api/reload to apply",
+		"target_mode":                            cfg.AGHManaged.TargetMode,
+		"target_name":                            cfg.AGHManaged.TargetName,
+		"static_ipv4":                            cfg.AGHManaged.StaticIPv4,
+		"static_ipv6":                            cfg.AGHManaged.StaticIPv6,
+		"stale_target_ttl":                       cfg.AGHManaged.StaleTargetTTL,
+		"auto_emergency_empty_on_target_failure": cfg.AGHManaged.AutoEmergencyEmptyOnTargetFailure,
+		"feed_status":                            status,
 	})
 }
 
@@ -781,6 +784,7 @@ func updateAGHManagedTargetConfigFile(path string, req aghManagedTargetConfigReq
 	cfg.AGHManaged.StaticIPv4 = cleanStringList(req.StaticIPv4)
 	cfg.AGHManaged.StaticIPv6 = cleanStringList(req.StaticIPv6)
 	cfg.AGHManaged.StaleTargetTTL = strings.TrimSpace(req.StaleTargetTTL)
+	cfg.AGHManaged.AutoEmergencyEmptyOnTargetFailure = req.AutoEmergencyEmptyOnTargetFailure
 	if err := cfg.Check(); err != nil {
 		return config.Config{}, "", fmt.Errorf("invalid config: %w", err)
 	}
@@ -855,6 +859,7 @@ func patchAGHManagedTargetConfig(raw string, cfg config.AGHManagedConfig) string
 		`target_name = ` + tomlString(cfg.TargetName),
 		`static_ipv4 = ` + tomlStringArray(cfg.StaticIPv4),
 		`static_ipv6 = ` + tomlStringArray(cfg.StaticIPv6),
+		`auto_emergency_empty_on_target_failure = ` + tomlBool(cfg.AutoEmergencyEmptyOnTargetFailure),
 		`stale_target_ttl = ` + tomlString(stringDefault(cfg.StaleTargetTTL, "24h")),
 	}
 	if start == -1 {
@@ -1030,8 +1035,8 @@ func cleanStringList(values []string) []string {
 
 func aghManagedTargetConfigAuditDetail(cfg config.AGHManagedConfig) string {
 	return fmt.Sprintf(
-		"target_mode=%s target_name=%s static_ipv4=%s static_ipv6=%s stale_target_ttl=%s",
-		stringDefault(cfg.TargetMode, "resolved_ip"), cfg.TargetName, strings.Join(cfg.StaticIPv4, ","), strings.Join(cfg.StaticIPv6, ","), stringDefault(cfg.StaleTargetTTL, "24h"),
+		"target_mode=%s target_name=%s static_ipv4=%s static_ipv6=%s stale_target_ttl=%s auto_emergency_empty_on_target_failure=%v",
+		stringDefault(cfg.TargetMode, "resolved_ip"), cfg.TargetName, strings.Join(cfg.StaticIPv4, ","), strings.Join(cfg.StaticIPv6, ","), stringDefault(cfg.StaleTargetTTL, "24h"), cfg.AutoEmergencyEmptyOnTargetFailure,
 	)
 }
 
