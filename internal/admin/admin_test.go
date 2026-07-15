@@ -166,7 +166,9 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"managedSourcePreview",
 		"managedSourceEntryTable",
 		"managedSourceTrace",
+		"managedSourceTraceRefs",
 		"managedSourceTraceSearch",
+		"managedSourceTraceRefSearch",
 		"source trace",
 		"toggleManagedSourceEntries",
 		"showMoreManagedSourceEntries",
@@ -1395,6 +1397,9 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	if resp.Entries[0].Match.Domain != "a.example.net" || resp.Entries[0].RewriteEnabled || resp.Entries[0].RewriteReason != "viewer read" {
 		t.Fatalf("source entry = %+v", resp.Entries[0])
 	}
+	if len(resp.Entries[0].SourceRefs) != 1 || resp.Entries[0].SourceRefs[0].ID != sourceA.ID || resp.Entries[0].SourceRefs[0].Name != "manual-a" {
+		t.Fatalf("source refs = %+v", resp.Entries[0].SourceRefs)
+	}
 
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/agh/managed-catalog", nil)
@@ -1411,7 +1416,7 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 	var sawUnsupported bool
 	for _, row := range catalogResp.Entries {
-		if row.Unsupported && row.Match.Domain == "b.example.net" && len(row.SourceIDs) == 1 && row.SourceIDs[0] == sourceB.ID {
+		if row.Unsupported && row.Match.Domain == "b.example.net" && len(row.SourceIDs) == 1 && row.SourceIDs[0] == sourceB.ID && len(row.SourceRefs) == 1 && row.SourceRefs[0].ID == sourceB.ID {
 			sawUnsupported = true
 		}
 	}

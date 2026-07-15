@@ -294,17 +294,34 @@ function managedSourceTrace(ids){
     return `<div><code>${esc(id)}</code>${name}${type}${url}</div>`;
   }).join('')||'<span class="muted">none</span>';
 }
+function managedSourceTraceRefs(refs,ids){
+  if((refs||[]).length){
+    return refs.map(s=>{
+      const id=s.id||'';
+      const name=s.name&&s.name!==id?` ${esc(s.name)}`:'';
+      const type=s.type?` (${esc(s.type)})`:'';
+      const url=s.url?` <small>${esc(s.url)}</small>`:'';
+      const priority=s.priority?` priority ${Number(s.priority)}`:'';
+      return `<div><code>${esc(id)}</code>${name}${type}${url}${priority}</div>`;
+    }).join('');
+  }
+  return managedSourceTrace(ids||[]);
+}
 function managedSourceTraceSearch(ids){
   return (ids||[]).map(id=>{
     const s=managedSourceByID(id)||{};
     return [id,s.name,s.type,s.url].join(' ');
   }).join(' ');
 }
+function managedSourceTraceRefSearch(refs,ids){
+  if((refs||[]).length) return refs.map(s=>[s.id,s.name,s.type,s.url,s.priority].join(' ')).join(' ');
+  return managedSourceTraceSearch(ids||[]);
+}
 function managedCatalogDetailRow(r){
   const id=esc(r.id);
   return `<tr class="agh-cat-detail" data-managed-detail="${id}"><td></td><td colspan="16"><div class="kv">
     <div>entry id</div><div>${id}</div>
-    <div>source trace</div><div>${managedSourceTrace(r.source_ids||[r.source?.name].filter(Boolean))}</div>
+    <div>source trace</div><div>${managedSourceTraceRefs(r.source_refs,r.source_ids||[r.source?.name].filter(Boolean))}</div>
     <div>source priority</div><div>${Number(r.source_priority||0)}</div>
     <div>original_rule</div><div>${esc(r.original_rule||'')}</div>
     <div>match</div><div>${esc(r.match?.domain||'')}${r.match?.path?esc(' '+r.match.path):''}</div>
@@ -321,11 +338,11 @@ function managedCatalogDetailRow(r){
 }
 function managedSourceHealthLabel(h){ return h||'never synced'; }
 function managedCatalogRow(r,editing){
-  const search=esc([r.match?.domain,managedSourceTraceSearch(r.source_ids||[]),r.category,r.resource_type,r.risk,r.review_status,r.confidence,r.expected_catalog,r.action,r.notes,r.rewrite_reason,r.last_changed_by,r.last_feed_included_at].join(' ').toLowerCase());
+  const search=esc([r.match?.domain,managedSourceTraceRefSearch(r.source_refs,r.source_ids||[]),r.category,r.resource_type,r.risk,r.review_status,r.confidence,r.expected_catalog,r.action,r.notes,r.rewrite_reason,r.last_changed_by,r.last_feed_included_at].join(' ').toLowerCase());
   const id=esc(r.id);
   const attrs=`data-source="${esc((r.source_ids||[]).join(','))}" data-category="${esc(r.category||'')}" data-resource="${esc(r.resource_type||'')}" data-review="${esc(r.review_status||'')}" data-rewrite="${r.rewrite_enabled?'true':'false'}" data-unsupported="${r.unsupported?'true':'false'}"`;
   if(editing){
-    return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${managedSourceTrace(r.source_ids||[])} priority ${Number(r.source_priority||0)}</td>
+    return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${managedSourceTraceRefs(r.source_refs,r.source_ids||[])} priority ${Number(r.source_priority||0)}</td>
     <td><input class="agh-edit-category" value="${esc(r.category||'')}" placeholder="category"></td>
     <td><input class="agh-edit-resource" value="${esc(r.resource_type||'')}" placeholder="resource"></td>
     <td><select class="agh-edit-risk">${optionHTML('',r.risk,'')}${['low','medium','high'].map(v=>optionHTML(v,r.risk)).join('')}</select></td>
@@ -341,7 +358,7 @@ function managedCatalogRow(r,editing){
     <td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td>
     <td><button class="act" data-cmd="saveManagedCatalogRow" data-id="${id}">save</button><button class="act" data-cmd="cancelManagedCatalogRow" data-id="${id}">cancel</button></td></tr>`;
   }
-  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${managedSourceTrace(r.source_ids||[])} priority ${Number(r.source_priority||0)}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.risk||'')}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.notes||'')}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_changed_by||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td>
+  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${managedSourceTraceRefs(r.source_refs,r.source_ids||[])} priority ${Number(r.source_priority||0)}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.risk||'')}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.notes||'')}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_changed_by||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td>
     <td><button class="act" data-cmd="toggleManagedCatalogDetails" data-id="${id}">details</button>${has('agh.manage')?`<button class="act" data-cmd="editManagedCatalogRow" data-id="${id}">edit</button><button class="act" data-cmd="managedRewrite" data-id="${id}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`;
 }
 function managedCatalogFilterSelect(id,label,values){
@@ -546,7 +563,7 @@ function managedSourcePreview(preview){
 function managedSourceEntryTable(entries){
   const shown=(entries||[]).slice(0,100);
   const note=(entries||[]).length>100?` <span class="muted">showing 100 of ${(entries||[]).length}</span>`:'';
-  return `<h3>entries${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>unsupported</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${managedSourceTrace(e.source_ids||[e.source?.name].filter(Boolean))}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${e.unsupported?'yes':'no'}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="9" class="muted">none</td></tr>`}</tbody></table></div>`;
+  return `<h3>entries${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>unsupported</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${managedSourceTraceRefs(e.source_refs,e.source_ids||[e.source?.name].filter(Boolean))}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${e.unsupported?'yes':'no'}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="9" class="muted">none</td></tr>`}</tbody></table></div>`;
 }
 async function pendingManagedSource(id){ try{ const r=await api('GET','/api/agh/sources/'+id+'/pending-diff'); document.getElementById('agh-source-detail').innerHTML=managedSourcePendingDiff(r); }catch(e){ alert(e.message);} }
 function managedSourcePendingDiff(diff){
@@ -556,7 +573,7 @@ function managedSourcePendingDiff(diff){
 function managedPendingDiffTable(kind,entries){
   const shown=(entries||[]).slice(0,100);
   const note=(entries||[]).length>100?` <span class="muted">showing 100 of ${(entries||[]).length}</span>`:'';
-  return `<h3>${esc(kind)}${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>changes</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${managedSourceTrace(e.source_ids||[e.source?.name].filter(Boolean))}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${managedPendingChangeSummary(e)}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="9" class="muted">none</td></tr>`}</tbody></table></div>`;
+  return `<h3>${esc(kind)}${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>changes</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${managedSourceTraceRefs(e.source_refs,e.source_ids||[e.source?.name].filter(Boolean))}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${managedPendingChangeSummary(e)}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="9" class="muted">none</td></tr>`}</tbody></table></div>`;
 }
 function managedPendingChangeSummary(e){
   const prev=e.previous||{};
@@ -614,7 +631,7 @@ function managedSourceEntriesRow(id,entries){
   return `<tr data-managed-source-entries="${esc(id)}"><td colspan="15"><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
 }
 function managedSourceEntrySearch(r){
-  return [r.match?.domain,r.match?.path,managedSourceTraceSearch(r.source_ids||[]),r.category,r.resource_type,r.review_status,r.rewrite_enabled?'rewrite':'no-rewrite',r.rewrite_reason,r.original_rule,r.last_feed_included_at].join(' ').toLowerCase();
+  return [r.match?.domain,r.match?.path,managedSourceTraceRefSearch(r.source_refs,r.source_ids||[]),r.category,r.resource_type,r.review_status,r.rewrite_enabled?'rewrite':'no-rewrite',r.rewrite_reason,r.original_rule,r.last_feed_included_at].join(' ').toLowerCase();
 }
 function renderManagedSourceEntries(id){
   const state=window.AGH_SOURCE_ENTRY_STATE?.[id];
@@ -623,7 +640,7 @@ function renderManagedSourceEntries(id){
   const filter=(state.filter||'').toLowerCase();
   const filtered=(state.entries||[]).filter(r=>managedSourceEntrySearch(r).includes(filter));
   const shown=filtered.slice(0,state.limit||200);
-  body.innerHTML=shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${managedSourceTrace(r.source_ids||[])}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="10" class="muted">none</td></tr>`;
+  body.innerHTML=shown.map(r=>`<tr><td>${esc(r.match?.domain||'')}</td><td>${managedSourceTraceRefs(r.source_refs,r.source_ids||[])}</td><td>${Number(r.source_priority||0)}</td><td>${esc(r.category||'')}</td><td>${esc(r.resource_type||'')}</td><td>${esc(r.review_status||'')}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td><td>${esc(r.last_feed_included_at?new Date(r.last_feed_included_at).toLocaleString():'')}</td><td>${esc(r.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="10" class="muted">none</td></tr>`;
   const count=document.getElementById(`agh-source-entry-count-${id}`);
   if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${(state.entries||[]).length} total`;
 }

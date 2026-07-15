@@ -666,6 +666,9 @@ func TestPendingReviewApproveRejectAndReopen(t *testing.T) {
 	if !diff.Added[0].FeedImpact.WouldInclude || diff.Added[0].FeedImpact.Reason != "included" || diff.Added[0].FeedImpact.LineCount != 1 {
 		t.Fatalf("added feed impact = %+v", diff.Added[0].FeedImpact)
 	}
+	if len(diff.Added[0].SourceRefs) != 1 || diff.Added[0].SourceRefs[0].ID != src.ID || diff.Added[0].SourceRefs[0].Name != "manual" {
+		t.Fatalf("added source refs = %+v", diff.Added[0].SourceRefs)
+	}
 	if !diff.Removed[0].FeedImpact.WouldInclude || diff.Removed[0].FeedImpact.Reason != "included" || diff.Removed[0].FeedImpact.LineCount != 1 {
 		t.Fatalf("removed feed impact = %+v", diff.Removed[0].FeedImpact)
 	}
@@ -1414,6 +1417,9 @@ func TestSourceEntriesFiltersAndAppliesOverrides(t *testing.T) {
 		if row.Source.Name != sourceA.ID || len(row.SourceIDs) != 1 || row.SourceIDs[0] != sourceA.ID {
 			t.Fatalf("sourceA row has wrong source: %+v", row)
 		}
+		if len(row.SourceRefs) != 1 || row.SourceRefs[0].ID != sourceA.ID || row.SourceRefs[0].Name != "manual-a" || row.SourceRefs[0].Type != SourceManual {
+			t.Fatalf("sourceA row has wrong source refs: %+v", row.SourceRefs)
+		}
 	}
 	off := false
 	if _, err := m.PatchEntry(rows[0].ID, CatalogOverride{RewriteEnabled: &off, RewriteReason: "source override"}); err != nil {
@@ -1432,6 +1438,19 @@ func TestSourceEntriesFiltersAndAppliesOverrides(t *testing.T) {
 	}
 	if len(sourceBRows) != 1 || sourceBRows[0].Match.Domain != "c.example.net" {
 		t.Fatalf("sourceB rows = %+v", sourceBRows)
+	}
+	p, err := m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawItemRef bool
+	for _, item := range p.Items {
+		if item.Domain == "a.example.net" && len(item.SourceRefs) == 1 && item.SourceRefs[0].ID == sourceA.ID {
+			sawItemRef = true
+		}
+	}
+	if !sawItemRef {
+		t.Fatalf("feed items missing source refs: %+v", p.Items)
 	}
 	if _, err := m.SourceEntries("missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing source error = %v, want os.ErrNotExist", err)

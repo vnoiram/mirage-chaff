@@ -114,30 +114,32 @@ type Preview struct {
 
 // FeedItem is one included/excluded managed rewrite candidate.
 type FeedItem struct {
-	Domain         string   `json:"domain"`
-	EntryID        string   `json:"entry_id"`
-	SourceIDs      []string `json:"source_ids,omitempty"`
-	Category       string   `json:"category,omitempty"`
-	ResourceType   string   `json:"resource_type,omitempty"`
-	ReviewStatus   string   `json:"review_status,omitempty"`
-	Confidence     string   `json:"confidence,omitempty"`
-	RewriteEnabled bool     `json:"rewrite_enabled"`
-	Included       bool     `json:"included"`
-	Reason         string   `json:"reason"`
-	Lines          []string `json:"lines,omitempty"`
+	Domain         string      `json:"domain"`
+	EntryID        string      `json:"entry_id"`
+	SourceIDs      []string    `json:"source_ids,omitempty"`
+	SourceRefs     []SourceRef `json:"source_refs,omitempty"`
+	Category       string      `json:"category,omitempty"`
+	ResourceType   string      `json:"resource_type,omitempty"`
+	ReviewStatus   string      `json:"review_status,omitempty"`
+	Confidence     string      `json:"confidence,omitempty"`
+	RewriteEnabled bool        `json:"rewrite_enabled"`
+	Included       bool        `json:"included"`
+	Reason         string      `json:"reason"`
+	Lines          []string    `json:"lines,omitempty"`
 }
 
 // CatalogRow is an editable catalog row exposed to the admin UI.
 type CatalogRow struct {
 	rulecatalog.Entry
-	SourceIDs          []string  `json:"source_ids,omitempty"`
-	SourcePriority     int       `json:"source_priority"`
-	Action             string    `json:"action,omitempty"`
-	Notes              string    `json:"notes,omitempty"`
-	RewriteEnabled     bool      `json:"rewrite_enabled"`
-	RewriteReason      string    `json:"rewrite_reason,omitempty"`
-	LastChangedBy      string    `json:"last_changed_by,omitempty"`
-	LastFeedIncludedAt time.Time `json:"last_feed_included_at,omitempty"`
+	SourceIDs          []string    `json:"source_ids,omitempty"`
+	SourceRefs         []SourceRef `json:"source_refs,omitempty"`
+	SourcePriority     int         `json:"source_priority"`
+	Action             string      `json:"action,omitempty"`
+	Notes              string      `json:"notes,omitempty"`
+	RewriteEnabled     bool        `json:"rewrite_enabled"`
+	RewriteReason      string      `json:"rewrite_reason,omitempty"`
+	LastChangedBy      string      `json:"last_changed_by,omitempty"`
+	LastFeedIncludedAt time.Time   `json:"last_feed_included_at,omitempty"`
 }
 
 // Conflict is a grouped domain/path disagreement that blocks feed emission.
@@ -161,9 +163,19 @@ type PendingDiff struct {
 
 type PendingDiffEntry struct {
 	rulecatalog.Entry
+	SourceRefs    []SourceRef        `json:"source_refs,omitempty"`
 	Previous      *rulecatalog.Entry `json:"previous,omitempty"`
 	ChangedFields []string           `json:"changed_fields,omitempty"`
 	FeedImpact    FeedImpact         `json:"feed_impact"`
+}
+
+// SourceRef is a content-free source trace reference for UI/API responses.
+type SourceRef struct {
+	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
+	Type     string `json:"type,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Priority int    `json:"priority,omitempty"`
 }
 
 type FeedImpact struct {
@@ -536,7 +548,7 @@ func (m *Manager) PreviewSource(ctx context.Context, src Source) (Source, []Pend
 	conflicts := m.conflictKeysForEntriesLocked(nextEntries)
 	out := make([]PendingDiffEntry, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, conflicts)})
+		out = append(out, PendingDiffEntry{Entry: e, SourceRefs: m.sourceRefsLocked(e.Source.Name), FeedImpact: m.feedImpactLocked(e, conflicts)})
 	}
 	sortPendingDiffEntries(out)
 	return src, out, nil
@@ -626,6 +638,7 @@ func (m *Manager) catalogRowFromEntryLocked(e rulecatalog.Entry, ov CatalogOverr
 	return CatalogRow{
 		Entry:              e,
 		SourceIDs:          []string{e.Source.Name},
+		SourceRefs:         m.sourceRefsLocked(e.Source.Name),
 		SourcePriority:     m.sourcePriorityLocked(e.Source.Name),
 		Action:             ov.Action,
 		Notes:              ov.Notes,
@@ -641,6 +654,35 @@ func (m *Manager) sourcePriorityLocked(id string) int {
 		return src.Priority
 	}
 	return 0
+}
+
+func (m *Manager) sourceRefsLocked(ids ...string) []SourceRef {
+	return sourceRefsFromMap(m.sourceRefMapLocked(), ids...)
+}
+
+func (m *Manager) sourceRefMapLocked() map[string]SourceRef {
+	out := make(map[string]SourceRef, len(m.sources))
+	for id, src := range m.sources {
+		out[id] = SourceRef{ID: id, Name: src.Name, Type: src.Type, URL: src.URL, Priority: src.Priority}
+	}
+	return out
+}
+
+func sourceRefsFromMap(refsByID map[string]SourceRef, ids ...string) []SourceRef {
+	refs := make([]SourceRef, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ref := SourceRef{ID: id}
+		if src, ok := refsByID[id]; ok {
+			ref = src
+		}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 func (m *Manager) sourcePrioritiesLocked() map[string]int {
@@ -669,7 +711,7 @@ func (m *Manager) ListConflicts() []Conflict {
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	return buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked())
+	return buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked(), m.sourceRefMapLocked())
 }
 
 func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy ...string) (CatalogRow, error) {
@@ -681,7 +723,7 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	conflicts := buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked())
+	conflicts := buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked(), m.sourceRefMapLocked())
 	var targetID string
 	for _, c := range conflicts {
 		if c.ID != id {
@@ -727,7 +769,7 @@ func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]C
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	conflicts := buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked())
+	conflicts := buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked(), m.sourceRefMapLocked())
 	var target *Conflict
 	for i := range conflicts {
 		if conflicts[i].ID == id {
@@ -1083,10 +1125,12 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 		History: feedHistoryNewestFirst(history),
 	}
 	sourcePriorities := make(map[string]int, len(sources))
+	sourceRefs := make(map[string]SourceRef, len(sources))
 	for _, src := range sources {
 		sourcePriorities[src.ID] = src.Priority
+		sourceRefs[src.ID] = SourceRef{ID: src.ID, Name: src.Name, Type: src.Type, URL: src.URL, Priority: src.Priority}
 	}
-	conflicts := buildConflicts(entries, overrides, cfg, sourcePriorities)
+	conflicts := buildConflicts(entries, overrides, cfg, sourcePriorities, sourceRefs)
 	conflictKeys := map[string]bool{}
 	for _, conflict := range conflicts {
 		conflictKeys[domainPathKey(conflict.Domain, conflict.Path)] = true
@@ -1136,6 +1180,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	for _, e := range entries {
 		ov := overrides[e.ID]
 		item := m.feedItem(e, ov, cfg, ips, conflictKeys[entryKey(e)])
+		item.SourceRefs = sourceRefsFromMap(sourceRefs, item.SourceIDs...)
 		if staleSourceTTL > 0 {
 			if src, ok := sourceByID[e.Source.Name]; ok && isStaleSource(src, staleSourceTTL) {
 				staleSources[src.ID] = true
@@ -1523,11 +1568,12 @@ func (m *Manager) pendingDiffLocked(src Source, prev, next []rulecatalog.Entry) 
 	nextConflicts := m.conflictKeysForEntriesLocked(nextEntries)
 	for _, e := range next {
 		if old, ok := p[e.ID]; !ok {
-			out.Added = append(out.Added, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, nextConflicts)})
+			out.Added = append(out.Added, PendingDiffEntry{Entry: e, SourceRefs: m.sourceRefsLocked(e.Source.Name), FeedImpact: m.feedImpactLocked(e, nextConflicts)})
 		} else if old.OriginalRule != e.OriginalRule || old.Category != e.Category || old.ResourceType != e.ResourceType {
 			prev := old
 			out.Changed = append(out.Changed, PendingDiffEntry{
 				Entry:         e,
+				SourceRefs:    m.sourceRefsLocked(e.Source.Name),
 				Previous:      &prev,
 				ChangedFields: pendingDiffChangedFields(old, e),
 				FeedImpact:    m.feedImpactLocked(e, nextConflicts),
@@ -1536,7 +1582,7 @@ func (m *Manager) pendingDiffLocked(src Source, prev, next []rulecatalog.Entry) 
 	}
 	for _, e := range prev {
 		if _, ok := n[e.ID]; !ok {
-			out.Removed = append(out.Removed, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, currentConflicts)})
+			out.Removed = append(out.Removed, PendingDiffEntry{Entry: e, SourceRefs: m.sourceRefsLocked(e.Source.Name), FeedImpact: m.feedImpactLocked(e, currentConflicts)})
 		}
 	}
 	sortPendingDiffEntries(out.Added)
@@ -1588,7 +1634,7 @@ func (m *Manager) conflictKeysForEntriesLocked(entries []rulecatalog.Entry) map[
 	for _, e := range entries {
 		applied = append(applied, m.applyOverrideLocked(e))
 	}
-	conflicts := buildConflicts(applied, m.overrides, cfg, m.sourcePrioritiesLocked())
+	conflicts := buildConflicts(applied, m.overrides, cfg, m.sourcePrioritiesLocked(), m.sourceRefMapLocked())
 	out := map[string]bool{}
 	for _, conflict := range conflicts {
 		out[domainPathKey(conflict.Domain, conflict.Path)] = true
@@ -1616,7 +1662,7 @@ func sortPendingDiffEntries(entries []PendingDiffEntry) {
 	})
 }
 
-func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOverride, cfg config.AGHManagedConfig, sourcePriorities map[string]int) []Conflict {
+func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOverride, cfg config.AGHManagedConfig, sourcePriorities map[string]int, sourceRefs map[string]SourceRef) []Conflict {
 	grouped := map[string][]CatalogRow{}
 	for _, e := range entries {
 		if e.Match.Domain == "" {
@@ -1626,6 +1672,7 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 		row := CatalogRow{
 			Entry:          e,
 			SourceIDs:      []string{e.Source.Name},
+			SourceRefs:     sourceRefsFromMap(sourceRefs, e.Source.Name),
 			SourcePriority: sourcePriorities[e.Source.Name],
 			Action:         ov.Action,
 			Notes:          ov.Notes,
