@@ -170,6 +170,7 @@ function render(){
     initManagedSourceForm();
     filterManagedSources();
     filterManagedHistory();
+    filterManagedConflicts();
   }
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
 }
@@ -530,8 +531,9 @@ async function viewAGHManaged(v){
     <td><button class="act" data-cmd="toggleManagedRollbackDetails" data-id="${esc(r.id)}">details</button>${has('agh.manage')?`<button class="act danger" data-cmd="applyManagedRollback" data-id="${esc(r.id)}">rollback</button>`:''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
+    <div class="row"><input id="agh-conflict-filter" oninput="filterManagedConflicts()" placeholder="filter conflict domain/path/reason/source/entry"><span id="agh-conflict-count" class="muted"></span></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>domain</th><th>path</th><th>reason</th><th>sources</th><th>entries</th><th></th></tr></thead><tbody>
-    ${conflicts.slice(0,200).map(c=>`<tr data-managed-conflict="${esc(c.id)}"><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
+    ${conflicts.slice(0,200).map(c=>`<tr data-managed-conflict="${esc(c.id)}" data-search="${esc(managedConflictSearch(c))}"><td>${esc(c.domain)}</td><td>${esc(c.path||'')}</td><td>${esc((c.reasons||[]).join(', '))}</td><td>${esc((c.source_ids||[]).join(','))}</td><td>${esc((c.entries||[]).map(e=>`${(e.source_ids||[]).join(',')}@${Number(e.source_priority||0)}:${e.category||''}/${e.review_status||''}/${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' | '))}</td>
     <td>${has('agh.manage')?managedConflictControls(c):''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Scheduler Settings</h2>${managedSchedulerDiagnostics(scheduler)}<div style="margin-top:10px">${managedSchedulerConfigForm(scheduler)}</div></div>`));
@@ -838,6 +840,22 @@ function managedConflictControls(c){
       <input class="agh-conflict-reason" placeholder="rewrite reason">
       <button class="act" data-cmd="resolveManagedConflictCustom" data-id="${id}">apply classification</button>
     </div>`;
+}
+function managedConflictSearch(c){
+  const entries=(c.entries||[]).map(e=>`${(e.source_ids||[]).join(' ')} ${Number(e.source_priority||0)} ${e.category||''} ${e.review_status||''} ${e.rewrite_enabled?'rewrite':'no-rewrite'}`).join(' ');
+  return [c.domain,c.path,(c.reasons||[]).join(' '),(c.source_ids||[]).join(' '),entries].join(' ').toLowerCase();
+}
+function filterManagedConflicts(){
+  const q=(document.getElementById('agh-conflict-filter')?.value||'').toLowerCase();
+  const rows=[...document.querySelectorAll('tr[data-managed-conflict]')];
+  let visible=0;
+  rows.forEach(row=>{
+    const show=(row.dataset.search||'').includes(q);
+    row.style.display=show?'':'none';
+    if(show) visible++;
+  });
+  const out=document.getElementById('agh-conflict-count');
+  if(out) out.textContent=`${visible} / ${rows.length} conflicts`;
 }
 async function toggleManagedSourceEntries(id){ try{
   const existing=document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`);
