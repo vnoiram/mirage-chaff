@@ -160,6 +160,7 @@ let AGH_MANAGED_CATALOG_RESULT = null;
 let AGH_MANAGED_FEED_PREVIEW_RESULT = null;
 let AGH_MANAGED_TARGET_REFRESH_RESULT = null;
 let AGH_MANAGED_TARGET_CONFIG_RESULT = null;
+let AGH_MANAGED_SCHEDULER_CONFIG_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -573,7 +574,7 @@ function managedSchedulerConfigForm(scheduler){
     <input id="agh-scheduler-large-percent" type="number" value="${Number(scheduler.large_change_threshold_percent||0)}" placeholder="large %" style="width:90px">
     <input id="agh-scheduler-large-count" type="number" value="${Number(scheduler.large_change_threshold_count||0)}" placeholder="large count" style="width:110px">
     <button class="act" data-cmd="saveManagedSchedulerConfig">Save scheduler settings</button>
-    <span id="agh-scheduler-config-result" class="muted"></span>
+    <span id="agh-scheduler-config-result" class="muted">${managedSchedulerResultHTML(AGH_MANAGED_SCHEDULER_CONFIG_RESULT)}</span>
   </div>`;
 }
 function managedSchedulerDiagnostics(scheduler){
@@ -1420,6 +1421,9 @@ async function saveManagedTargetConfig(){ try{
   else alert(e.message);
 } }
 async function saveManagedSchedulerConfig(){ try{
+  AGH_MANAGED_SCHEDULER_CONFIG_RESULT={running:true};
+  const running=document.getElementById('agh-scheduler-config-result');
+  if(running) running.innerHTML=managedSchedulerResultHTML(AGH_MANAGED_SCHEDULER_CONFIG_RESULT);
   const body={
     enabled:!!document.getElementById('agh-scheduler-enabled')?.checked,
     default_sync_interval:document.getElementById('agh-scheduler-default-interval')?.value||'12h',
@@ -1432,11 +1436,13 @@ async function saveManagedSchedulerConfig(){ try{
     large_change_threshold_count:Number(document.getElementById('agh-scheduler-large-count')?.value||0)
   };
   const r=await api('PUT','/api/agh/rewrite-feed/scheduler',body);
+  AGH_MANAGED_SCHEDULER_CONFIG_RESULT=r;
   const out=document.getElementById('agh-scheduler-config-result');
-  if(out) out.innerHTML=managedSchedulerResultHTML(r);
+  if(out) out.innerHTML=managedSchedulerResultHTML(AGH_MANAGED_SCHEDULER_CONFIG_RESULT);
 }catch(e){
+  AGH_MANAGED_SCHEDULER_CONFIG_RESULT={error:e.message};
   const out=document.getElementById('agh-scheduler-config-result');
-  if(out) out.innerHTML=managedSchedulerResultHTML({error:e.message});
+  if(out) out.innerHTML=managedSchedulerResultHTML(AGH_MANAGED_SCHEDULER_CONFIG_RESULT);
   else alert(e.message);
 } }
 async function refreshAGHFilters(){ try{
