@@ -464,7 +464,17 @@ function managedSourcePendingDiff(diff){
 function managedPendingDiffTable(kind,entries){
   const shown=(entries||[]).slice(0,100);
   const note=(entries||[]).length>100?` <span class="muted">showing 100 of ${(entries||[]).length}</span>`:'';
-  return `<h3>${esc(kind)}${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="7" class="muted">none</td></tr>`}</tbody></table></div>`;
+  return `<h3>${esc(kind)}${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>changes</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${managedPendingChangeSummary(e)}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="8" class="muted">none</td></tr>`}</tbody></table></div>`;
+}
+function managedPendingChangeSummary(e){
+  const prev=e.previous||{};
+  return (e.changed_fields||[]).map(f=>`${esc(f)}: ${esc(prevValue(prev,f))} -> ${esc(prevValue(e,f))}`).join('<br>');
+}
+function prevValue(e,f){
+  if(f==='original_rule') return e.original_rule||'';
+  if(f==='category') return e.category||'';
+  if(f==='resource_type') return e.resource_type||'';
+  return e[f]||'';
 }
 function managedFeedImpact(impact){
   if(!impact) return '<span class="muted">n/a</span>';

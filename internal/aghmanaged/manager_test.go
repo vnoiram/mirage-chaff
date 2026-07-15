@@ -669,6 +669,46 @@ func TestPendingReviewApproveRejectAndReopen(t *testing.T) {
 	}
 }
 
+func TestPendingDiffChangedEntriesIncludePreviousAndFields(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||changed.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := rulecatalog.Entry{
+		ID:           "same-id",
+		Source:       rulecatalog.Source{Name: src.ID},
+		OriginalRule: "||changed.example.net^",
+		Match:        rulecatalog.Match{Domain: "changed.example.net"},
+		Layer:        rulecatalog.LayerDNS,
+		Category:     "tracker",
+		ResourceType: "domain",
+	}
+	next := prev
+	next.Category = "ad_sdk"
+	next.ResourceType = "script"
+	diff := m.pendingDiffLocked(src, []rulecatalog.Entry{prev}, []rulecatalog.Entry{next})
+	if len(diff.Changed) != 1 {
+		t.Fatalf("changed diff = %+v", diff)
+	}
+	got := diff.Changed[0]
+	if got.Previous == nil || got.Previous.Category != "tracker" || got.Previous.ResourceType != "domain" {
+		t.Fatalf("previous entry = %+v", got.Previous)
+	}
+	if strings.Join(got.ChangedFields, ",") != "category,resource_type" {
+		t.Fatalf("changed fields = %+v", got.ChangedFields)
+	}
+	if got.Category != "ad_sdk" || got.ResourceType != "script" {
+		t.Fatalf("next entry = %+v", got.Entry)
+	}
+}
+
 func TestStaleTargetTTLRejectsExpiredCachedIPs(t *testing.T) {
 	cfg := testConfig()
 	cfg.StaleTargetTTL = "1h"

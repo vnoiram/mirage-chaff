@@ -161,7 +161,9 @@ type PendingDiff struct {
 
 type PendingDiffEntry struct {
 	rulecatalog.Entry
-	FeedImpact FeedImpact `json:"feed_impact"`
+	Previous      *rulecatalog.Entry `json:"previous,omitempty"`
+	ChangedFields []string           `json:"changed_fields,omitempty"`
+	FeedImpact    FeedImpact         `json:"feed_impact"`
 }
 
 type FeedImpact struct {
@@ -1523,7 +1525,13 @@ func (m *Manager) pendingDiffLocked(src Source, prev, next []rulecatalog.Entry) 
 		if old, ok := p[e.ID]; !ok {
 			out.Added = append(out.Added, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, nextConflicts)})
 		} else if old.OriginalRule != e.OriginalRule || old.Category != e.Category || old.ResourceType != e.ResourceType {
-			out.Changed = append(out.Changed, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, nextConflicts)})
+			prev := old
+			out.Changed = append(out.Changed, PendingDiffEntry{
+				Entry:         e,
+				Previous:      &prev,
+				ChangedFields: pendingDiffChangedFields(old, e),
+				FeedImpact:    m.feedImpactLocked(e, nextConflicts),
+			})
 		}
 	}
 	for _, e := range prev {
@@ -1535,6 +1543,20 @@ func (m *Manager) pendingDiffLocked(src Source, prev, next []rulecatalog.Entry) 
 	sortPendingDiffEntries(out.Removed)
 	sortPendingDiffEntries(out.Changed)
 	return out
+}
+
+func pendingDiffChangedFields(prev, next rulecatalog.Entry) []string {
+	var fields []string
+	if prev.OriginalRule != next.OriginalRule {
+		fields = append(fields, "original_rule")
+	}
+	if prev.Category != next.Category {
+		fields = append(fields, "category")
+	}
+	if prev.ResourceType != next.ResourceType {
+		fields = append(fields, "resource_type")
+	}
+	return fields
 }
 
 func entriesSlice(entries map[string]rulecatalog.Entry) []rulecatalog.Entry {
