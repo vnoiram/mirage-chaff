@@ -797,6 +797,41 @@ func TestPendingDiffChangedEntriesIncludePreviousAndFields(t *testing.T) {
 	}
 }
 
+func TestPendingDiffEntriesPageFiltersAndPaginates(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||alpha.example.net^\n||beta.example.net^\n@@||excluded.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, entries, err := m.PreviewSource(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := PendingDiffEntriesPage(entries, PendingDiffEntryQuery{Q: "manual", Limit: 1, Offset: 1})
+	if page.Total != 3 || page.Limit != 1 || page.Offset != 1 || len(page.Entries) != 1 || page.Entries[0].Match.Domain != "beta.example.net" {
+		t.Fatalf("source trace page = %+v", page)
+	}
+	page = PendingDiffEntriesPage(entries, PendingDiffEntryQuery{Q: "allow exception"})
+	if page.Total != 1 || len(page.Entries) != 1 || page.Entries[0].Match.Domain != "excluded.example.net" {
+		t.Fatalf("feed impact page = %+v", page)
+	}
+	page = PendingDiffEntriesPage(entries, PendingDiffEntryQuery{Offset: -10})
+	if page.Total != 3 || page.Offset != 0 || len(page.Entries) != 3 {
+		t.Fatalf("negative offset page = %+v", page)
+	}
+	page = PendingDiffEntriesPage(entries, PendingDiffEntryQuery{Offset: 20})
+	if page.Total != 3 || page.Offset != 3 || len(page.Entries) != 0 {
+		t.Fatalf("overflow offset page = %+v", page)
+	}
+}
+
 func TestStaleTargetTTLRejectsExpiredCachedIPs(t *testing.T) {
 	cfg := testConfig()
 	cfg.StaleTargetTTL = "1h"

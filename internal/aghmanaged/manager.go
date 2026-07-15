@@ -217,6 +217,21 @@ type PendingDiffEntry struct {
 	FeedImpact    FeedImpact         `json:"feed_impact"`
 }
 
+// PendingDiffEntryQuery filters and pages source preview or pending diff entries.
+type PendingDiffEntryQuery struct {
+	Q      string
+	Limit  int
+	Offset int
+}
+
+// PendingDiffEntryPage is a filtered source preview or pending diff entry page.
+type PendingDiffEntryPage struct {
+	Entries []PendingDiffEntry `json:"entries"`
+	Total   int                `json:"total"`
+	Limit   int                `json:"limit"`
+	Offset  int                `json:"offset"`
+}
+
 // SourceRef is a content-free source trace reference for UI/API responses.
 type SourceRef struct {
 	ID       string `json:"id"`
@@ -1887,6 +1902,62 @@ func sortPendingDiffEntries(entries []PendingDiffEntry) {
 		}
 		return entries[i].ID < entries[j].ID
 	})
+}
+
+func PendingDiffEntriesPage(entries []PendingDiffEntry, q PendingDiffEntryQuery) PendingDiffEntryPage {
+	filtered := make([]PendingDiffEntry, 0, len(entries))
+	for _, entry := range entries {
+		if pendingDiffEntryMatchesQuery(entry, q) {
+			filtered = append(filtered, entry)
+		}
+	}
+	total := len(filtered)
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	limit := q.Limit
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return PendingDiffEntryPage{Entries: filtered[offset:end], Total: total, Limit: limit, Offset: offset}
+}
+
+func pendingDiffEntryMatchesQuery(entry PendingDiffEntry, q PendingDiffEntryQuery) bool {
+	if strings.TrimSpace(q.Q) != "" && !strings.Contains(pendingDiffEntrySearchText(entry), strings.ToLower(strings.TrimSpace(q.Q))) {
+		return false
+	}
+	return true
+}
+
+func pendingDiffEntrySearchText(entry PendingDiffEntry) string {
+	var refs []string
+	for _, ref := range entry.SourceRefs {
+		refs = append(refs, ref.ID, ref.Name, ref.Type, ref.URL, fmt.Sprint(ref.Priority))
+	}
+	parts := []string{
+		entry.ID, entry.Match.Domain, entry.Match.Path, strings.Join(refs, " "),
+		entry.Category, entry.ResourceType, entry.ReviewStatus, entry.Risk, entry.Confidence,
+		entry.ExpectedCatalog, entry.OriginalRule, strings.Join(entry.ChangedFields, " "),
+		entry.FeedImpact.Reason, fmt.Sprint(entry.FeedImpact.WouldInclude), fmt.Sprint(entry.FeedImpact.LineCount),
+	}
+	if entry.Unsupported {
+		parts = append(parts, "unsupported")
+	} else {
+		parts = append(parts, "supported")
+	}
+	if entry.Previous != nil {
+		parts = append(parts,
+			entry.Previous.ID, entry.Previous.Match.Domain, entry.Previous.Match.Path,
+			entry.Previous.Category, entry.Previous.ResourceType, entry.Previous.ReviewStatus,
+			entry.Previous.Risk, entry.Previous.Confidence, entry.Previous.ExpectedCatalog, entry.Previous.OriginalRule,
+		)
+	}
+	return strings.ToLower(strings.Join(parts, " "))
 }
 
 func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOverride, cfg config.AGHManagedConfig, sourcePriorities map[string]int, sourceRefs map[string]SourceRef) []Conflict {
