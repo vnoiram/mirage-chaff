@@ -68,23 +68,34 @@ type Source struct {
 
 // FeedStatus summarizes generated feed state for the admin UI.
 type FeedStatus struct {
-	Enabled         bool      `json:"enabled"`
-	FeedPath        string    `json:"feed_path"`
-	TargetMode      string    `json:"target_mode"`
-	TargetName      string    `json:"target_name"`
-	ResolvedIPs     []string  `json:"resolved_ips,omitempty"`
-	LastResolve     time.Time `json:"last_resolve,omitempty"`
-	LastResolveErr  string    `json:"last_resolve_error,omitempty"`
-	TargetCacheUsed bool      `json:"target_cache_used,omitempty"`
-	ItemCount       int       `json:"item_count"`
-	ExcludedCount   int       `json:"excluded_count"`
-	ConflictCount   int       `json:"conflict_count"`
-	EmergencyEmpty  bool      `json:"emergency_empty"`
-	Sources         int       `json:"sources"`
-	PendingSources  int       `json:"pending_sources"`
-	StaleSources    int       `json:"stale_sources"`
-	LastSourceSync  time.Time `json:"last_source_sync,omitempty"`
-	LastGenerated   time.Time `json:"last_generated,omitempty"`
+	Enabled         bool                   `json:"enabled"`
+	FeedPath        string                 `json:"feed_path"`
+	TargetMode      string                 `json:"target_mode"`
+	TargetName      string                 `json:"target_name"`
+	ResolvedIPs     []string               `json:"resolved_ips,omitempty"`
+	LastResolve     time.Time              `json:"last_resolve,omitempty"`
+	LastResolveErr  string                 `json:"last_resolve_error,omitempty"`
+	TargetCacheUsed bool                   `json:"target_cache_used,omitempty"`
+	ItemCount       int                    `json:"item_count"`
+	ExcludedCount   int                    `json:"excluded_count"`
+	ConflictCount   int                    `json:"conflict_count"`
+	EmergencyEmpty  bool                   `json:"emergency_empty"`
+	Sources         int                    `json:"sources"`
+	PendingSources  int                    `json:"pending_sources"`
+	StaleSources    int                    `json:"stale_sources"`
+	LastSourceSync  time.Time              `json:"last_source_sync,omitempty"`
+	LastGenerated   time.Time              `json:"last_generated,omitempty"`
+	History         []FeedGenerationRecord `json:"history,omitempty"`
+}
+
+// FeedGenerationRecord captures one served feed generation summary.
+type FeedGenerationRecord struct {
+	Time           time.Time `json:"time"`
+	IncludedCount  int       `json:"included_count"`
+	ExcludedCount  int       `json:"excluded_count"`
+	ConflictCount  int       `json:"conflict_count"`
+	TargetMode     string    `json:"target_mode"`
+	EmergencyEmpty bool      `json:"emergency_empty"`
 }
 
 // Preview is a generated feed plus status.
@@ -163,6 +174,7 @@ type state struct {
 	EmergencyEmpty     *bool                          `json:"emergency_empty,omitempty"`
 	Rollbacks          []RollbackRecord               `json:"rollbacks,omitempty"`
 	FeedIncludedAtByID map[string]time.Time           `json:"feed_included_at_by_id,omitempty"`
+	FeedHistory        []FeedGenerationRecord         `json:"feed_history,omitempty"`
 }
 
 // CatalogOverride holds admin-owned state over imported entries.
@@ -188,13 +200,14 @@ type Manager struct {
 	resolver Resolver
 	client   *http.Client
 
-	mu        sync.RWMutex
-	sources   map[string]Source
-	entries   map[string]rulecatalog.Entry
-	pending   map[string][]rulecatalog.Entry
-	overrides map[string]CatalogOverride
-	rollbacks []RollbackRecord
-	feedSeen  map[string]time.Time
+	mu          sync.RWMutex
+	sources     map[string]Source
+	entries     map[string]rulecatalog.Entry
+	pending     map[string][]rulecatalog.Entry
+	overrides   map[string]CatalogOverride
+	rollbacks   []RollbackRecord
+	feedSeen    map[string]time.Time
+	feedHistory []FeedGenerationRecord
 
 	targetIPs      []net.IP
 	lastResolve    time.Time
@@ -244,6 +257,9 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		}
 		if st.FeedIncludedAtByID != nil {
 			m.feedSeen = st.FeedIncludedAtByID
+		}
+		if st.FeedHistory != nil {
+			m.feedHistory = st.FeedHistory
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -940,11 +956,15 @@ func (m *Manager) RefreshTarget(ctx context.Context) (FeedStatus, error) {
 }
 
 func (m *Manager) Status(ctx context.Context) FeedStatus {
-	p, _ := m.Generate(ctx, false)
+	p, _ := m.generate(ctx, false, false)
 	return p.Status
 }
 
 func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, error) {
+	return m.generate(ctx, includeRows, !includeRows)
+}
+
+func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory bool) (Preview, error) {
 	m.mu.RLock()
 	cfg := m.cfg
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
@@ -966,6 +986,8 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	cachedIPs := append([]net.IP(nil), m.targetIPs...)
 	lastResolve := m.lastResolve
 	lastResolveErr := m.lastResolveErr
+	history := make([]FeedGenerationRecord, len(m.feedHistory))
+	copy(history, m.feedHistory)
 	m.mu.RUnlock()
 
 	var ips []net.IP
@@ -997,6 +1019,7 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		Enabled: cfg.Enabled, FeedPath: cfg.FeedPath, TargetMode: nonempty(cfg.TargetMode, "resolved_ip"),
 		TargetName: cfg.TargetName, ResolvedIPs: ipStrings(ips), LastResolve: lastResolve,
 		LastResolveErr: lastResolveErr, TargetCacheUsed: targetCacheUsed, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
+		History: feedHistoryNewestFirst(history),
 	}
 	sourcePriorities := make(map[string]int, len(sources))
 	for _, src := range sources {
@@ -1015,6 +1038,15 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	if cfg.EmergencyEmpty || !cfg.Enabled {
 		fmt.Fprintf(&b, "! feed empty: enabled=%v emergency_empty=%v\n", cfg.Enabled, cfg.EmergencyEmpty)
 		status.ExcludedCount = len(entries)
+		if recordHistory {
+			m.mu.Lock()
+			err := m.persistGenerationLocked(status, nil, now, false)
+			status.History = feedHistoryNewestFirst(m.feedHistory)
+			m.mu.Unlock()
+			if err != nil {
+				return Preview{Status: status, Lines: b.String(), Sources: sources}, err
+			}
+		}
 		return Preview{Status: status, Lines: b.String(), Sources: sources}, nil
 	}
 	if (cfg.TargetMode == "" || cfg.TargetMode == "resolved_ip") && len(ips) == 0 {
@@ -1065,10 +1097,11 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 	status.StaleSources = len(staleSources)
 	var saveErr error
 	m.mu.Lock()
-	m.lastGenerated = now
-	if !includeRows {
-		m.feedSeen = feedSeen
-		saveErr = m.saveLocked()
+	if recordHistory {
+		saveErr = m.persistGenerationLocked(status, feedSeen, now, true)
+		status.History = feedHistoryNewestFirst(m.feedHistory)
+	} else {
+		m.lastGenerated = now
 	}
 	m.mu.Unlock()
 	if saveErr != nil {
@@ -1079,6 +1112,38 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 		p.Entries = m.CatalogRows()
 	}
 	return p, nil
+}
+
+func (m *Manager) ListFeedHistory() []FeedGenerationRecord {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return feedHistoryNewestFirst(m.feedHistory)
+}
+
+func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string]time.Time, generatedAt time.Time, updateFeedSeen bool) error {
+	m.lastGenerated = generatedAt
+	if updateFeedSeen {
+		m.feedSeen = feedSeen
+	}
+	m.feedHistory = append(m.feedHistory, FeedGenerationRecord{
+		Time:           generatedAt,
+		IncludedCount:  status.ItemCount,
+		ExcludedCount:  status.ExcludedCount,
+		ConflictCount:  status.ConflictCount,
+		TargetMode:     status.TargetMode,
+		EmergencyEmpty: status.EmergencyEmpty,
+	})
+	if len(m.feedHistory) > 50 {
+		m.feedHistory = m.feedHistory[len(m.feedHistory)-50:]
+	}
+	return m.saveLocked()
+}
+
+func feedHistoryNewestFirst(history []FeedGenerationRecord) []FeedGenerationRecord {
+	out := make([]FeedGenerationRecord, len(history))
+	copy(out, history)
+	sort.Slice(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
+	return out
 }
 
 func (m *Manager) fetchSource(ctx context.Context, src Source) ([]rulecatalog.Entry, error) {
@@ -1275,6 +1340,9 @@ func (m *Manager) saveLocked() error {
 	}
 	if len(m.feedSeen) > 0 {
 		st.FeedIncludedAtByID = m.feedSeen
+	}
+	if len(m.feedHistory) > 0 {
+		st.FeedHistory = m.feedHistory
 	}
 	sort.Slice(st.Sources, func(i, j int) bool { return st.Sources[i].ID < st.Sources[j].ID })
 	sort.Slice(st.Entries, func(i, j int) bool { return st.Entries[i].ID < st.Entries[j].ID })

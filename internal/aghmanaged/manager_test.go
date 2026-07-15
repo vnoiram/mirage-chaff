@@ -253,6 +253,51 @@ func TestManagedFeedTracksLastIncludedAt(t *testing.T) {
 	}
 }
 
+func TestManagedFeedRecordsGenerationHistory(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	path := filepath.Join(t.TempDir(), "managed.json")
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||included.example.net^\n@@||excluded.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Generate(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(m.ListFeedHistory()); got != 0 {
+		t.Fatalf("preview recorded history len = %d", got)
+	}
+	if _ = m.Status(context.Background()); len(m.ListFeedHistory()) != 0 {
+		t.Fatalf("status should not record history: %+v", m.ListFeedHistory())
+	}
+	p, err := m.Generate(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Status.History) != 1 {
+		t.Fatalf("history = %+v", p.Status.History)
+	}
+	rec := p.Status.History[0]
+	if rec.IncludedCount != 1 || rec.ExcludedCount != 1 || rec.TargetMode != "static_ip" || rec.EmergencyEmpty {
+		t.Fatalf("history record = %+v", rec)
+	}
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.ListFeedHistory(); len(got) != 1 || got[0].IncludedCount != 1 {
+		t.Fatalf("reopened history = %+v", got)
+	}
+}
+
 func TestBalancedPresetRequiresMediumConfidenceCandidate(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"
