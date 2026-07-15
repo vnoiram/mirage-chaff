@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -196,6 +197,65 @@ func (s *Server) handleAGHManagedRollbacks(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, map[string]any{"rollbacks": s.deps.AGHManaged.ListRollbacks()})
+}
+
+type aghManagedHistoryEvent struct {
+	Time           time.Time `json:"time"`
+	Kind           string    `json:"kind"`
+	Actor          string    `json:"actor,omitempty"`
+	Action         string    `json:"action"`
+	Detail         string    `json:"detail,omitempty"`
+	Summary        string    `json:"summary,omitempty"`
+	IncludedCount  int       `json:"included_count,omitempty"`
+	ExcludedCount  int       `json:"excluded_count,omitempty"`
+	AddedCount     int       `json:"added_count,omitempty"`
+	RemovedCount   int       `json:"removed_count,omitempty"`
+	ConflictCount  int       `json:"conflict_count,omitempty"`
+	EntryCount     int       `json:"entry_count,omitempty"`
+	TargetMode     string    `json:"target_mode,omitempty"`
+	EmergencyEmpty bool      `json:"emergency_empty,omitempty"`
+}
+
+func (s *Server) handleAGHManagedHistory(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var events []aghManagedHistoryEvent
+	var audit []AuditEntry
+	for _, entry := range s.store.AuditLog(500) {
+		if !strings.HasPrefix(entry.Action, "agh_managed.") {
+			continue
+		}
+		audit = append(audit, entry)
+		events = append(events, aghManagedHistoryEvent{
+			Time: entry.Time, Kind: "audit", Actor: entry.Actor, Action: entry.Action, Detail: entry.Detail,
+		})
+	}
+	feedHistory := s.deps.AGHManaged.ListFeedHistory()
+	for _, rec := range feedHistory {
+		events = append(events, aghManagedHistoryEvent{
+			Time: rec.Time, Kind: "feed_generation", Action: "feed generation", IncludedCount: rec.IncludedCount,
+			ExcludedCount: rec.ExcludedCount, AddedCount: rec.AddedCount, RemovedCount: rec.RemovedCount,
+			ConflictCount: rec.ConflictCount, TargetMode: rec.TargetMode, EmergencyEmpty: rec.EmergencyEmpty,
+		})
+	}
+	rollbacks := s.deps.AGHManaged.ListRollbacks()
+	for _, rec := range rollbacks {
+		events = append(events, aghManagedHistoryEvent{
+			Time: rec.Time, Kind: "rollback_candidate", Action: rec.Action, Summary: rec.Summary, EntryCount: len(rec.EntryIDs),
+		})
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].Time.After(events[j].Time) })
+	if len(events) > 200 {
+		events = events[:200]
+	}
+	writeJSON(w, map[string]any{
+		"events":       events,
+		"audit":        audit,
+		"feed_history": feedHistory,
+		"rollbacks":    rollbacks,
+	})
 }
 
 func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Request, sess *session) {

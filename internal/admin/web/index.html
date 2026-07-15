@@ -337,6 +337,7 @@ async function viewAGHManaged(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
   const sources=(await api('GET','/api/agh/sources')).sources||[];
   const conflicts=(await api('GET','/api/agh/managed-catalog/conflicts')).conflicts||[];
+  const history=await api('GET','/api/agh/history');
   const rollbacks=(await api('GET','/api/agh/managed-catalog/rollbacks')).rollbacks||[];
   const rows=(await api('GET','/api/agh/managed-catalog')).entries||[];
   const unsupportedCount=rows.filter(r=>r.unsupported).length;
@@ -374,6 +375,10 @@ async function viewAGHManaged(v){
     <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
     <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
   </div></div>`));
+  v.appendChild(el(`<div class="card"><h2>AGH Managed History</h2>
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>kind</th><th>actor</th><th>action</th><th>detail</th><th>counts</th></tr></thead><tbody>
+    ${((history&&history.events)||[]).slice(0,100).map(e=>`<tr><td>${esc(e.time?new Date(e.time).toLocaleString():'')}</td><td>${esc(e.kind||'')}</td><td>${esc(e.actor||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.detail||e.summary||'')}</td><td>${managedHistoryCounts(e)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}
+    </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Feed Generation History</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>target mode</th><th>included</th><th>delta</th><th>excluded</th><th>conflicts</th><th>emergency empty</th></tr></thead><tbody>
     ${(status.history||[]).slice(0,20).map(h=>`<tr><td>${esc(h.time?new Date(h.time).toLocaleString():'')}</td><td>${esc(h.target_mode||'')}</td><td>${h.included_count||0}</td><td>+${h.added_count||0} -${h.removed_count||0}</td><td>${h.excluded_count||0}</td><td>${h.conflict_count||0}</td><td>${h.emergency_empty?'yes':'no'}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">none</td></tr>'}
@@ -458,6 +463,15 @@ function managedFeedImpact(impact){
   const state=impact.would_include?'include':'exclude';
   const lines=impact.line_count?` (${Number(impact.line_count)} lines)`:'';
   return `${esc(state)}: ${esc(impact.reason||'')}${esc(lines)}`;
+}
+function managedHistoryCounts(e){
+  const parts=[];
+  if(e.included_count||e.excluded_count) parts.push(`${Number(e.included_count||0)} in / ${Number(e.excluded_count||0)} out`);
+  if(e.added_count||e.removed_count) parts.push(`+${Number(e.added_count||0)} -${Number(e.removed_count||0)}`);
+  if(e.conflict_count) parts.push(`${Number(e.conflict_count)} conflicts`);
+  if(e.entry_count) parts.push(`${Number(e.entry_count)} entries`);
+  if(e.emergency_empty) parts.push('emergency');
+  return esc(parts.join(', '));
 }
 async function toggleManagedSourceEntries(id){ try{
   const existing=document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`);

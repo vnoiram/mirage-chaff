@@ -176,6 +176,9 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"refreshManagedTarget",
 		"Feed Setup",
 		"Feed Generation History",
+		"AGH Managed History",
+		"managedHistoryCounts",
+		"/api/agh/history",
 		"added_count",
 		"removed_count",
 		"managedTargetState",
@@ -497,6 +500,38 @@ func TestAGHManagedSourceSyncAuditDetail(t *testing.T) {
 		if !strings.Contains(entry.Detail, want) {
 			t.Fatalf("source sync audit detail %q missing %q", entry.Detail, want)
 		}
+	}
+
+	if _, err := managed.Generate(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/history", nil)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("history status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var history struct {
+		Events []struct {
+			Kind   string `json:"kind"`
+			Action string `json:"action"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	var sawAudit, sawFeed bool
+	for _, event := range history.Events {
+		if event.Kind == "audit" && event.Action == "agh_managed.source.sync" {
+			sawAudit = true
+		}
+		if event.Kind == "feed_generation" {
+			sawFeed = true
+		}
+	}
+	if !sawAudit || !sawFeed {
+		t.Fatalf("history events missing audit/feed: %+v", history.Events)
 	}
 }
 
