@@ -156,6 +156,7 @@ let AGH_MANAGED_PRESET_RESULT = null;
 let AGH_MANAGED_BULK_RESULT = null;
 let AGH_MANAGED_ROLLBACK_RESULT = null;
 let AGH_MANAGED_SOURCE_RESULT = null;
+let AGH_MANAGED_CATALOG_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -642,7 +643,7 @@ async function viewAGHManaged(v){
       <input id="agh-bulk-reason" placeholder="rewrite reason">
       <button class="act" data-cmd="bulkManagedCatalog">Apply bulk edit</button>
       <span id="agh-bulk-result" class="muted">${managedCatalogBulkResultHTML(AGH_MANAGED_BULK_RESULT)}</span>
-      <span id="agh-catalog-result" class="muted">${managedCatalogActionResultHTML(null)}</span>
+      <span id="agh-catalog-result" class="muted">${managedCatalogActionResultHTML(AGH_MANAGED_CATALOG_RESULT)}</span>
     </div>`:''}
     <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th>changed by</th><th>feed included</th><th></th></tr></thead><tbody id="agh-cat-body">
     </tbody></table></div></div>`));
@@ -1161,7 +1162,22 @@ async function saveManagedPreset(){ try{
   if(out) out.innerHTML=managedPresetResultHTML(AGH_MANAGED_PRESET_RESULT);
   else alert(e.message);
 } }
-async function setManagedRewrite(id,on){ try{ await api('PATCH','/api/agh/managed-catalog/'+id,{rewrite_enabled:on,rewrite_reason:on?'manual enable':'manual disable'}); render(); }catch(e){ alert(e.message);} }
+function setManagedCatalogActionResult(r){
+  AGH_MANAGED_CATALOG_RESULT=r;
+  const out=document.getElementById('agh-catalog-result');
+  if(out) out.innerHTML=managedCatalogActionResultHTML(r);
+}
+function managedCatalogActionError(action,e){
+  setManagedCatalogActionResult({action,error:e.message});
+  if(!document.getElementById('agh-catalog-result')) alert(e.message);
+}
+async function setManagedRewrite(id,on){ try{
+  const action=on?'enable rewrite':'disable rewrite';
+  setManagedCatalogActionResult({action,id,running:true});
+  const row=await api('PATCH','/api/agh/managed-catalog/'+id,{rewrite_enabled:on,rewrite_reason:on?'manual enable':'manual disable'});
+  AGH_MANAGED_CATALOG_RESULT={action,row};
+  render();
+}catch(e){ managedCatalogActionError(on?'enable rewrite':'disable rewrite',e);} }
 function managedRowByID(id){ return (window.AGH_MANAGED_ROWS||[]).find(r=>r.id===id); }
 function replaceManagedCatalogRow(id,editing){ const r=managedRowByID(id); const tr=document.querySelector(`tr[data-managed-row="${CSS.escape(id)}"]`); if(r&&tr) tr.outerHTML=managedCatalogRow(r,editing); }
 function editManagedCatalogRow(id){ replaceManagedCatalogRow(id,true); }
@@ -1204,9 +1220,11 @@ async function saveManagedCatalogRow(id){ try{
   if(rewrite && (rewrite==='true')!==!!r.rewrite_enabled) body.rewrite_enabled=rewrite==='true';
   if(reason && reason!==(r.rewrite_reason||'')) body.rewrite_reason=reason;
   if(!Object.keys(body).length) throw new Error('no inline edit changes');
-  await api('PATCH','/api/agh/managed-catalog/'+id,body);
+  setManagedCatalogActionResult({action:'save catalog row',id,running:true});
+  const row=await api('PATCH','/api/agh/managed-catalog/'+id,body);
+  AGH_MANAGED_CATALOG_RESULT={action:'save catalog row',row};
   render();
-}catch(e){ alert(e.message);} }
+}catch(e){ managedCatalogActionError('save catalog row',e);} }
 function selectedManagedCatalogIDs(){ return [...document.querySelectorAll('.agh-cat-select:checked')].map(x=>x.value); }
 function updateManagedCatalogSelectionCount(){
   const out=document.getElementById('agh-bulk-selection-count');
