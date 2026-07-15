@@ -567,11 +567,11 @@ async function addManagedSource(){ try{
   render();
 }catch(e){ alert(e.message);} }
 async function syncManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/sync'); render(); }catch(e){ alert(e.message);} }
-async function previewManagedSource(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); const r=await api('POST','/api/agh/sources/preview',s); window.AGH_MANAGED_SOURCE_PREVIEW_STATE={entries:r.entries||[],limit:100,filter:''}; document.getElementById('agh-source-detail').innerHTML=managedSourcePreview(r); renderManagedSourcePreviewEntries(); }catch(e){ alert(e.message);} }
+async function previewManagedSource(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); const r=await api('POST','/api/agh/sources/preview?limit=100&offset=0',s); window.AGH_MANAGED_SOURCE_PREVIEW_STATE={source:s,entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:100,filter:''}; document.getElementById('agh-source-detail').innerHTML=managedSourcePreview(r); renderManagedSourcePreviewEntries(); }catch(e){ alert(e.message);} }
 function managedSourcePreview(preview){
   const source=preview.source||{};
   const entries=preview.entries||[];
-  return `<div><h3>preview: ${esc(source.name||source.id||'source')}</h3><div class="kv"><div>entries</div><div>${entries.length}</div><div>unsupported</div><div>${source.unsupported||0}</div><div>allow exceptions</div><div>${source.allow_exceptions||0}</div><div>last duration ms</div><div>${Number(source.last_duration_ms||0)}</div><div>consecutive failures</div><div>${Number(source.consecutive_failures||0)}</div></div>${managedSourceEntryTable(entries)}</div>`;
+  return `<div><h3>preview: ${esc(source.name||source.id||'source')}</h3><div class="kv"><div>entries</div><div>${Number(preview.total??entries.length)}</div><div>unsupported</div><div>${source.unsupported||0}</div><div>allow exceptions</div><div>${source.allow_exceptions||0}</div><div>last duration ms</div><div>${Number(source.last_duration_ms||0)}</div><div>consecutive failures</div><div>${Number(source.consecutive_failures||0)}</div></div>${managedSourceEntryTable(entries)}</div>`;
 }
 function managedSourceEntryTable(entries){
   return `<h3>entries</h3><div class="row"><input id="agh-source-preview-filter" oninput="filterManagedSourcePreviewEntries()" placeholder="filter source preview entries"><button class="act" data-cmd="showMoreManagedSourcePreviewEntries">show more</button><span id="agh-source-preview-count" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>unsupported</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody id="agh-source-preview-body"></tbody></table></div>`;
@@ -579,29 +579,46 @@ function managedSourceEntryTable(entries){
 function managedSourcePreviewEntrySearch(e){
   return [e.match?.domain,e.match?.path,managedSourceTraceRefSearch(e.source_refs,e.source_ids||[]),e.category,e.resource_type,e.review_status,e.unsupported?'unsupported':'supported',managedFeedImpact(e.feed_impact),e.original_rule].join(' ').toLowerCase();
 }
+function managedSourcePreviewQuery(offset,limit){
+  const params=new URLSearchParams();
+  const q=document.getElementById('agh-source-preview-filter')?.value||'';
+  if(q) params.set('q',q);
+  params.set('limit',String(limit||100));
+  params.set('offset',String(offset||0));
+  return params.toString();
+}
+async function fetchManagedSourcePreviewEntries(reset){
+  const state=window.AGH_MANAGED_SOURCE_PREVIEW_STATE;
+  if(!state||!state.source) return;
+  const offset=reset?0:(state.entries||[]).length;
+  const r=await api('POST','/api/agh/sources/preview?'+managedSourcePreviewQuery(offset,state.limit||100),state.source);
+  const entries=r.entries||[];
+  state.entries=reset?entries:(state.entries||[]).concat(entries);
+  state.total=Number(r.total??state.entries.length);
+  state.filter=document.getElementById('agh-source-preview-filter')?.value||'';
+  renderManagedSourcePreviewEntries();
+}
 function renderManagedSourcePreviewEntries(){
   const state=window.AGH_MANAGED_SOURCE_PREVIEW_STATE;
   const body=document.getElementById('agh-source-preview-body');
   if(!state||!body) return;
-  const filter=(state.filter||'').toLowerCase();
-  const filtered=(state.entries||[]).filter(e=>managedSourcePreviewEntrySearch(e).includes(filter));
-  const shown=filtered.slice(0,state.limit||100);
+  const shown=state.entries||[];
   body.innerHTML=shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${managedSourceTraceRefs(e.source_refs,e.source_ids||[e.source?.name].filter(Boolean))}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${e.unsupported?'yes':'no'}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="9" class="muted">none</td></tr>`;
   const count=document.getElementById('agh-source-preview-count');
-  if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${(state.entries||[]).length} total`;
+  if(count) count.textContent=`showing ${shown.length} of ${Number(state.total||0)} matching / ${(state.entries||[]).length} loaded`;
 }
-function filterManagedSourcePreviewEntries(){
+async function filterManagedSourcePreviewEntries(){
   const state=window.AGH_MANAGED_SOURCE_PREVIEW_STATE;
   if(!state) return;
   state.filter=document.getElementById('agh-source-preview-filter')?.value||'';
-  state.limit=100;
-  renderManagedSourcePreviewEntries();
+  state.entries=[];
+  await fetchManagedSourcePreviewEntries(true);
 }
-function showMoreManagedSourcePreviewEntries(){
+async function showMoreManagedSourcePreviewEntries(){
   const state=window.AGH_MANAGED_SOURCE_PREVIEW_STATE;
   if(!state) return;
-  state.limit=(state.limit||100)+100;
-  renderManagedSourcePreviewEntries();
+  if((state.entries||[]).length>=Number(state.total||0)) return;
+  await fetchManagedSourcePreviewEntries(false);
 }
 async function pendingManagedSource(id){ try{ const r=await api('GET','/api/agh/sources/'+id+'/pending-diff'); window.AGH_MANAGED_SOURCE_DIFF_STATE={diff:r,limits:{added:100,removed:100,changed:100},filters:{added:'',removed:'',changed:''}}; document.getElementById('agh-source-detail').innerHTML=managedSourcePendingDiff(r); ['added','removed','changed'].forEach(renderManagedPendingDiffKind); }catch(e){ alert(e.message);} }
 function managedSourcePendingDiff(diff){
