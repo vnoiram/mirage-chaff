@@ -151,6 +151,7 @@ const TABS = [
 let CUR = 'Dashboard';
 let AGH_MANAGED_LAST_BASE_URL = '';
 let AGH_MANAGED_EMERGENCY_RESULT = '';
+let AGH_MANAGED_REFRESH_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -516,7 +517,7 @@ async function viewAGHManaged(v){
     <div>AGH setting</div><div>Filters - DNS blocklists - Add blocklist - Add a custom list</div>
     <div>registration check</div><div>Add the custom list in AGH, run a manual list update in AGH, then verify the feed timestamp and item count here.</div>
     <div>AGH registration</div><div><button class="act" data-cmd="checkManagedAGHStatus">Check AGH registration</button><div id="agh-registration-result" class="muted" style="margin-top:6px">${managedAGHRegistrationStatusHTML(null)}</div></div>
-    ${has('agh.manage')?`<div>AGH refresh</div><div><label><input id="agh-refresh-force" type="checkbox"> force refresh</label> <button class="act" data-cmd="refreshAGHFilters">Refresh AGH filters</button> <span id="agh-refresh-result" class="muted"></span></div>`:''}
+    ${has('agh.manage')?`<div>AGH refresh</div><div><label><input id="agh-refresh-force" type="checkbox"> force refresh</label> <button class="act" data-cmd="refreshAGHFilters">Refresh AGH filters</button> <span id="agh-refresh-result" class="muted">${managedAGHRefreshResultHTML(AGH_MANAGED_REFRESH_RESULT)}</span></div>`:''}
     <div>fetch check</div><div><code>curl -fsS ${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')} | head</code></div>
     <div>expected feed header</div><div><code>! mirage-chaff managed rewrites</code></div>
     <div>target output</div><div>${esc(managedTargetState(status))}</div>
@@ -1188,12 +1189,15 @@ async function saveManagedSchedulerConfig(){ try{
 } }
 async function refreshAGHFilters(){ try{
   const force=!!document.getElementById('agh-refresh-force')?.checked;
+  const out=document.getElementById('agh-refresh-result');
+  if(out) out.innerHTML=`<div id="agh-refresh-status">refreshing...</div>`;
   const r=await api('POST','/api/agh/rewrite-feed/refresh-agh',{force});
-  const out=document.getElementById('agh-refresh-result');
-  if(out) out.innerHTML=managedAGHRefreshResultHTML(r);
+  AGH_MANAGED_REFRESH_RESULT=r;
+  render();
 }catch(e){
+  AGH_MANAGED_REFRESH_RESULT={error:e.message};
   const out=document.getElementById('agh-refresh-result');
-  if(out) out.innerHTML=managedAGHRefreshResultHTML({error:e.message});
+  if(out) out.innerHTML=managedAGHRefreshResultHTML(AGH_MANAGED_REFRESH_RESULT);
   else alert(e.message);
 } }
 function managedAGHRefreshResultHTML(r){
