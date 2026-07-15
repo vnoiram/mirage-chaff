@@ -1281,9 +1281,12 @@ async function resolveManagedConflict(id,action){ try{
   if(action==='disable') body={rewrite_enabled:false,rewrite_reason:'conflict resolution'};
   if(action==='needs_test') body={review_status:'needs_test',rewrite_reason:'conflict needs test'};
   if(action==='allow_exception') body={category:'allow_exception',review_status:'approved',rewrite_enabled:false,rewrite_reason:'allow exception wins'};
-  await api('POST','/api/agh/managed-catalog/conflicts/'+id+'/resolve',body);
+  const label=`resolve conflict: ${action}`;
+  setManagedCatalogActionResult({action:label,id,running:true});
+  const r=await api('POST','/api/agh/managed-catalog/conflicts/'+id+'/resolve',body);
+  AGH_MANAGED_CATALOG_RESULT={action:label,id,row:r.entries?r.entries[0]:r,updated:r.updated,entries:r.entries};
   render();
-}catch(e){ alert(e.message);} }
+}catch(e){ managedCatalogActionError(`resolve conflict: ${action}`,e);} }
 async function resolveManagedConflictCustom(id){ try{
   const tr=document.querySelector(`tr[data-managed-conflict="${CSS.escape(id)}"]`);
   if(!tr) throw new Error('conflict row not found');
@@ -1303,9 +1306,11 @@ async function resolveManagedConflictCustom(id){ try{
   if(rewrite) body.rewrite_enabled=rewrite==='true';
   if(reason) body.rewrite_reason=reason;
   if(!Object.keys(body).length) throw new Error('choose at least one classification value');
-  await api('POST','/api/agh/managed-catalog/conflicts/'+id+'/resolve',body);
+  setManagedCatalogActionResult({action:'resolve conflict: custom',id,running:true});
+  const row=await api('POST','/api/agh/managed-catalog/conflicts/'+id+'/resolve',body);
+  AGH_MANAGED_CATALOG_RESULT={action:'resolve conflict: custom',id,row};
   render();
-}catch(e){ alert(e.message);} }
+}catch(e){ managedCatalogActionError('resolve conflict: custom',e);} }
 async function setEmergencyEmpty(on){ try{
   const out=document.getElementById('agh-emergency-result');
   if(out) out.textContent='updating...';
