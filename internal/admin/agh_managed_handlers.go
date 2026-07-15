@@ -353,6 +353,27 @@ func (s *Server) handleAGHManagedEmergencyEmpty(w http.ResponseWriter, r *http.R
 	writeJSON(w, map[string]any{"status": "ok", "emergency_empty": req.Enabled})
 }
 
+func (s *Server) handleAGHManagedPreset(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Preset string `json:"preset"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if err := s.deps.AGHManaged.SetPreset(req.Preset); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.preset", req.Preset)
+	status := s.deps.AGHManaged.Status(r.Context())
+	status.FeedURL = aghManagedFeedURL(r, status.FeedPath)
+	writeJSON(w, status)
+}
+
 func mapBool(v bool) string {
 	if v {
 		return "true"

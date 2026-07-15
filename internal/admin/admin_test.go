@@ -189,6 +189,8 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"pending_sources",
 		"default preset",
 		"default_preset",
+		"saveManagedPreset",
+		"agh-preset",
 		"last duration ms",
 		"consecutive failures",
 		"last_duration_ms",
@@ -248,6 +250,7 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"/api/agh/managed-catalog/conflicts/'+id+'/resolve",
 		"/api/agh/managed-catalog/rollbacks/'+id+'/apply",
 		"/api/agh/rewrite-feed/refresh-target",
+		"/api/agh/rewrite-feed/preset",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin UI missing %q", want)
@@ -285,6 +288,9 @@ func TestAGHManagedFeedExportHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.AGHManagedConfig{
@@ -339,6 +345,32 @@ func TestAGHManagedFeedExportHandler(t *testing.T) {
 	}
 	if statusResp.DefaultPreset != "balanced" {
 		t.Fatalf("status default_preset = %q, want balanced", statusResp.DefaultPreset)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/preset", strings.NewReader(`{"preset":"aggressive"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer preset status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/preset", strings.NewReader(`{"preset":"aggressive"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin preset status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &statusResp); err != nil {
+		t.Fatal(err)
+	}
+	if statusResp.DefaultPreset != "aggressive" {
+		t.Fatalf("preset response default_preset = %q, want aggressive", statusResp.DefaultPreset)
 	}
 
 	rr = httptest.NewRecorder()

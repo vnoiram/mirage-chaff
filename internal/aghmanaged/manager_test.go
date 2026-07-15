@@ -131,6 +131,51 @@ func TestSourcePriorityPersistsAndAppearsOnRows(t *testing.T) {
 	}
 }
 
+func TestPresetOverridePersistsAndAffectsFeed(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	path := filepath.Join(t.TempDir(), "managed.json")
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||preset.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetPreset("conservative"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status.DefaultPreset != "conservative" || strings.Contains(p.Lines, "preset.example.net") {
+		t.Fatalf("conservative preset should exclude candidate: status=%+v\n%s", p.Status, p.Lines)
+	}
+	if err := m.SetPreset("aggressive"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = reopened.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Status.DefaultPreset != "aggressive" || !strings.Contains(p.Lines, "preset.example.net") {
+		t.Fatalf("aggressive preset override not persisted/applied: status=%+v\n%s", p.Status, p.Lines)
+	}
+	if err := reopened.SetPreset("reckless"); err == nil {
+		t.Fatal("invalid preset should fail")
+	}
+}
+
 func TestCatalogPatchTracksLastChangedBy(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"

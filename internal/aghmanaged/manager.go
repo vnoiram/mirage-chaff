@@ -177,6 +177,7 @@ type state struct {
 	Pending            map[string][]rulecatalog.Entry `json:"pending,omitempty"`
 	Overrides          map[string]CatalogOverride     `json:"overrides,omitempty"`
 	EmergencyEmpty     *bool                          `json:"emergency_empty,omitempty"`
+	PresetOverride     string                         `json:"preset_override,omitempty"`
 	Rollbacks          []RollbackRecord               `json:"rollbacks,omitempty"`
 	FeedIncludedAtByID map[string]time.Time           `json:"feed_included_at_by_id,omitempty"`
 	FeedHistory        []FeedGenerationRecord         `json:"feed_history,omitempty"`
@@ -215,6 +216,7 @@ type Manager struct {
 	feedSeen     map[string]time.Time
 	feedSnapshot map[string]bool
 	feedHistory  []FeedGenerationRecord
+	preset       string
 
 	targetIPs      []net.IP
 	lastResolve    time.Time
@@ -260,6 +262,7 @@ func Open(path string, cfg config.AGHManagedConfig, res Resolver) (*Manager, err
 		if st.EmergencyEmpty != nil {
 			m.cfg.EmergencyEmpty = *st.EmergencyEmpty
 		}
+		m.preset = st.PresetOverride
 		if st.Rollbacks != nil {
 			m.rollbacks = st.Rollbacks
 		}
@@ -596,13 +599,15 @@ func (m *Manager) catalogRowLocked(e rulecatalog.Entry) CatalogRow {
 }
 
 func (m *Manager) catalogRowFromEntryLocked(e rulecatalog.Entry, ov CatalogOverride) CatalogRow {
+	cfg := m.cfg
+	cfg.DefaultPreset = m.effectivePresetLocked()
 	return CatalogRow{
 		Entry:              e,
 		SourceIDs:          []string{e.Source.Name},
 		SourcePriority:     m.sourcePriorityLocked(e.Source.Name),
 		Action:             ov.Action,
 		Notes:              ov.Notes,
-		RewriteEnabled:     rewriteEnabled(e, ov, m.cfg),
+		RewriteEnabled:     rewriteEnabled(e, ov, cfg),
 		RewriteReason:      ov.RewriteReason,
 		LastChangedBy:      ov.LastChangedBy,
 		LastFeedIncludedAt: m.feedSeen[e.ID],
@@ -636,21 +641,25 @@ func sortCatalogRows(rows []CatalogRow) {
 func (m *Manager) ListConflicts() []Conflict {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	cfg := m.cfg
+	cfg.DefaultPreset = m.effectivePresetLocked()
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	return buildConflicts(entries, m.overrides, m.cfg, m.sourcePrioritiesLocked())
+	return buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked())
 }
 
 func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy ...string) (CatalogRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	cfg := m.cfg
+	cfg.DefaultPreset = m.effectivePresetLocked()
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	conflicts := buildConflicts(entries, m.overrides, m.cfg, m.sourcePrioritiesLocked())
+	conflicts := buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked())
 	var targetID string
 	for _, c := range conflicts {
 		if c.ID != id {
@@ -690,11 +699,13 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy
 func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]CatalogRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	cfg := m.cfg
+	cfg.DefaultPreset = m.effectivePresetLocked()
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
 	}
-	conflicts := buildConflicts(entries, m.overrides, m.cfg, m.sourcePrioritiesLocked())
+	conflicts := buildConflicts(entries, m.overrides, cfg, m.sourcePrioritiesLocked())
 	var target *Conflict
 	for i := range conflicts {
 		if conflicts[i].ID == id {
@@ -945,6 +956,21 @@ func (m *Manager) SetEmergencyEmpty(on bool) error {
 	return err
 }
 
+func (m *Manager) SetPreset(preset string) error {
+	if !validPreset(preset) {
+		return fmt.Errorf("invalid preset %q", preset)
+	}
+	m.mu.Lock()
+	m.preset = preset
+	err := m.saveLocked()
+	m.mu.Unlock()
+	return err
+}
+
+func (m *Manager) effectivePresetLocked() string {
+	return effectivePreset(m.cfg, m.preset)
+}
+
 func (m *Manager) RefreshTarget(ctx context.Context) (FeedStatus, error) {
 	m.mu.RLock()
 	cfg := m.cfg
@@ -978,6 +1004,8 @@ func (m *Manager) Generate(ctx context.Context, includeRows bool) (Preview, erro
 func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory bool) (Preview, error) {
 	m.mu.RLock()
 	cfg := m.cfg
+	preset := m.effectivePresetLocked()
+	cfg.DefaultPreset = preset
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
 	for _, e := range m.entries {
 		entries = append(entries, m.applyOverrideLocked(e))
@@ -1028,7 +1056,7 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	now := time.Now()
 	status := FeedStatus{
 		Enabled: cfg.Enabled, FeedPath: cfg.FeedPath, TargetMode: nonempty(cfg.TargetMode, "resolved_ip"),
-		TargetName: cfg.TargetName, DefaultPreset: nonempty(cfg.DefaultPreset, "balanced"), ResolvedIPs: ipStrings(ips), StaticIPs: staticIPStrings(cfg), LastResolve: lastResolve,
+		TargetName: cfg.TargetName, DefaultPreset: preset, ResolvedIPs: ipStrings(ips), StaticIPs: staticIPStrings(cfg), LastResolve: lastResolve,
 		LastResolveErr: lastResolveErr, TargetCacheUsed: targetCacheUsed, EmergencyEmpty: cfg.EmergencyEmpty, Sources: len(sources), LastGenerated: now,
 		History: feedHistoryNewestFirst(history),
 	}
@@ -1368,6 +1396,7 @@ func (m *Manager) applyOverrideLocked(e rulecatalog.Entry) rulecatalog.Entry {
 func (m *Manager) saveLocked() error {
 	emergency := m.cfg.EmergencyEmpty
 	st := state{Overrides: m.overrides, EmergencyEmpty: &emergency}
+	st.PresetOverride = m.preset
 	if len(m.pending) > 0 {
 		st.Pending = m.pending
 	}
@@ -1681,6 +1710,22 @@ func largeChange(src Source, cfg config.AGHManagedScheduler) bool {
 		return false
 	}
 	return (src.Removed+src.Changed)*100/src.Entries >= cfg.LargeChangeThresholdPercent
+}
+
+func effectivePreset(cfg config.AGHManagedConfig, override string) string {
+	if override != "" {
+		return override
+	}
+	return nonempty(cfg.DefaultPreset, "balanced")
+}
+
+func validPreset(preset string) bool {
+	switch preset {
+	case "conservative", "balanced", "aggressive":
+		return true
+	default:
+		return false
+	}
 }
 
 func rewriteEnabled(e rulecatalog.Entry, ov CatalogOverride, cfg config.AGHManagedConfig) bool {
