@@ -484,6 +484,18 @@ function managedFeedPreviewResultHTML(r){
   ];
   return `<div id="agh-feed-preview-status"><strong>feed preview ready</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedFeedExportResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-feed-export-status">error: ${esc(r.error)}</div>`;
+  if(r.exporting) return `<div id="agh-feed-export-status">exporting snapshot...</div>`;
+  const rows=[
+    ['filename',r.filename||'mirage-chaff-managed-rewrites.txt'],
+    ['bytes',Number(r.bytes||0)],
+    ['lines',Number(r.lines||0)],
+    ['next action','save the downloaded snapshot with the incident or change record']
+  ];
+  return `<div id="agh-feed-export-status"><strong>snapshot exported</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedTargetResultHTML(r){
   if(!r) return '';
   if(r.error) return `<div id="agh-target-status">error: ${esc(r.error)}</div>`;
@@ -657,6 +669,7 @@ async function viewAGHManaged(v){
     <button class="act" onclick="previewManagedFeed()">Preview feed</button>
     <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT)}</span>
     <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
+    <span id="agh-feed-export-result" class="muted">${managedFeedExportResultHTML(null)}</span>
     ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted">${managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT)}</span>`:''}
   </div>
   <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
