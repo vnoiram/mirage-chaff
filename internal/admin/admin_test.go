@@ -745,6 +745,120 @@ func TestAGHManagedAGHStatusHandlerChecksRegistrationAndHost(t *testing.T) {
 	}
 }
 
+func TestAGHManagedTargetConfigHandlerUpdatesConfig(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "mirage-chaff.conf")
+	writeTestFile(t, configPath, `[agh_managed_rewrites]
+# keep this comment
+enabled = true
+feed_path = "/agh/managed-rewrites.txt"
+target_mode = "resolved_ip"
+target_name = "old.lan"
+static_ipv4 = []
+static_ipv6 = []
+stale_target_ttl = "24h"
+
+[agh_managed_rewrites.scheduler]
+default_sync_interval = "12h"
+`)
+	cfg := config.AGHManagedConfig{
+		Enabled:        true,
+		FeedPath:       "/agh/managed-rewrites.txt",
+		TargetName:     "old.lan",
+		TargetMode:     "resolved_ip",
+		StaleTargetTTL: "24h",
+		Scheduler:      config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{ConfigPath: configPath, AGHManaged: managed})
+	h := s.Handler()
+	viewerCookie, _ := loginForTest(t, h, "viewer", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/target", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer target get status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/agh/rewrite-feed/target", strings.NewReader(`{"target_mode":"static_ip"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer target put status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/agh/rewrite-feed/target", strings.NewReader(`{"target_mode":"static_ip","target_name":"new.lan","static_ipv4":["192.0.2.55"],"static_ipv6":["2001:db8::55"],"stale_target_ttl":"6h"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin target put status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"# keep this comment",
+		`target_mode = "static_ip"`,
+		`target_name = "new.lan"`,
+		`static_ipv4 = ["192.0.2.55"]`,
+		`static_ipv6 = ["2001:db8::55"]`,
+		`stale_target_ttl = "6h"`,
+		`[agh_managed_rewrites.scheduler]`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("updated config missing %q:\n%s", want, content)
+		}
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.target_config")
+	if !ok || !strings.Contains(entry.Detail, "target_mode=static_ip") || !strings.Contains(entry.Detail, "192.0.2.55") {
+		t.Fatalf("target audit = %+v ok=%v", entry, ok)
+	}
+}
+
+func TestPatchAGHManagedTargetConfigAddsMissingKeys(t *testing.T) {
+	got := patchAGHManagedTargetConfig(`[agh_managed_rewrites]
+enabled = true
+
+[agh_managed_rewrites.scheduler]
+sync_timeout = "30s"
+`, config.AGHManagedConfig{TargetMode: "cname", TargetName: "target.lan", StaleTargetTTL: "12h"})
+	for _, want := range []string{
+		`target_mode = "cname"`,
+		`target_name = "target.lan"`,
+		`static_ipv4 = []`,
+		`static_ipv6 = []`,
+		`stale_target_ttl = "12h"`,
+		`[agh_managed_rewrites.scheduler]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("patched config missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestAGHManagedConflictHandlersRBAC(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "policy")

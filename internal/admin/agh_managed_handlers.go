@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/vnoiram/mirage-chaff/internal/aghmanaged"
+	"github.com/vnoiram/mirage-chaff/internal/config"
 )
 
 func (s *Server) handleAGHManagedFeed(w http.ResponseWriter, r *http.Request) {
@@ -354,6 +356,66 @@ func (s *Server) handleAGHManagedFeedStatus(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, status)
 }
 
+type aghManagedTargetConfigRequest struct {
+	TargetMode     string   `json:"target_mode"`
+	TargetName     string   `json:"target_name"`
+	StaticIPv4     []string `json:"static_ipv4"`
+	StaticIPv6     []string `json:"static_ipv6"`
+	StaleTargetTTL string   `json:"stale_target_ttl"`
+}
+
+func (s *Server) handleAGHManagedTargetConfig(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	cfg := s.deps.AGHManaged.Config()
+	status := s.deps.AGHManaged.Status(r.Context())
+	status.FeedURL = aghManagedFeedURL(r, status.FeedPath)
+	writeJSON(w, map[string]any{
+		"target_mode":      cfg.TargetMode,
+		"target_name":      cfg.TargetName,
+		"static_ipv4":      cfg.StaticIPv4,
+		"static_ipv6":      cfg.StaticIPv6,
+		"stale_target_ttl": cfg.StaleTargetTTL,
+		"status":           status,
+	})
+}
+
+func (s *Server) handleAGHManagedTargetConfigPut(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req aghManagedTargetConfigRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	cfg, content, err := updateAGHManagedTargetConfigFile(s.deps.ConfigPath, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := os.WriteFile(s.deps.ConfigPath, []byte(content), 0o600); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = os.Chmod(s.deps.ConfigPath, 0o600)
+	s.store.Audit(sess.username, "agh_managed.target_config", aghManagedTargetConfigAuditDetail(cfg.AGHManaged))
+	status := s.deps.AGHManaged.Status(r.Context())
+	status.FeedURL = aghManagedFeedURL(r, status.FeedPath)
+	writeJSON(w, map[string]any{
+		"status":           "ok",
+		"note":             "call /api/reload to apply",
+		"target_mode":      cfg.AGHManaged.TargetMode,
+		"target_name":      cfg.AGHManaged.TargetName,
+		"static_ipv4":      cfg.AGHManaged.StaticIPv4,
+		"static_ipv6":      cfg.AGHManaged.StaticIPv6,
+		"stale_target_ttl": cfg.AGHManaged.StaleTargetTTL,
+		"feed_status":      status,
+	})
+}
+
 func (s *Server) handleAGHManagedAGHStatus(w http.ResponseWriter, r *http.Request, sess *session) {
 	if s.deps.AGHManaged == nil {
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
@@ -523,6 +585,168 @@ func (s *Server) handleAGHManagedRefreshAGH(w http.ResponseWriter, r *http.Reque
 func isAGHRefreshConfigError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "base_url required") || strings.Contains(msg, "credentials required") || strings.Contains(msg, "env file")
+}
+
+func updateAGHManagedTargetConfigFile(path string, req aghManagedTargetConfigRequest) (config.Config, string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return config.Config{}, "", fmt.Errorf("config file required for target settings: %w", err)
+		}
+		return config.Config{}, "", err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return config.Config{}, "", err
+	}
+	cfg.AGHManaged.TargetMode = strings.TrimSpace(req.TargetMode)
+	cfg.AGHManaged.TargetName = strings.TrimSpace(req.TargetName)
+	cfg.AGHManaged.StaticIPv4 = cleanStringList(req.StaticIPv4)
+	cfg.AGHManaged.StaticIPv6 = cleanStringList(req.StaticIPv6)
+	cfg.AGHManaged.StaleTargetTTL = strings.TrimSpace(req.StaleTargetTTL)
+	if err := cfg.Check(); err != nil {
+		return config.Config{}, "", fmt.Errorf("invalid config: %w", err)
+	}
+	content := patchAGHManagedTargetConfig(string(raw), cfg.AGHManaged)
+	checkPath := path + ".check"
+	if err := os.WriteFile(checkPath, []byte(content), 0o600); err != nil {
+		return config.Config{}, "", err
+	}
+	checked, checkErr := config.Load(checkPath)
+	removeErr := os.Remove(checkPath)
+	if checkErr == nil {
+		checkErr = checked.Check()
+	}
+	if checkErr != nil {
+		return config.Config{}, "", fmt.Errorf("invalid generated config: %w", checkErr)
+	}
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return config.Config{}, "", removeErr
+	}
+	return cfg, content, nil
+}
+
+func patchAGHManagedTargetConfig(raw string, cfg config.AGHManagedConfig) string {
+	lines := strings.Split(raw, "\n")
+	hadTrailingNewline := strings.HasSuffix(raw, "\n")
+	start, end := aghManagedConfigSection(lines)
+	targetLines := []string{
+		`target_mode = ` + tomlString(stringDefault(cfg.TargetMode, "resolved_ip")),
+		`target_name = ` + tomlString(cfg.TargetName),
+		`static_ipv4 = ` + tomlStringArray(cfg.StaticIPv4),
+		`static_ipv6 = ` + tomlStringArray(cfg.StaticIPv6),
+		`stale_target_ttl = ` + tomlString(stringDefault(cfg.StaleTargetTTL, "24h")),
+	}
+	if start == -1 {
+		if len(lines) == 1 && lines[0] == "" {
+			lines = nil
+		}
+		lines = append(lines, "[agh_managed_rewrites]")
+		lines = append(lines, targetLines...)
+		out := strings.Join(lines, "\n")
+		if hadTrailingNewline || !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		return out
+	}
+	updates := map[string]string{}
+	for _, line := range targetLines {
+		key := strings.TrimSpace(strings.SplitN(line, "=", 2)[0])
+		updates[key] = line
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(lines)+len(targetLines))
+	out = append(out, lines[:start+1]...)
+	for _, line := range lines[start+1 : end] {
+		key := tomlKey(line)
+		if next, ok := updates[key]; ok {
+			out = append(out, preserveIndent(line)+next)
+			seen[key] = true
+			continue
+		}
+		out = append(out, line)
+	}
+	for _, line := range targetLines {
+		key := strings.TrimSpace(strings.SplitN(line, "=", 2)[0])
+		if !seen[key] {
+			out = append(out, line)
+		}
+	}
+	out = append(out, lines[end:]...)
+	result := strings.Join(out, "\n")
+	if hadTrailingNewline && !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+	return result
+}
+
+func aghManagedConfigSection(lines []string) (int, int) {
+	start := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[agh_managed_rewrites]" {
+			start = i
+			continue
+		}
+		if start != -1 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			return start, i
+		}
+	}
+	if start == -1 {
+		return -1, -1
+	}
+	return start, len(lines)
+}
+
+func tomlKey(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "=") {
+		return ""
+	}
+	return strings.TrimSpace(strings.SplitN(trimmed, "=", 2)[0])
+}
+
+func preserveIndent(line string) string {
+	return line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+}
+
+func tomlString(v string) string {
+	return strconv.Quote(v)
+}
+
+func tomlStringArray(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	quoted := make([]string, 0, len(values))
+	for _, v := range values {
+		quoted = append(quoted, tomlString(v))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func cleanStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func aghManagedTargetConfigAuditDetail(cfg config.AGHManagedConfig) string {
+	return fmt.Sprintf(
+		"target_mode=%s target_name=%s static_ipv4=%s static_ipv6=%s stale_target_ttl=%s",
+		stringDefault(cfg.TargetMode, "resolved_ip"), cfg.TargetName, strings.Join(cfg.StaticIPv4, ","), strings.Join(cfg.StaticIPv6, ","), stringDefault(cfg.StaleTargetTTL, "24h"),
+	)
+}
+
+func stringDefault(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }
 
 func mapBool(v bool) string {
