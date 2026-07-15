@@ -116,6 +116,7 @@ type CatalogRow struct {
 	Notes          string   `json:"notes,omitempty"`
 	RewriteEnabled bool     `json:"rewrite_enabled"`
 	RewriteReason  string   `json:"rewrite_reason,omitempty"`
+	LastChangedBy  string   `json:"last_changed_by,omitempty"`
 }
 
 // Conflict is a grouped domain/path disagreement that blocks feed emission.
@@ -171,6 +172,7 @@ type CatalogOverride struct {
 	RewriteEnabled  *bool  `json:"rewrite_enabled,omitempty"`
 	RewriteReason   string `json:"rewrite_reason,omitempty"`
 	Notes           string `json:"notes,omitempty"`
+	LastChangedBy   string `json:"last_changed_by,omitempty"`
 }
 
 // Manager stores sources, imports entries, and generates AGH rewrite feeds.
@@ -557,6 +559,7 @@ func (m *Manager) catalogRowFromEntryLocked(e rulecatalog.Entry, ov CatalogOverr
 		Notes:          ov.Notes,
 		RewriteEnabled: rewriteEnabled(e, ov, m.cfg),
 		RewriteReason:  ov.RewriteReason,
+		LastChangedBy:  ov.LastChangedBy,
 	}
 }
 
@@ -594,7 +597,7 @@ func (m *Manager) ListConflicts() []Conflict {
 	return buildConflicts(entries, m.overrides, m.cfg, m.sourcePrioritiesLocked())
 }
 
-func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogRow, error) {
+func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy ...string) (CatalogRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
@@ -628,6 +631,7 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogR
 	cur := m.overrides[targetID]
 	before, beforeExists := captureOverrides(m.overrides, []string{targetID})
 	mergeOverride(&cur, override)
+	setLastChangedBy(&cur, changedBy...)
 	m.overrides[targetID] = cur
 	m.recordRollbackLocked("conflict resolve", []string{targetID}, before, beforeExists, fmt.Sprintf("resolved %s", id))
 	if err := m.saveLocked(); err != nil {
@@ -637,7 +641,7 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogR
 	return m.catalogRowFromEntryLocked(e, cur), nil
 }
 
-func (m *Manager) ResolveConflictByPriority(id string) ([]CatalogRow, error) {
+func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]CatalogRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
@@ -701,6 +705,7 @@ func (m *Manager) ResolveConflictByPriority(id string) ([]CatalogRow, error) {
 	for _, entryID := range ids {
 		cur := m.overrides[entryID]
 		mergeOverride(&cur, ov)
+		setLastChangedBy(&cur, changedBy...)
 		m.overrides[entryID] = cur
 	}
 	source := ""
@@ -714,7 +719,7 @@ func (m *Manager) ResolveConflictByPriority(id string) ([]CatalogRow, error) {
 	return m.rowsForIDsLocked(ids), nil
 }
 
-func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) {
+func (m *Manager) PatchEntry(id string, ov CatalogOverride, changedBy ...string) (CatalogRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.entries[id]
@@ -724,6 +729,7 @@ func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) 
 	cur := m.overrides[id]
 	before, beforeExists := captureOverrides(m.overrides, []string{id})
 	mergeOverride(&cur, ov)
+	setLastChangedBy(&cur, changedBy...)
 	m.overrides[id] = cur
 	m.recordRollbackLocked("catalog patch", []string{id}, before, beforeExists, "patched 1 entry")
 	if err := m.saveLocked(); err != nil {
@@ -733,7 +739,7 @@ func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) 
 	return m.catalogRowFromEntryLocked(e, cur), nil
 }
 
-func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride) ([]CatalogRow, error) {
+func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride, changedBy ...string) ([]CatalogRow, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("ids required")
 	}
@@ -748,6 +754,7 @@ func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride) ([]CatalogR
 	for _, id := range ids {
 		cur := m.overrides[id]
 		mergeOverride(&cur, ov)
+		setLastChangedBy(&cur, changedBy...)
 		m.overrides[id] = cur
 	}
 	m.recordRollbackLocked("catalog bulk patch", ids, before, beforeExists, fmt.Sprintf("bulk patched %d entries", len(ids)))
@@ -1353,6 +1360,7 @@ func buildConflicts(entries []rulecatalog.Entry, overrides map[string]CatalogOve
 			Notes:          ov.Notes,
 			RewriteEnabled: rewriteEnabled(e, ov, cfg),
 			RewriteReason:  ov.RewriteReason,
+			LastChangedBy:  ov.LastChangedBy,
 		}
 		grouped[entryKey(e)] = append(grouped[entryKey(e)], row)
 	}
@@ -1554,6 +1562,15 @@ func mergeOverride(dst *CatalogOverride, src CatalogOverride) {
 	}
 	if src.Notes != "" {
 		dst.Notes = src.Notes
+	}
+}
+
+func setLastChangedBy(dst *CatalogOverride, changedBy ...string) {
+	if len(changedBy) == 0 {
+		return
+	}
+	if actor := strings.TrimSpace(changedBy[0]); actor != "" {
+		dst.LastChangedBy = actor
 	}
 }
 

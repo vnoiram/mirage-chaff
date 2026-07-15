@@ -130,6 +130,43 @@ func TestSourcePriorityPersistsAndAppearsOnRows(t *testing.T) {
 	}
 }
 
+func TestCatalogPatchTracksLastChangedBy(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	path := filepath.Join(t.TempDir(), "managed.json")
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||changed-by.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if _, err := m.PatchEntry(rows[0].ID, CatalogOverride{Notes: "reviewed"}, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	rows = m.CatalogRows()
+	if rows[0].LastChangedBy != "alice" {
+		t.Fatalf("last_changed_by = %q", rows[0].LastChangedBy)
+	}
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows = reopened.CatalogRows()
+	if rows[0].LastChangedBy != "alice" {
+		t.Fatalf("reopened last_changed_by = %q", rows[0].LastChangedBy)
+	}
+}
+
 func TestManagedFeedExcludesHTTPPathRules(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"

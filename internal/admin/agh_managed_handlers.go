@@ -207,7 +207,7 @@ func (s *Server) handleAGHManagedCatalogPatch(w http.ResponseWriter, r *http.Req
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	row, err := s.deps.AGHManaged.PatchEntry(r.PathValue("id"), req)
+	row, err := s.deps.AGHManaged.PatchEntry(r.PathValue("id"), req, sess.username)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -229,7 +229,7 @@ func (s *Server) handleAGHManagedCatalogBulkPatch(w http.ResponseWriter, r *http
 		return
 	}
 	ov := req.Override
-	rows, err := s.deps.AGHManaged.BulkPatchEntries(req.IDs, ov)
+	rows, err := s.deps.AGHManaged.BulkPatchEntries(req.IDs, ov, sess.username)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -251,7 +251,7 @@ func (s *Server) handleAGHManagedConflictResolve(w http.ResponseWriter, r *http.
 		return
 	}
 	if req.Strategy == "source_priority" {
-		rows, err := s.deps.AGHManaged.ResolveConflictByPriority(r.PathValue("id"))
+		rows, err := s.deps.AGHManaged.ResolveConflictByPriority(r.PathValue("id"), sess.username)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -261,7 +261,7 @@ func (s *Server) handleAGHManagedConflictResolve(w http.ResponseWriter, r *http.
 		return
 	}
 	ov := req.CatalogOverride
-	row, err := s.deps.AGHManaged.ResolveConflict(r.PathValue("id"), ov)
+	row, err := s.deps.AGHManaged.ResolveConflict(r.PathValue("id"), ov, sess.username)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

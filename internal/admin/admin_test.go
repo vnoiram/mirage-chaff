@@ -620,6 +620,7 @@ func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
 			"rewrite_enabled":  false,
 			"rewrite_reason":   "bulk disable",
 			"notes":            "bulk note",
+			"last_changed_by":  "payload-user",
 		},
 	})
 	if err != nil {
@@ -674,7 +675,8 @@ func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
 			row.Action != "stub" ||
 			row.RewriteEnabled ||
 			row.RewriteReason != "bulk disable" ||
-			row.Notes != "bulk note" {
+			row.Notes != "bulk note" ||
+			row.LastChangedBy != "admin" {
 			t.Fatalf("row after bulk handler = %+v", row)
 		}
 	}
