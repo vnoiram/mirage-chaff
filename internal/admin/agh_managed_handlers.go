@@ -167,6 +167,36 @@ func (s *Server) handleAGHManagedSourcePendingDiff(w http.ResponseWriter, r *htt
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if kind := strings.TrimSpace(r.URL.Query().Get("kind")); kind == "added" || kind == "removed" || kind == "changed" {
+		query := aghManagedPendingDiffEntryQuery(r)
+		var entries []aghmanaged.PendingDiffEntry
+		switch kind {
+		case "added":
+			entries = diff.Added
+		case "removed":
+			entries = diff.Removed
+		case "changed":
+			entries = diff.Changed
+		}
+		page := aghmanaged.PendingDiffEntriesPage(entries, query)
+		resp := diff
+		resp.Added = nil
+		resp.Removed = nil
+		resp.Changed = nil
+		switch kind {
+		case "added":
+			resp.Added = page.Entries
+		case "removed":
+			resp.Removed = page.Entries
+		case "changed":
+			resp.Changed = page.Entries
+		}
+		writeJSON(w, map[string]any{
+			"source": resp.Source, "added": resp.Added, "removed": resp.Removed, "changed": resp.Changed,
+			"kind": kind, "total": page.Total, "limit": page.Limit, "offset": page.Offset,
+		})
+		return
+	}
 	writeJSON(w, diff)
 }
 

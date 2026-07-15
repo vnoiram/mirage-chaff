@@ -1435,7 +1435,7 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 		TargetMode:    "static_ip",
 		StaticIPv4:    []string{"192.0.2.10"},
 		DefaultPreset: "balanced",
-		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s", LargeChangeRequiresReview: true, LargeChangeThresholdCount: 1},
 	}
 	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
 	if err != nil {
@@ -1454,6 +1454,20 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 	if _, err := managed.SyncSource(context.Background(), sourceB.ID); err != nil {
 		t.Fatal(err)
+	}
+	sourceC, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual-c", Enabled: true, Content: "||old.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), sourceC.ID); err != nil {
+		t.Fatal(err)
+	}
+	sourceC.Content = "||new.example.net^\n"
+	if _, err := managed.UpsertSource(sourceC); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := managed.SyncSource(context.Background(), sourceC.ID); err != nil || !pending.PendingReview {
+		t.Fatalf("pending source = %+v err=%v", pending, err)
 	}
 	rows, err := managed.SourceEntries(sourceA.ID)
 	if err != nil {
@@ -1520,6 +1534,48 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 	if resp.Total != 1 || resp.Limit != 1 || resp.Offset != 0 || len(resp.Entries) != 1 || resp.Entries[0].Match.Domain != "a.example.net" {
 		t.Fatalf("source entries query response = %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/sources/"+sourceC.ID+"/pending-diff", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer pending diff status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var diffResp struct {
+		Added   []aghmanaged.PendingDiffEntry `json:"added"`
+		Removed []aghmanaged.PendingDiffEntry `json:"removed"`
+		Changed []aghmanaged.PendingDiffEntry `json:"changed"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &diffResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(diffResp.Added) != 1 || len(diffResp.Removed) != 1 || len(diffResp.Changed) != 0 {
+		t.Fatalf("pending diff response = %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/sources/"+sourceC.ID+"/pending-diff?kind=added&q=new.example&limit=1&offset=0", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer pending diff query status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var diffPageResp struct {
+		Added   []aghmanaged.PendingDiffEntry `json:"added"`
+		Removed []aghmanaged.PendingDiffEntry `json:"removed"`
+		Changed []aghmanaged.PendingDiffEntry `json:"changed"`
+		Kind    string                        `json:"kind"`
+		Total   int                           `json:"total"`
+		Limit   int                           `json:"limit"`
+		Offset  int                           `json:"offset"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &diffPageResp); err != nil {
+		t.Fatal(err)
+	}
+	if diffPageResp.Kind != "added" || diffPageResp.Total != 1 || diffPageResp.Limit != 1 || diffPageResp.Offset != 0 || len(diffPageResp.Added) != 1 || diffPageResp.Added[0].Match.Domain != "new.example.net" || len(diffPageResp.Removed) != 0 || len(diffPageResp.Changed) != 0 {
+		t.Fatalf("pending diff page response = %s", rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
