@@ -1180,16 +1180,36 @@ async function toggleManagedSourceEntries(id){ try{
   if(existing){ existing.remove(); const b=document.querySelector(`button[data-cmd="toggleManagedSourceEntries"][data-id="${CSS.escape(id)}"]`); if(b) b.textContent='entries'; return; }
   const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
   if(!tr) throw new Error('source row not found');
+  tr.insertAdjacentHTML('afterend',managedSourceEntriesRow(id,[]));
+  const status=document.getElementById(`agh-source-entry-status-${id}`);
+  if(status) status.innerHTML=managedSourceEntriesResultHTML({id,loading:true});
   const r=await api('GET','/api/agh/sources/'+id+'/entries?limit=200&offset=0');
   window.AGH_SOURCE_ENTRY_STATE=window.AGH_SOURCE_ENTRY_STATE||{};
-  window.AGH_SOURCE_ENTRY_STATE[id]={entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:200,filter:''};
-  tr.insertAdjacentHTML('afterend',managedSourceEntriesRow(id,r.entries||[]));
+  window.AGH_SOURCE_ENTRY_STATE[id]={source:r.source||{},entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:200,filter:''};
+  if(status) status.innerHTML=managedSourceEntriesResultHTML(window.AGH_SOURCE_ENTRY_STATE[id]);
   renderManagedSourceEntries(id);
   const b=tr.querySelector(`button[data-cmd="toggleManagedSourceEntries"]`);
   if(b) b.textContent='hide';
-}catch(e){ alert(e.message);} }
+}catch(e){
+  const status=document.getElementById(`agh-source-entry-status-${id}`);
+  if(status) status.innerHTML=managedSourceEntriesResultHTML({id,error:e.message});
+  else alert(e.message);
+} }
+function managedSourceEntriesResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-source-entry-status-${esc(r.id||'source')}">error: ${esc(r.error)}</div>`;
+  if(r.loading) return `<div id="agh-source-entry-status-${esc(r.id||'source')}">loading source entries...</div>`;
+  const source=r.source||{};
+  const rows=[
+    ['source',source.name||source.id||r.id||'source'],
+    ['loaded',(r.entries||[]).length],
+    ['total',Number(r.total||0)],
+    ['filter',r.filter||'']
+  ];
+  return `<div id="agh-source-entry-status-${esc(source.id||r.id||'source')}"><strong>source entries loaded</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedSourceEntriesRow(id,entries){
-  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="15"><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
+  return `<tr data-managed-source-entries="${esc(id)}"><td colspan="15"><div id="agh-source-entry-status-${esc(id)}" class="muted">${managedSourceEntriesResultHTML(window.AGH_SOURCE_ENTRY_STATE?.[id])}</div><div class="row"><input id="agh-source-entry-filter-${esc(id)}" oninput="filterManagedSourceEntries('${esc(id)}')" placeholder="filter source entries"><button class="act" data-cmd="showMoreManagedSourceEntries" data-id="${esc(id)}">show more</button><span id="agh-source-entry-count-${esc(id)}" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>priority</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite_enabled</th><th>rewrite_reason</th><th>feed included</th><th>original_rule</th></tr></thead><tbody id="agh-source-entry-body-${esc(id)}"></tbody></table></div></td></tr>`;
 }
 function managedSourceEntrySearch(r){
   return [r.match?.domain,r.match?.path,managedSourceTraceRefSearch(r.source_refs,r.source_ids||[]),r.category,r.resource_type,r.review_status,r.rewrite_enabled?'rewrite':'no-rewrite',r.rewrite_reason,r.original_rule,r.last_feed_included_at].join(' ').toLowerCase();
