@@ -293,6 +293,46 @@ func TestManagedFeedExcludesHTTPPathRules(t *testing.T) {
 	}
 }
 
+func TestFeedItemsPageFiltersAndPaginatesPreviewItems(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||alpha.example.net^\n||beta.example.net^\n@@||excluded.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.Generate(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	included := true
+	page := FeedItemsPage(p.Items, FeedPreviewQuery{Included: &included, Limit: 1, Offset: 1})
+	if page.Total != 2 || page.Limit != 1 || page.Offset != 1 || len(page.Items) != 1 || page.Items[0].Domain != "beta.example.net" {
+		t.Fatalf("included feed item page = %+v", page)
+	}
+	excluded := false
+	page = FeedItemsPage(p.Items, FeedPreviewQuery{Q: "allow exception", Included: &excluded})
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Domain != "excluded.example.net" {
+		t.Fatalf("excluded reason page = %+v", page)
+	}
+	page = FeedItemsPage(p.Items, FeedPreviewQuery{Q: "manual", Limit: 10, Offset: -20})
+	if page.Total != 3 || page.Offset != 0 || len(page.Items) != 3 {
+		t.Fatalf("source search page = %+v", page)
+	}
+	page = FeedItemsPage(p.Items, FeedPreviewQuery{Offset: 20})
+	if page.Total != 3 || page.Offset != 3 || len(page.Items) != 0 {
+		t.Fatalf("overflow offset page = %+v", page)
+	}
+}
+
 func TestManagedFeedTracksLastIncludedAt(t *testing.T) {
 	cfg := testConfig()
 	cfg.TargetMode = "static_ip"

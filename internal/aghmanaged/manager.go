@@ -128,6 +128,22 @@ type FeedItem struct {
 	Lines          []string    `json:"lines,omitempty"`
 }
 
+// FeedPreviewQuery filters and pages feed preview items.
+type FeedPreviewQuery struct {
+	Q        string
+	Included *bool
+	Limit    int
+	Offset   int
+}
+
+// FeedPreviewPage is a filtered feed preview item page.
+type FeedPreviewPage struct {
+	Items  []FeedItem `json:"items"`
+	Total  int        `json:"total"`
+	Limit  int        `json:"limit"`
+	Offset int        `json:"offset"`
+}
+
 // CatalogRow is an editable catalog row exposed to the admin UI.
 type CatalogRow struct {
 	rulecatalog.Entry
@@ -1329,6 +1345,62 @@ func (m *Manager) ListFeedHistory() []FeedGenerationRecord {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return feedHistoryNewestFirst(m.feedHistory)
+}
+
+func FeedItemsPage(items []FeedItem, q FeedPreviewQuery) FeedPreviewPage {
+	filtered := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		if feedItemMatchesQuery(item, q) {
+			filtered = append(filtered, item)
+		}
+	}
+	total := len(filtered)
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	limit := q.Limit
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return FeedPreviewPage{Items: filtered[offset:end], Total: total, Limit: limit, Offset: offset}
+}
+
+func feedItemMatchesQuery(item FeedItem, q FeedPreviewQuery) bool {
+	if q.Included != nil && item.Included != *q.Included {
+		return false
+	}
+	if strings.TrimSpace(q.Q) != "" && !strings.Contains(feedItemSearchText(item), strings.ToLower(strings.TrimSpace(q.Q))) {
+		return false
+	}
+	return true
+}
+
+func feedItemSearchText(item FeedItem) string {
+	var refs []string
+	for _, ref := range item.SourceRefs {
+		refs = append(refs, ref.ID, ref.Name, ref.Type, ref.URL, fmt.Sprint(ref.Priority))
+	}
+	parts := []string{
+		item.Domain, item.EntryID, strings.Join(item.SourceIDs, " "), strings.Join(refs, " "),
+		item.Category, item.ResourceType, item.ReviewStatus, item.Confidence,
+		item.Reason, strings.Join(item.Lines, " "),
+	}
+	if item.RewriteEnabled {
+		parts = append(parts, "rewrite")
+	} else {
+		parts = append(parts, "no-rewrite")
+	}
+	if item.Included {
+		parts = append(parts, "included")
+	} else {
+		parts = append(parts, "excluded")
+	}
+	return strings.ToLower(strings.Join(parts, " "))
 }
 
 func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string]time.Time, includedIDs []string, generatedAt time.Time, updateFeedSeen bool) error {
