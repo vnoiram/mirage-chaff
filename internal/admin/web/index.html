@@ -371,6 +371,9 @@ async function viewAGHManaged(v){
   v.appendChild(el(`<div class="card"><h2>Feed Setup</h2><div class="kv">
     <div>AGH feed URL</div><div><code>${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')}</code></div>
     <div>AGH setting</div><div>Filters - DNS blocklists - Add blocklist - Add a custom list</div>
+    <div>registration check</div><div>Add the custom list in AGH, run a manual list update in AGH, then verify the feed timestamp and item count here.</div>
+    <div>fetch check</div><div><code>curl -fsS ${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')} | head</code></div>
+    <div>expected feed header</div><div><code>! mirage-chaff managed rewrites</code></div>
     <div>target output</div><div>${esc(managedTargetState(status))}</div>
     <div>target mode</div><div>${esc(status.target_mode||'resolved_ip')}</div>
     <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
