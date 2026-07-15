@@ -440,7 +440,7 @@ function managedSourcePreview(preview){
 function managedSourceEntryTable(entries){
   const shown=(entries||[]).slice(0,100);
   const note=(entries||[]).length>100?` <span class="muted">showing 100 of ${(entries||[]).length}</span>`:'';
-  return `<h3>entries${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>unsupported</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${e.unsupported?'yes':'no'}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="7" class="muted">none</td></tr>`}</tbody></table></div>`;
+  return `<h3>entries${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>unsupported</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${e.unsupported?'yes':'no'}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="8" class="muted">none</td></tr>`}</tbody></table></div>`;
 }
 async function pendingManagedSource(id){ try{ const r=await api('GET','/api/agh/sources/'+id+'/pending-diff'); document.getElementById('agh-source-detail').innerHTML=managedSourcePendingDiff(r); }catch(e){ alert(e.message);} }
 function managedSourcePendingDiff(diff){
@@ -450,7 +450,13 @@ function managedSourcePendingDiff(diff){
 function managedPendingDiffTable(kind,entries){
   const shown=(entries||[]).slice(0,100);
   const note=(entries||[]).length>100?` <span class="muted">showing 100 of ${(entries||[]).length}</span>`:'';
-  return `<h3>${esc(kind)}${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="6" class="muted">none</td></tr>`}</tbody></table></div>`;
+  return `<h3>${esc(kind)}${note}</h3><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody>${shown.map(e=>`<tr><td>${esc(e.match?.domain||'')}</td><td>${esc(e.match?.path||'')}</td><td>${esc(e.category||'')}</td><td>${esc(e.resource_type||'')}</td><td>${esc(e.review_status||'')}</td><td>${managedFeedImpact(e.feed_impact)}</td><td>${esc(e.original_rule||'')}</td></tr>`).join('')||`<tr><td colspan="7" class="muted">none</td></tr>`}</tbody></table></div>`;
+}
+function managedFeedImpact(impact){
+  if(!impact) return '<span class="muted">n/a</span>';
+  const state=impact.would_include?'include':'exclude';
+  const lines=impact.line_count?` (${Number(impact.line_count)} lines)`:'';
+  return `${esc(state)}: ${esc(impact.reason||'')}${esc(lines)}`;
 }
 async function toggleManagedSourceEntries(id){ try{
   const existing=document.querySelector(`tr[data-managed-source-entries="${CSS.escape(id)}"]`);

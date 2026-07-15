@@ -153,10 +153,21 @@ type Conflict struct {
 
 // PendingDiff describes a pending large-change review for one source.
 type PendingDiff struct {
-	Source  Source              `json:"source"`
-	Added   []rulecatalog.Entry `json:"added"`
-	Removed []rulecatalog.Entry `json:"removed"`
-	Changed []rulecatalog.Entry `json:"changed"`
+	Source  Source             `json:"source"`
+	Added   []PendingDiffEntry `json:"added"`
+	Removed []PendingDiffEntry `json:"removed"`
+	Changed []PendingDiffEntry `json:"changed"`
+}
+
+type PendingDiffEntry struct {
+	rulecatalog.Entry
+	FeedImpact FeedImpact `json:"feed_impact"`
+}
+
+type FeedImpact struct {
+	WouldInclude bool   `json:"would_include"`
+	Reason       string `json:"reason"`
+	LineCount    int    `json:"line_count"`
 }
 
 // RollbackRecord captures one reversible catalog override change.
@@ -495,10 +506,10 @@ func (m *Manager) PendingDiff(id string) (PendingDiff, error) {
 		return PendingDiff{}, os.ErrNotExist
 	}
 	prev := entriesForSource(m.entries, id)
-	return pendingDiff(src, prev, pending), nil
+	return m.pendingDiffLocked(src, prev, pending), nil
 }
 
-func (m *Manager) PreviewSource(ctx context.Context, src Source) (Source, []rulecatalog.Entry, error) {
+func (m *Manager) PreviewSource(ctx context.Context, src Source) (Source, []PendingDiffEntry, error) {
 	if src.Type == "" {
 		src.Type = SourceFilterURL
 	}
@@ -517,7 +528,16 @@ func (m *Manager) PreviewSource(ctx context.Context, src Source) (Source, []rule
 	}
 	src.Entries = len(entries)
 	src.Unsupported, src.AllowExceptions = countImported(entries)
-	return src, entries, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	nextEntries := replaceSourceEntries(entriesSlice(m.entries), src.ID, entries)
+	conflicts := m.conflictKeysForEntriesLocked(nextEntries)
+	out := make([]PendingDiffEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, conflicts)})
+	}
+	sortPendingDiffEntries(out)
+	return src, out, nil
 }
 
 func (m *Manager) SyncDue(ctx context.Context) {
@@ -1485,7 +1505,7 @@ func diffEntries(prev, next []rulecatalog.Entry) (added, removed, changed int) {
 	return
 }
 
-func pendingDiff(src Source, prev, next []rulecatalog.Entry) PendingDiff {
+func (m *Manager) pendingDiffLocked(src Source, prev, next []rulecatalog.Entry) PendingDiff {
 	p := map[string]rulecatalog.Entry{}
 	n := map[string]rulecatalog.Entry{}
 	for _, e := range prev {
@@ -1495,25 +1515,74 @@ func pendingDiff(src Source, prev, next []rulecatalog.Entry) PendingDiff {
 		n[e.ID] = e
 	}
 	out := PendingDiff{Source: src}
+	currentEntries := entriesSlice(m.entries)
+	nextEntries := replaceSourceEntries(currentEntries, src.ID, next)
+	currentConflicts := m.conflictKeysForEntriesLocked(currentEntries)
+	nextConflicts := m.conflictKeysForEntriesLocked(nextEntries)
 	for _, e := range next {
 		if old, ok := p[e.ID]; !ok {
-			out.Added = append(out.Added, e)
+			out.Added = append(out.Added, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, nextConflicts)})
 		} else if old.OriginalRule != e.OriginalRule || old.Category != e.Category || old.ResourceType != e.ResourceType {
-			out.Changed = append(out.Changed, e)
+			out.Changed = append(out.Changed, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, nextConflicts)})
 		}
 	}
 	for _, e := range prev {
 		if _, ok := n[e.ID]; !ok {
-			out.Removed = append(out.Removed, e)
+			out.Removed = append(out.Removed, PendingDiffEntry{Entry: e, FeedImpact: m.feedImpactLocked(e, currentConflicts)})
 		}
 	}
-	sortEntries(out.Added)
-	sortEntries(out.Removed)
-	sortEntries(out.Changed)
+	sortPendingDiffEntries(out.Added)
+	sortPendingDiffEntries(out.Removed)
+	sortPendingDiffEntries(out.Changed)
 	return out
 }
 
-func sortEntries(entries []rulecatalog.Entry) {
+func entriesSlice(entries map[string]rulecatalog.Entry) []rulecatalog.Entry {
+	out := make([]rulecatalog.Entry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e)
+	}
+	return out
+}
+
+func replaceSourceEntries(entries []rulecatalog.Entry, sourceID string, next []rulecatalog.Entry) []rulecatalog.Entry {
+	out := make([]rulecatalog.Entry, 0, len(entries)+len(next))
+	for _, e := range entries {
+		if e.Source.Name != sourceID {
+			out = append(out, e)
+		}
+	}
+	for _, e := range next {
+		e.Source.Name = sourceID
+		out = append(out, e)
+	}
+	return out
+}
+
+func (m *Manager) conflictKeysForEntriesLocked(entries []rulecatalog.Entry) map[string]bool {
+	cfg := m.cfg
+	cfg.DefaultPreset = m.effectivePresetLocked()
+	applied := make([]rulecatalog.Entry, 0, len(entries))
+	for _, e := range entries {
+		applied = append(applied, m.applyOverrideLocked(e))
+	}
+	conflicts := buildConflicts(applied, m.overrides, cfg, m.sourcePrioritiesLocked())
+	out := map[string]bool{}
+	for _, conflict := range conflicts {
+		out[domainPathKey(conflict.Domain, conflict.Path)] = true
+	}
+	return out
+}
+
+func (m *Manager) feedImpactLocked(e rulecatalog.Entry, conflictKeys map[string]bool) FeedImpact {
+	cfg := m.cfg
+	cfg.DefaultPreset = m.effectivePresetLocked()
+	e = m.applyOverrideLocked(e)
+	item := m.feedItem(e, m.overrides[e.ID], cfg, m.targetIPs, conflictKeys[entryKey(e)])
+	return FeedImpact{WouldInclude: item.Included, Reason: item.Reason, LineCount: len(item.Lines)}
+}
+
+func sortPendingDiffEntries(entries []PendingDiffEntry) {
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Match.Domain != entries[j].Match.Domain {
 			return entries[i].Match.Domain < entries[j].Match.Domain

@@ -619,6 +619,12 @@ func TestPendingReviewApproveRejectAndReopen(t *testing.T) {
 	if len(diff.Added) != 1 || len(diff.Removed) != 1 || len(diff.Changed) != 0 {
 		t.Fatalf("pending diff = %+v", diff)
 	}
+	if !diff.Added[0].FeedImpact.WouldInclude || diff.Added[0].FeedImpact.Reason != "included" || diff.Added[0].FeedImpact.LineCount != 1 {
+		t.Fatalf("added feed impact = %+v", diff.Added[0].FeedImpact)
+	}
+	if !diff.Removed[0].FeedImpact.WouldInclude || diff.Removed[0].FeedImpact.Reason != "included" || diff.Removed[0].FeedImpact.LineCount != 1 {
+		t.Fatalf("removed feed impact = %+v", diff.Removed[0].FeedImpact)
+	}
 
 	reopened, err := Open(path, cfg, nil)
 	if err != nil {
