@@ -582,7 +582,35 @@ func (s *Server) handleAGHManagedFeedPreview(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, p)
+	page := aghmanaged.FeedItemsPage(p.Items, aghManagedFeedPreviewQuery(r))
+	p.Items = page.Items
+	writeJSON(w, struct {
+		aghmanaged.Preview
+		Total  int `json:"total"`
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}{Preview: p, Total: page.Total, Limit: page.Limit, Offset: page.Offset})
+}
+
+func aghManagedFeedPreviewQuery(r *http.Request) aghmanaged.FeedPreviewQuery {
+	values := r.URL.Query()
+	q := aghmanaged.FeedPreviewQuery{Q: strings.TrimSpace(values.Get("q"))}
+	if v := strings.TrimSpace(values.Get("included")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			q.Included = &parsed
+		}
+	}
+	if v := strings.TrimSpace(values.Get("limit")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			q.Limit = parsed
+		}
+	}
+	if v := strings.TrimSpace(values.Get("offset")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			q.Offset = parsed
+		}
+	}
+	return q
 }
 
 func (s *Server) handleAGHManagedFeedExport(w http.ResponseWriter, r *http.Request, sess *session) {

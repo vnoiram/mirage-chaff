@@ -421,7 +421,7 @@ func TestAGHManagedFeedExportHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||export.example.net^\n"})
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||export.example.net^\n||beta.example.net^\n@@||excluded.example.net^\n"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,6 +461,31 @@ func TestAGHManagedFeedExportHandler(t *testing.T) {
 	}
 	if statusResp.DefaultPreset != "balanced" {
 		t.Fatalf("status default_preset = %q, want balanced", statusResp.DefaultPreset)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/rewrite-feed/preview?q=allow+exception&included=false&limit=1&offset=0", nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer preview status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var previewResp struct {
+		Status aghmanaged.FeedStatus `json:"status"`
+		Items  []aghmanaged.FeedItem `json:"items"`
+		Lines  string                `json:"lines"`
+		Total  int                   `json:"total"`
+		Limit  int                   `json:"limit"`
+		Offset int                   `json:"offset"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &previewResp); err != nil {
+		t.Fatal(err)
+	}
+	if previewResp.Total != 1 || previewResp.Limit != 1 || previewResp.Offset != 0 || len(previewResp.Items) != 1 || previewResp.Items[0].Domain != "excluded.example.net" {
+		t.Fatalf("preview response = %s", rr.Body.String())
+	}
+	if previewResp.Status.ItemCount != 2 || !strings.Contains(previewResp.Lines, "export.example.net") || strings.Contains(previewResp.Lines, "excluded.example.net") {
+		t.Fatalf("preview full status/lines not preserved: %+v\n%s", previewResp.Status, previewResp.Lines)
 	}
 
 	rr = httptest.NewRecorder()
