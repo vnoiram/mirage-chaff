@@ -442,6 +442,20 @@ function managedCatalogBulkResultHTML(r){
   ];
   return `<div id="agh-bulk-status"><strong>bulk edit applied</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedSourceOperationResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-source-status">error: ${esc(r.error)}</div>`;
+  if(r.running) return `<div id="agh-source-status">${esc(r.action||'source operation')}...</div>`;
+  const s=r.source||{};
+  const rows=[
+    ['action',r.action||'source operation'],
+    ['source',s.name||s.id||r.id||''],
+    ['entries',Number(s.entries||0)],
+    ['diff',`+${Number(s.added||0)} -${Number(s.removed||0)} ~${Number(s.changed||0)}`],
+    ['pending review',s.pending_review?'yes':'no']
+  ];
+  return `<div id="agh-source-status"><strong>source operation complete</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedTargetConfigForm(target){
   const mode=target.target_mode||'resolved_ip';
   const readonly=!has('config.edit');
@@ -589,6 +603,7 @@ async function viewAGHManaged(v){
       <select id="agh-source-health-filter" onchange="filterManagedSources()"><option value="">all health</option><option value="healthy">healthy</option><option value="pending">pending</option><option value="stale">stale</option><option value="failing">failing</option><option value="paused">paused</option><option value="never synced">never synced</option><option value="unknown">unknown</option></select>
       <span id="agh-source-count" class="muted"></span>
       <span id="agh-source-health-summary" class="muted">${esc(managedSourceHealthSummaryText(scheduler.source_health))}</span>
+      <span id="agh-source-result" class="muted">${managedSourceOperationResultHTML(null)}</span>
     </div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>priority</th><th>stale policy</th><th>interval</th><th>health</th><th>enabled</th><th>entries</th><th>diff</th><th>duration ms</th><th>failures</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
     ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}" data-source-health="${esc(managedSourceHealthValue(s))}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${has('agh.manage')?`<input class="agh-src-priority" type="number" value="${Number(s.priority||0)}" style="width:80px">`:Number(s.priority||0)}</td><td>${has('agh.manage')?`<select class="agh-src-stale-policy">${optionHTML('exclude',s.stale_feed_policy||'exclude','exclude')}${optionHTML('keep',s.stale_feed_policy||'exclude','keep')}</select><button class="act" data-cmd="saveManagedSourceSettings" data-id="${esc(s.id)}">save</button>`:esc(s.stale_feed_policy||'exclude')}</td><td>${esc(s.sync_interval||'')}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${Number(s.last_duration_ms||0)}</td><td>${Number(s.consecutive_failures||0)}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
