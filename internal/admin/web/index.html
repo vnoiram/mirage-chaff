@@ -152,6 +152,7 @@ let CUR = 'Dashboard';
 let AGH_MANAGED_LAST_BASE_URL = '';
 let AGH_MANAGED_EMERGENCY_RESULT = '';
 let AGH_MANAGED_REFRESH_RESULT = null;
+let AGH_MANAGED_PRESET_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -504,7 +505,7 @@ async function viewAGHManaged(v){
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
     <div>emergency empty</div><div>${managedEmergencyEmptyPanel(status)}</div>
     <div>target mode</div><div>${esc(status.target_mode||'')}</div>
-    <div>default preset</div><div>${has('agh.manage')?`<select id="agh-preset">${['conservative','balanced','aggressive'].map(v=>optionHTML(v,status.default_preset||'balanced')).join('')}</select> <button class="act" data-cmd="saveManagedPreset">save</button><div id="agh-preset-result" class="muted" style="margin-top:6px">${managedPresetResultHTML(null)}</div>`:esc(status.default_preset||'balanced')}</div>
+    <div>default preset</div><div>${has('agh.manage')?`<select id="agh-preset">${['conservative','balanced','aggressive'].map(v=>optionHTML(v,status.default_preset||'balanced')).join('')}</select> <button class="act" data-cmd="saveManagedPreset">save</button><div id="agh-preset-result" class="muted" style="margin-top:6px">${managedPresetResultHTML(AGH_MANAGED_PRESET_RESULT)}</div>`:esc(status.default_preset||'balanced')}</div>
     <div>target name</div><div>${esc(status.target_name||'')}</div>
     <div>resolved IPs</div><div>${esc((status.resolved_ips||[]).join(', ')||'none')}</div>
     <div>target cache</div><div>${status.target_cache_used?'stale cache in use':'fresh or not needed'}</div>
@@ -1025,9 +1026,18 @@ async function rejectManagedSource(id){ try{ await api('POST','/api/agh/sources/
 async function deleteManagedSource(id){ if(!confirm('Delete source '+id+'?'))return; try{ await api('DELETE','/api/agh/sources/'+id); render(); }catch(e){ alert(e.message);} }
 async function saveManagedPreset(){ try{
   const preset=document.getElementById('agh-preset')?.value||'balanced';
-  await api('POST','/api/agh/rewrite-feed/preset',{preset});
+  const out=document.getElementById('agh-preset-result');
+  AGH_MANAGED_PRESET_RESULT={saving:true};
+  if(out) out.innerHTML=managedPresetResultHTML(AGH_MANAGED_PRESET_RESULT);
+  const r=await api('POST','/api/agh/rewrite-feed/preset',{preset});
+  AGH_MANAGED_PRESET_RESULT={default_preset:r.default_preset||preset};
   render();
-}catch(e){ alert(e.message);} }
+}catch(e){
+  AGH_MANAGED_PRESET_RESULT={error:e.message};
+  const out=document.getElementById('agh-preset-result');
+  if(out) out.innerHTML=managedPresetResultHTML(AGH_MANAGED_PRESET_RESULT);
+  else alert(e.message);
+} }
 async function setManagedRewrite(id,on){ try{ await api('PATCH','/api/agh/managed-catalog/'+id,{rewrite_enabled:on,rewrite_reason:on?'manual enable':'manual disable'}); render(); }catch(e){ alert(e.message);} }
 function managedRowByID(id){ return (window.AGH_MANAGED_ROWS||[]).find(r=>r.id===id); }
 function replaceManagedCatalogRow(id,editing){ const r=managedRowByID(id); const tr=document.querySelector(`tr[data-managed-row="${CSS.escape(id)}"]`); if(r&&tr) tr.outerHTML=managedCatalogRow(r,editing); }
