@@ -551,7 +551,7 @@ async function viewAGHManaged(v){
     <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
   </div></div>`));
   v.appendChild(el(`<div class="card"><h2>AGH Managed History</h2>
-    <div class="row"><input id="agh-history-filter" oninput="filterManagedHistory()" placeholder="filter history kind/action/detail"><select id="agh-history-kind" onchange="filterManagedHistory()"><option value="">all kinds</option><option value="audit">audit</option><option value="feed_generation">feed_generation</option><option value="rollback_candidate">rollback_candidate</option></select>${managedHistoryActionFilter((history&&history.events)||[])}<span id="agh-history-count" class="muted"></span><span id="agh-history-kind-summary" class="muted">${esc(managedHistoryKindSummary((history&&history.events)||[]))}</span></div>
+    <div class="row"><input id="agh-history-filter" oninput="filterManagedHistory()" placeholder="filter history kind/action/detail"><select id="agh-history-kind" onchange="filterManagedHistory()"><option value="">all kinds</option><option value="audit">audit</option><option value="feed_generation">feed_generation</option><option value="rollback_candidate">rollback_candidate</option></select>${managedHistoryActionFilter((history&&history.events)||[])}<span id="agh-history-count" class="muted"></span><span id="agh-history-kind-summary" class="muted">${esc(managedHistoryKindSummary((history&&history.events)||[]))}</span><span id="agh-history-action-summary" class="muted">${esc(managedHistoryActionSummary((history&&history.events)||[]))}</span></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>kind</th><th>actor</th><th>action</th><th>detail</th><th>counts</th></tr></thead><tbody>
     ${((history&&history.events)||[]).slice(0,100).map(e=>`<tr data-managed-history data-history-kind="${esc(e.kind||'')}" data-history-action="${esc(e.action||'')}" data-search="${esc(managedHistorySearch(e))}"><td>${esc(e.time?new Date(e.time).toLocaleString():'')}</td><td>${esc(e.kind||'')}</td><td>${esc(e.actor||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.detail||e.summary||'')}</td><td>${managedHistoryCounts(e)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}
     </tbody></table></div></div>`));
@@ -836,6 +836,11 @@ function managedHistoryActionValues(events){
 }
 function managedHistoryActionFilter(events){
   return `<select id="agh-history-action" onchange="filterManagedHistory()"><option value="">all actions</option>${managedHistoryActionValues(events).map(v=>optionHTML(v,'')).join('')}</select>`;
+}
+function managedHistoryActionSummary(events){
+  const counts={};
+  (events||[]).forEach(e=>{ const k=e.action||'unknown'; counts[k]=(counts[k]||0)+1; });
+  return Object.entries(counts).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])).slice(0,6).map(([k,v])=>`${k}: ${v}`).join(' / ');
 }
 function filterManagedHistory(){
   const q=(document.getElementById('agh-history-filter')?.value||'').toLowerCase();
