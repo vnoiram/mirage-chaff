@@ -443,6 +443,22 @@ function managedCatalogBulkResultHTML(r){
   ];
   return `<div id="agh-bulk-status"><strong>bulk edit applied</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedCatalogActionResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-catalog-status">error: ${esc(r.error)}</div>`;
+  if(r.running) return `<div id="agh-catalog-status">${esc(r.action||'catalog action')}...</div>`;
+  const row=r.row||((r.entries||[])[0])||{};
+  const match=row.match||{};
+  const rows=[
+    ['action',r.action||'catalog action'],
+    ['entry',match.domain||row.id||r.id||''],
+    ['updated entries',r.updated!==undefined?Number(r.updated):1],
+    ['review',row.review_status||''],
+    ['rewrite',row.rewrite_enabled?'yes':'no'],
+    ['next action','preview the feed before refreshing AGH filters']
+  ];
+  return `<div id="agh-catalog-status"><strong>catalog action complete</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedSourceOperationResultHTML(r){
   if(!r) return '';
   if(r.error) return `<div id="agh-source-status">error: ${esc(r.error)}</div>`;
@@ -626,6 +642,7 @@ async function viewAGHManaged(v){
       <input id="agh-bulk-reason" placeholder="rewrite reason">
       <button class="act" data-cmd="bulkManagedCatalog">Apply bulk edit</button>
       <span id="agh-bulk-result" class="muted">${managedCatalogBulkResultHTML(AGH_MANAGED_BULK_RESULT)}</span>
+      <span id="agh-catalog-result" class="muted">${managedCatalogActionResultHTML(null)}</span>
     </div>`:''}
     <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th>changed by</th><th>feed included</th><th></th></tr></thead><tbody id="agh-cat-body">
     </tbody></table></div></div>`));
