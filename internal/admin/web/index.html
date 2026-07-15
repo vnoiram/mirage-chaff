@@ -155,6 +155,7 @@ let AGH_MANAGED_REFRESH_RESULT = null;
 let AGH_MANAGED_PRESET_RESULT = null;
 let AGH_MANAGED_BULK_RESULT = null;
 let AGH_MANAGED_ROLLBACK_RESULT = null;
+let AGH_MANAGED_SOURCE_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -603,7 +604,7 @@ async function viewAGHManaged(v){
       <select id="agh-source-health-filter" onchange="filterManagedSources()"><option value="">all health</option><option value="healthy">healthy</option><option value="pending">pending</option><option value="stale">stale</option><option value="failing">failing</option><option value="paused">paused</option><option value="never synced">never synced</option><option value="unknown">unknown</option></select>
       <span id="agh-source-count" class="muted"></span>
       <span id="agh-source-health-summary" class="muted">${esc(managedSourceHealthSummaryText(scheduler.source_health))}</span>
-      <span id="agh-source-result" class="muted">${managedSourceOperationResultHTML(null)}</span>
+      <span id="agh-source-result" class="muted">${managedSourceOperationResultHTML(AGH_MANAGED_SOURCE_RESULT)}</span>
     </div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>name</th><th>type</th><th>priority</th><th>stale policy</th><th>interval</th><th>health</th><th>enabled</th><th>entries</th><th>diff</th><th>duration ms</th><th>failures</th><th>last success</th><th>next</th><th>last error</th><th></th></tr></thead><tbody>
     ${sources.map(s=>`<tr data-managed-source="${esc(s.id)}" data-source-health="${esc(managedSourceHealthValue(s))}"><td>${esc(s.name||s.id)}</td><td>${esc(s.type)}</td><td>${has('agh.manage')?`<input class="agh-src-priority" type="number" value="${Number(s.priority||0)}" style="width:80px">`:Number(s.priority||0)}</td><td>${has('agh.manage')?`<select class="agh-src-stale-policy">${optionHTML('exclude',s.stale_feed_policy||'exclude','exclude')}${optionHTML('keep',s.stale_feed_policy||'exclude','keep')}</select><button class="act" data-cmd="saveManagedSourceSettings" data-id="${esc(s.id)}">save</button>`:esc(s.stale_feed_policy||'exclude')}</td><td>${esc(s.sync_interval||'')}</td><td>${esc(managedSourceHealthLabel(s.health))}</td><td>${s.enabled?'yes':'paused'}</td><td>${s.entries||0}</td><td>+${s.added||0} -${s.removed||0} ~${s.changed||0}</td><td>${Number(s.last_duration_ms||0)}</td><td>${Number(s.consecutive_failures||0)}</td><td>${esc(s.last_success?new Date(s.last_success).toLocaleString():'')}</td><td>${esc(s.next_sync?new Date(s.next_sync).toLocaleString():'')}</td><td>${esc(s.last_error||'')}</td>
@@ -686,6 +687,15 @@ function useManagedAGHBaseURL(){
   const url=document.getElementById('agh-src-url');
   if(url&&AGH_MANAGED_LAST_BASE_URL) url.value=AGH_MANAGED_LAST_BASE_URL;
 }
+function setManagedSourceResult(r){
+  AGH_MANAGED_SOURCE_RESULT=r;
+  const out=document.getElementById('agh-source-result');
+  if(out) out.innerHTML=managedSourceOperationResultHTML(r);
+}
+function managedSourceOperationError(action,e){
+  setManagedSourceResult({action,error:e.message});
+  if(!document.getElementById('agh-source-result')) alert(e.message);
+}
 async function addManagedSource(){ try{
   const type=document.getElementById('agh-src-type').value;
   const cfg=managedSourceTypeConfig(type);
@@ -696,10 +706,17 @@ async function addManagedSource(){ try{
   const body={type,name:managedSourceFormValue('agh-src-name'),enabled:true,priority:Number(document.getElementById('agh-src-priority')?.value||0),stale_feed_policy:document.getElementById('agh-src-stale-policy')?.value||'exclude',sync_interval:managedSourceFormValue('agh-src-interval')};
   if(cfg.content) body.content=content;
   if(cfg.url) body.url=url;
-  await api('POST','/api/agh/sources',body);
+  setManagedSourceResult({action:'add source',running:true});
+  const src=await api('POST','/api/agh/sources',body);
+  AGH_MANAGED_SOURCE_RESULT={action:'add source',source:src};
   render();
-}catch(e){ alert(e.message);} }
-async function syncManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/sync'); render(); }catch(e){ alert(e.message);} }
+}catch(e){ managedSourceOperationError('add source',e);} }
+async function syncManagedSource(id){ try{
+  setManagedSourceResult({action:'sync source',id,running:true});
+  const src=await api('POST','/api/agh/sources/'+id+'/sync');
+  AGH_MANAGED_SOURCE_RESULT={action:'sync source',source:src};
+  render();
+}catch(e){ managedSourceOperationError('sync source',e);} }
 async function previewManagedSource(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); const r=await api('POST','/api/agh/sources/preview?limit=100&offset=0',s); window.AGH_MANAGED_SOURCE_PREVIEW_STATE={source:s,entries:r.entries||[],total:Number(r.total??(r.entries||[]).length),limit:100,filter:''}; document.getElementById('agh-source-detail').innerHTML=managedSourcePreview(r); renderManagedSourcePreviewEntries(); }catch(e){ alert(e.message);} }
 function managedSourcePreview(preview){
   const source=preview.source||{};
@@ -1068,14 +1085,51 @@ async function saveManagedSourceRow(id){ try{
   s.stale_feed_policy=tr.querySelector('.agh-src-edit-stale-policy')?.value||'exclude';
   if(s.type==='manual') s.content=tr.querySelector('.agh-src-edit-content')?.value||'';
   else s.url=tr.querySelector('.agh-src-edit-url')?.value||'';
-  await api('PUT','/api/agh/sources/'+id,s);
+  setManagedSourceResult({action:'save source',id,running:true});
+  const src=await api('PUT','/api/agh/sources/'+id,s);
+  AGH_MANAGED_SOURCE_RESULT={action:'save source',source:src};
   render();
-}catch(e){ alert(e.message);} }
-async function toggleManagedSource(id,on){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); s.enabled=on; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
-async function saveManagedSourceSettings(id){ try{ const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id); if(!s) throw new Error('source not found'); const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`); s.priority=Number(tr?.querySelector('.agh-src-priority')?.value||0); s.stale_feed_policy=tr?.querySelector('.agh-src-stale-policy')?.value||'exclude'; await api('PUT','/api/agh/sources/'+id,s); render(); }catch(e){ alert(e.message);} }
-async function approveManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/approve'); render(); }catch(e){ alert(e.message);} }
-async function rejectManagedSource(id){ try{ await api('POST','/api/agh/sources/'+id+'/reject'); render(); }catch(e){ alert(e.message);} }
-async function deleteManagedSource(id){ if(!confirm('Delete source '+id+'?'))return; try{ await api('DELETE','/api/agh/sources/'+id); render(); }catch(e){ alert(e.message);} }
+}catch(e){ managedSourceOperationError('save source',e);} }
+async function toggleManagedSource(id,on){ try{
+  const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id);
+  if(!s) throw new Error('source not found');
+  s.enabled=on;
+  const action=on?'resume source':'pause source';
+  setManagedSourceResult({action,id,running:true});
+  const src=await api('PUT','/api/agh/sources/'+id,s);
+  AGH_MANAGED_SOURCE_RESULT={action,source:src};
+  render();
+}catch(e){ managedSourceOperationError(on?'resume source':'pause source',e);} }
+async function saveManagedSourceSettings(id){ try{
+  const s=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id);
+  if(!s) throw new Error('source not found');
+  const tr=document.querySelector(`tr[data-managed-source="${CSS.escape(id)}"]`);
+  s.priority=Number(tr?.querySelector('.agh-src-priority')?.value||0);
+  s.stale_feed_policy=tr?.querySelector('.agh-src-stale-policy')?.value||'exclude';
+  setManagedSourceResult({action:'save source settings',id,running:true});
+  const src=await api('PUT','/api/agh/sources/'+id,s);
+  AGH_MANAGED_SOURCE_RESULT={action:'save source settings',source:src};
+  render();
+}catch(e){ managedSourceOperationError('save source settings',e);} }
+async function approveManagedSource(id){ try{
+  setManagedSourceResult({action:'approve source',id,running:true});
+  const src=await api('POST','/api/agh/sources/'+id+'/approve');
+  AGH_MANAGED_SOURCE_RESULT={action:'approve source',source:src};
+  render();
+}catch(e){ managedSourceOperationError('approve source',e);} }
+async function rejectManagedSource(id){ try{
+  setManagedSourceResult({action:'reject source',id,running:true});
+  const src=await api('POST','/api/agh/sources/'+id+'/reject');
+  AGH_MANAGED_SOURCE_RESULT={action:'reject source',source:src};
+  render();
+}catch(e){ managedSourceOperationError('reject source',e);} }
+async function deleteManagedSource(id){ if(!confirm('Delete source '+id+'?'))return; try{
+  const existing=(window.AGH_MANAGED_SOURCES||[]).find(x=>x.id===id)||{id};
+  setManagedSourceResult({action:'delete source',id,running:true});
+  await api('DELETE','/api/agh/sources/'+id);
+  AGH_MANAGED_SOURCE_RESULT={action:'delete source',source:existing};
+  render();
+}catch(e){ managedSourceOperationError('delete source',e);} }
 async function saveManagedPreset(){ try{
   const preset=document.getElementById('agh-preset')?.value||'balanced';
   const out=document.getElementById('agh-preset-result');
