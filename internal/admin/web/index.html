@@ -1101,22 +1101,39 @@ function managedAGHCheckSummary(raw){
   const keys=['reason','rule','service_name','filter_name','filter_id'];
   return keys.filter(k=>raw[k]!==undefined&&raw[k]!==null&&raw[k]!=='').map(k=>`${k}: ${raw[k]}`).join(' / ');
 }
+function managedAGHRegistrationStatusLine(r){
+  if(!r) return 'not checked';
+  if(r.registered&&r.enabled) return 'registered and enabled';
+  if(r.registered) return 'registered but disabled';
+  return 'not registered';
+}
+function managedAGHMatchedFilterText(f){
+  if(!f) return 'none';
+  if(f.name) return `${f.name} (#${f.id||''})`;
+  return f.url||'none';
+}
+function managedAGHRegistrationStatusHTML(r){
+  if(!r) return `<div id="agh-registration-status">not checked</div>`;
+  const check=r.check_result||{};
+  const raw=check.raw||{};
+  const rows=[
+    ['status',managedAGHRegistrationStatusLine(r)],
+    ['base URL',r.base_url||''],
+    ['feed URL',r.feed_url||''],
+    ['registered',r.registered?'yes':'no'],
+    ['enabled',r.enabled?'yes':'no'],
+    ['matched filter',managedAGHMatchedFilterText(r.matched_filter)],
+    ['check_host',r.check_domain?`${r.check_domain}: ${managedAGHCheckSummary(raw)||JSON.stringify(raw)}`:(r.message||'not run')]
+  ];
+  return `<div id="agh-registration-status"><strong>${esc(managedAGHRegistrationStatusLine(r))}</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 async function checkManagedAGHStatus(){ try{
   const out=document.getElementById('agh-registration-result');
   if(out) out.textContent='checking...';
   const r=await api('GET','/api/agh/rewrite-feed/agh-status');
   AGH_MANAGED_LAST_BASE_URL = r.base_url||AGH_MANAGED_LAST_BASE_URL;
   updateManagedSourceTypeFields();
-  const f=r.matched_filter||{};
-  const check=r.check_result||{};
-  const raw=check.raw||{};
-  const rows=[
-    ['registered',r.registered?'yes':'no'],
-    ['enabled',r.enabled?'yes':'no'],
-    ['matched filter',f.name?`${f.name} (#${f.id||''})`:f.url||'none'],
-    ['check_host',r.check_domain?`${r.check_domain}: ${managedAGHCheckSummary(raw)||JSON.stringify(raw)}`:(r.message||'not run')]
-  ];
-  if(out) out.innerHTML=`<div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div>`;
+  if(out) out.innerHTML=managedAGHRegistrationStatusHTML(r);
 }catch(e){
   const out=document.getElementById('agh-registration-result');
   if(out) out.textContent=e.message;
