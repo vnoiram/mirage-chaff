@@ -1575,16 +1575,22 @@ function managedAGHRegistrationStatusHTML(r){
   ];
   return `<div id="agh-registration-status"><strong>${esc(managedAGHRegistrationStatusLine(r))}</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedAGHRegistrationResultHTML(r){
+  if(!r) return managedAGHRegistrationStatusHTML(null);
+  if(r.error) return `<div id="agh-registration-status">error: ${esc(r.error)}</div>`;
+  if(r.checking) return `<div id="agh-registration-status">checking AGH registration...</div>`;
+  return managedAGHRegistrationStatusHTML(r);
+}
 async function checkManagedAGHStatus(){ try{
   const out=document.getElementById('agh-registration-result');
-  if(out) out.innerHTML=`<div id="agh-registration-status">checking...</div>`;
+  if(out) out.innerHTML=managedAGHRegistrationResultHTML({checking:true});
   const r=await api('GET','/api/agh/rewrite-feed/agh-status');
   AGH_MANAGED_LAST_BASE_URL = r.base_url||AGH_MANAGED_LAST_BASE_URL;
   updateManagedSourceTypeFields();
-  if(out) out.innerHTML=managedAGHRegistrationStatusHTML(r);
+  if(out) out.innerHTML=managedAGHRegistrationResultHTML(r);
 }catch(e){
   const out=document.getElementById('agh-registration-result');
-  if(out) out.innerHTML=`<div id="agh-registration-status">error: ${esc(e.message)}</div>`;
+  if(out) out.innerHTML=managedAGHRegistrationResultHTML({error:e.message});
   else alert(e.message);
 } }
 function exportManagedFeedSnapshot(){ window.location.href='/api/agh/rewrite-feed/export'; }
