@@ -166,6 +166,7 @@ let AGH_MANAGED_SOURCE_PREVIEW_RESULT = null;
 let AGH_MANAGED_PENDING_DIFF_RESULT = null;
 let AGH_MANAGED_REGISTRATION_RESULT = null;
 let AGH_MANAGED_FEED_EXPORT_RESULT = null;
+let AGH_MANAGED_CONFIG_RELOAD_RESULT = null;
 
 function render(){
   const login=document.getElementById('login'), app=document.getElementById('app');
@@ -521,7 +522,7 @@ function managedTargetResultHTML(r){
       ['static IPv6',(r.static_ipv6||[]).join(', ')||'none'],
       ['stale target TTL',r.stale_target_ttl||'']
     ];
-    return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload" data-scope="target settings">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
+    return `<div id="agh-target-status"><strong>target settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload" data-scope="target settings">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(AGH_MANAGED_CONFIG_RELOAD_RESULT)}</span></div></div>`;
   }
   const st=r.status||{};
   const rows=[
@@ -548,7 +549,7 @@ function managedSchedulerResultHTML(r){
     ['stale source TTL',s.stale_source_ttl||''],
     ['large change review',s.large_change_requires_review?'enabled':'disabled']
   ];
-  return `<div id="agh-scheduler-status"><strong>scheduler settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload" data-scope="scheduler settings">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(null)}</span></div></div>`;
+  return `<div id="agh-scheduler-status"><strong>scheduler settings saved</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div><div class="muted">${esc(r.note||'call /api/reload to apply')} <button class="act" data-cmd="applyConfigReload" data-scope="scheduler settings">Apply reload</button> <span id="agh-reload-result">${managedConfigReloadResultHTML(AGH_MANAGED_CONFIG_RELOAD_RESULT)}</span></div></div>`;
 }
 function managedSourceOperationResultHTML(r){
   if(!r) return '';
@@ -1502,6 +1503,7 @@ async function refreshManagedTarget(){ try{
 } }
 async function saveManagedTargetConfig(){ try{
   AGH_MANAGED_TARGET_CONFIG_RESULT={action:'save target settings',running:true};
+  AGH_MANAGED_CONFIG_RELOAD_RESULT=null;
   const running=document.getElementById('agh-target-config-result');
   if(running) running.innerHTML=managedTargetResultHTML(AGH_MANAGED_TARGET_CONFIG_RESULT);
   const body={
@@ -1523,6 +1525,7 @@ async function saveManagedTargetConfig(){ try{
 } }
 async function saveManagedSchedulerConfig(){ try{
   AGH_MANAGED_SCHEDULER_CONFIG_RESULT={running:true};
+  AGH_MANAGED_CONFIG_RELOAD_RESULT=null;
   const running=document.getElementById('agh-scheduler-config-result');
   if(running) running.innerHTML=managedSchedulerResultHTML(AGH_MANAGED_SCHEDULER_CONFIG_RESULT);
   const body={
@@ -1856,13 +1859,16 @@ async function savePolicy(){ try{ const n=document.getElementById('pf').value;
   const r=await api('PUT','/api/policy/'+n,{content:document.getElementById('pc').value});
   document.getElementById('pmsg').textContent=r.note||'saved'; }catch(e){ document.getElementById('pmsg').textContent=e.message; } }
 async function applyManagedConfigReload(scope){ try{
+  AGH_MANAGED_CONFIG_RELOAD_RESULT={scope,reloading:true};
   const out=document.getElementById('agh-reload-result');
-  if(out) out.innerHTML=managedConfigReloadResultHTML({scope,reloading:true});
+  if(out) out.innerHTML=managedConfigReloadResultHTML(AGH_MANAGED_CONFIG_RELOAD_RESULT);
   const r=await api('POST','/api/reload');
-  if(out) out.innerHTML=managedConfigReloadResultHTML({scope,status:r.status||'reloaded'});
+  AGH_MANAGED_CONFIG_RELOAD_RESULT={scope,status:r.status||'reloaded'};
+  if(out) out.innerHTML=managedConfigReloadResultHTML(AGH_MANAGED_CONFIG_RELOAD_RESULT);
 }catch(e){
+  AGH_MANAGED_CONFIG_RELOAD_RESULT={scope,error:e.message};
   const out=document.getElementById('agh-reload-result');
-  if(out) out.innerHTML=managedConfigReloadResultHTML({scope,error:e.message});
+  if(out) out.innerHTML=managedConfigReloadResultHTML(AGH_MANAGED_CONFIG_RELOAD_RESULT);
   else alert(e.message);
 } }
 async function reload(){ try{ const r=await api('POST','/api/reload'); alert('reloaded'); }catch(e){ alert(e.message);} }
