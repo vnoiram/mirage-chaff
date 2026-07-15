@@ -228,12 +228,7 @@ func (s *Server) handleAGHManagedCatalogBulkPatch(w http.ResponseWriter, r *http
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	ov := aghmanaged.CatalogOverride{
-		Category:       req.Override.Category,
-		ReviewStatus:   req.Override.ReviewStatus,
-		RewriteEnabled: req.Override.RewriteEnabled,
-		RewriteReason:  req.Override.RewriteReason,
-	}
+	ov := req.Override
 	rows, err := s.deps.AGHManaged.BulkPatchEntries(req.IDs, ov)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

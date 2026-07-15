@@ -662,11 +662,19 @@ func TestBulkPatchEntriesAppliesOverridesAtomically(t *testing.T) {
 	ids := []string{rows[0].ID, rows[1].ID}
 
 	off := false
+	verified := true
 	updated, err := m.BulkPatchEntries(ids, CatalogOverride{
-		Category:       "ad_sdk",
-		ReviewStatus:   "needs_test",
-		RewriteEnabled: &off,
-		RewriteReason:  "bulk disable",
+		Category:        "ad_sdk",
+		ResourceType:    "script",
+		Risk:            "high",
+		Confidence:      "low",
+		ReviewStatus:    "needs_test",
+		Verified:        &verified,
+		ExpectedCatalog: "noop-sdk",
+		Action:          "stub",
+		RewriteEnabled:  &off,
+		RewriteReason:   "bulk disable",
+		Notes:           "bulk note",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -675,7 +683,17 @@ func TestBulkPatchEntriesAppliesOverridesAtomically(t *testing.T) {
 		t.Fatalf("updated = %+v", updated)
 	}
 	for _, row := range m.CatalogRows() {
-		if row.Category != "ad_sdk" || row.ReviewStatus != "needs_test" || row.RewriteEnabled || row.RewriteReason != "bulk disable" {
+		if row.Category != "ad_sdk" ||
+			row.ResourceType != "script" ||
+			row.Risk != "high" ||
+			row.Confidence != "low" ||
+			row.ReviewStatus != "needs_test" ||
+			!row.Verified ||
+			row.ExpectedCatalog != "noop-sdk" ||
+			row.Action != "stub" ||
+			row.RewriteEnabled ||
+			row.RewriteReason != "bulk disable" ||
+			row.Notes != "bulk note" {
 			t.Fatalf("row after bulk patch = %+v", row)
 		}
 	}
@@ -690,13 +708,61 @@ func TestBulkPatchEntriesAppliesOverridesAtomically(t *testing.T) {
 	}
 
 	on := true
-	if _, err := m.BulkPatchEntries([]string{ids[0], "missing"}, CatalogOverride{RewriteEnabled: &on, RewriteReason: "should not apply"}); err == nil {
+	if _, err := m.BulkPatchEntries([]string{ids[0], "missing"}, CatalogOverride{RewriteEnabled: &on, RewriteReason: "should not apply", Risk: "low", Action: "allow"}); err == nil {
 		t.Fatal("BulkPatchEntries should reject missing IDs")
 	}
 	for _, row := range m.CatalogRows() {
-		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
+		if row.RewriteEnabled || row.RewriteReason != "bulk disable" || row.Risk != "high" || row.Action != "stub" {
 			t.Fatalf("bulk patch was not atomic: %+v", row)
 		}
+	}
+}
+
+func TestPatchEntryPersistsClassificationMetadata(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	path := filepath.Join(t.TempDir(), "managed.json")
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceManual, Name: "manual", Enabled: true, Content: "||one.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows := m.CatalogRows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	verified := true
+	row, err := m.PatchEntry(rows[0].ID, CatalogOverride{
+		Risk:            "high",
+		Verified:        &verified,
+		ExpectedCatalog: "noop-sdk",
+		Action:          "stub",
+		Notes:           "verified manually",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Risk != "high" || !row.Verified || row.ExpectedCatalog != "noop-sdk" || row.Action != "stub" || row.Notes != "verified manually" {
+		t.Fatalf("patched row = %+v", row)
+	}
+
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows = reopened.CatalogRows()
+	if len(rows) != 1 {
+		t.Fatalf("reopened rows = %+v", rows)
+	}
+	if rows[0].Risk != "high" || !rows[0].Verified || rows[0].ExpectedCatalog != "noop-sdk" || rows[0].Action != "stub" || rows[0].Notes != "verified manually" {
+		t.Fatalf("reopened row = %+v", rows[0])
 	}
 }
 
@@ -802,7 +868,19 @@ func TestRollbackRestoresCatalogOverrides(t *testing.T) {
 	}
 
 	off = false
-	if _, err := m.BulkPatchEntries([]string{rows[0].ID, rows[1].ID}, CatalogOverride{Category: "ad_sdk", RewriteEnabled: &off, RewriteReason: "bulk disable"}); err != nil {
+	verified := true
+	if _, err := m.BulkPatchEntries([]string{rows[0].ID, rows[1].ID}, CatalogOverride{
+		Category:        "ad_sdk",
+		ResourceType:    "script",
+		Risk:            "high",
+		Confidence:      "low",
+		Verified:        &verified,
+		ExpectedCatalog: "noop-sdk",
+		Action:          "stub",
+		RewriteEnabled:  &off,
+		RewriteReason:   "bulk disable",
+		Notes:           "bulk note",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	rollbacks = m.ListRollbacks()
@@ -817,7 +895,16 @@ func TestRollbackRestoresCatalogOverrides(t *testing.T) {
 		t.Fatalf("bulk restored = %+v", restored)
 	}
 	for _, row := range restored {
-		if row.Category == "ad_sdk" || !row.RewriteEnabled || row.RewriteReason != "" {
+		if row.Category == "ad_sdk" ||
+			row.ResourceType == "script" ||
+			row.Risk == "high" ||
+			row.Confidence == "low" ||
+			row.Verified ||
+			row.ExpectedCatalog == "noop-sdk" ||
+			row.Action == "stub" ||
+			!row.RewriteEnabled ||
+			row.RewriteReason != "" ||
+			row.Notes == "bulk note" {
 			t.Fatalf("row after bulk rollback = %+v", row)
 		}
 	}

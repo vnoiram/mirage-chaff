@@ -182,6 +182,19 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"managedCatalogDetailRow",
 		"agh-edit-review",
 		"agh-edit-confidence",
+		"agh-edit-risk",
+		"agh-edit-verified",
+		"agh-edit-expected",
+		"agh-edit-action",
+		"agh-edit-notes",
+		"agh-bulk-resource",
+		"agh-bulk-risk",
+		"agh-bulk-confidence",
+		"agh-bulk-verified",
+		"agh-bulk-expected",
+		"agh-bulk-action",
+		"agh-bulk-notes",
+		"expected catalog",
 		"original_rule",
 		"unsupported",
 		"details",
@@ -537,8 +550,15 @@ func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
 	bodyBytes, err := json.Marshal(map[string]any{
 		"ids": []string{rows[0].ID, rows[1].ID},
 		"override": map[string]any{
-			"rewrite_enabled": false,
-			"rewrite_reason":  "bulk disable",
+			"resource_type":    "script",
+			"risk":             "high",
+			"confidence":       "low",
+			"verified":         true,
+			"expected_catalog": "noop-sdk",
+			"action":           "stub",
+			"rewrite_enabled":  false,
+			"rewrite_reason":   "bulk disable",
+			"notes":            "bulk note",
 		},
 	})
 	if err != nil {
@@ -585,7 +605,15 @@ func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
 		t.Fatalf("bulk response = %s", rr.Body.String())
 	}
 	for _, row := range managed.CatalogRows() {
-		if row.RewriteEnabled || row.RewriteReason != "bulk disable" {
+		if row.ResourceType != "script" ||
+			row.Risk != "high" ||
+			row.Confidence != "low" ||
+			!row.Verified ||
+			row.ExpectedCatalog != "noop-sdk" ||
+			row.Action != "stub" ||
+			row.RewriteEnabled ||
+			row.RewriteReason != "bulk disable" ||
+			row.Notes != "bulk note" {
 			t.Fatalf("row after bulk handler = %+v", row)
 		}
 	}
@@ -593,7 +621,7 @@ func TestAGHManagedBulkCatalogHandlerRBAC(t *testing.T) {
 	if !ok {
 		t.Fatalf("bulk patch audit missing: %+v", store.AuditLog(20))
 	}
-	for _, want := range []string{"updated=2", "rewrite_enabled", "rewrite_reason"} {
+	for _, want := range []string{"updated=2", "resource_type", "risk", "confidence", "verified", "expected_catalog", "action", "rewrite_enabled", "rewrite_reason", "notes"} {
 		if !strings.Contains(entry.Detail, want) {
 			t.Fatalf("bulk patch audit detail %q missing %q", entry.Detail, want)
 		}

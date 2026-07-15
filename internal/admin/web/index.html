@@ -274,7 +274,7 @@ function optionHTML(value,current,label){
 }
 function managedCatalogDetailRow(r){
   const id=esc(r.id);
-  return `<tr class="agh-cat-detail" data-managed-detail="${id}"><td></td><td colspan="9"><div class="kv">
+  return `<tr class="agh-cat-detail" data-managed-detail="${id}"><td></td><td colspan="14"><div class="kv">
     <div>entry id</div><div>${id}</div>
     <div>source</div><div>${esc(r.source?.name||'')} ${esc(r.source?.type?`(${r.source.type})`:'')}</div>
     <div>source URL</div><div>${esc(r.source?.url||'')}</div>
@@ -282,25 +282,34 @@ function managedCatalogDetailRow(r){
     <div>match</div><div>${esc(r.match?.domain||'')}${r.match?.path?esc(' '+r.match.path):''}</div>
     <div>layer</div><div>${esc(r.layer||'')}</div>
     <div>unsupported</div><div>${r.unsupported?'yes':'no'}</div>
-    <div>classification</div><div>${esc([r.category,r.resource_type,r.review_status,r.confidence].filter(Boolean).join(' / '))}</div>
+    <div>classification</div><div>${esc([r.category,r.resource_type,r.risk,r.review_status,r.confidence].filter(Boolean).join(' / '))}</div>
+    <div>verified</div><div>${r.verified?'yes':'no'}</div>
+    <div>expected catalog</div><div>${esc(r.expected_catalog||'')}</div>
+    <div>action</div><div>${esc(r.action||'')}</div>
+    <div>notes</div><div>${esc(r.notes||'')}</div>
   </div></td></tr>`;
 }
 function managedSourceHealthLabel(h){ return h||'never synced'; }
 function managedCatalogRow(r,editing){
-  const search=esc([r.match?.domain,(r.source_ids||[]).join(','),r.category,r.resource_type,r.review_status,r.confidence].join(' ').toLowerCase());
+  const search=esc([r.match?.domain,(r.source_ids||[]).join(','),r.category,r.resource_type,r.risk,r.review_status,r.confidence,r.expected_catalog,r.action,r.notes,r.rewrite_reason].join(' ').toLowerCase());
   const id=esc(r.id);
   const attrs=`data-source="${esc((r.source_ids||[]).join(','))}" data-category="${esc(r.category||'')}" data-resource="${esc(r.resource_type||'')}" data-review="${esc(r.review_status||'')}" data-rewrite="${r.rewrite_enabled?'true':'false'}"`;
   if(editing){
     return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td>
     <td><input class="agh-edit-category" value="${esc(r.category||'')}" placeholder="category"></td>
     <td><input class="agh-edit-resource" value="${esc(r.resource_type||'')}" placeholder="resource"></td>
+    <td><select class="agh-edit-risk">${optionHTML('',r.risk,'')}${['low','medium','high'].map(v=>optionHTML(v,r.risk)).join('')}</select></td>
+    <td><select class="agh-edit-verified">${optionHTML('true',String(!!r.verified),'yes')}${optionHTML('false',String(!!r.verified),'no')}</select></td>
+    <td><input class="agh-edit-expected" value="${esc(r.expected_catalog||'')}" placeholder="expected catalog"></td>
+    <td><input class="agh-edit-action" value="${esc(r.action||'')}" placeholder="action"></td>
+    <td><input class="agh-edit-notes" value="${esc(r.notes||'')}" placeholder="notes"></td>
     <td><select class="agh-edit-review">${optionHTML('',r.review_status,'')}${['candidate','approved','rejected','needs_test','disabled'].map(v=>optionHTML(v,r.review_status)).join('')}</select></td>
     <td><select class="agh-edit-confidence">${optionHTML('',r.confidence,'')}${['low','medium','high'].map(v=>optionHTML(v,r.confidence)).join('')}</select></td>
     <td><select class="agh-edit-rewrite">${optionHTML('true',String(!!r.rewrite_enabled),'yes')}${optionHTML('false',String(!!r.rewrite_enabled),'no')}</select></td>
     <td><input class="agh-edit-reason" value="${esc(r.rewrite_reason||'')}" placeholder="rewrite reason"></td>
     <td><button class="act" data-cmd="saveManagedCatalogRow" data-id="${id}">save</button><button class="act" data-cmd="cancelManagedCatalogRow" data-id="${id}">cancel</button></td></tr>`;
   }
-  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
+  return `<tr data-search="${search}" ${attrs} data-managed-row="${id}"><td>${has('agh.manage')?`<input type="checkbox" class="agh-cat-select" value="${id}">`:''}</td><td>${esc(r.match?.domain)}</td><td>${esc((r.source_ids||[]).join(','))}</td><td>${esc(r.category)}</td><td>${esc(r.resource_type)}</td><td>${esc(r.risk||'')}</td><td>${r.verified?'yes':'no'}</td><td>${esc(r.expected_catalog||'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.notes||'')}</td><td>${esc(r.review_status)}</td><td>${esc(r.confidence)}</td><td>${r.rewrite_enabled?'yes':'no'}</td><td>${esc(r.rewrite_reason||'')}</td>
     <td><button class="act" data-cmd="toggleManagedCatalogDetails" data-id="${id}">details</button>${has('agh.manage')?`<button class="act" data-cmd="editManagedCatalogRow" data-id="${id}">edit</button><button class="act" data-cmd="managedRewrite" data-id="${id}" data-enabled="${!r.rewrite_enabled}">${r.rewrite_enabled?'disable':'enable'}</button>`:''}</td></tr>`;
 }
 function managedCatalogFilterSelect(id,label,values){
@@ -369,11 +378,18 @@ async function viewAGHManaged(v){
       <button class="act" data-cmd="selectManagedCatalogVisible">select visible</button><button class="act" data-cmd="clearManagedCatalogSelection">clear</button>
       <select id="agh-bulk-rewrite"><option value="">rewrite</option><option value="true">enable rewrite</option><option value="false">disable rewrite</option></select>
       <select id="agh-bulk-review"><option value="">review</option><option value="candidate">candidate</option><option value="approved">approved</option><option value="rejected">rejected</option><option value="needs_test">needs_test</option><option value="disabled">disabled</option></select>
+      <select id="agh-bulk-risk"><option value="">risk</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select>
+      <select id="agh-bulk-confidence"><option value="">confidence</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select>
+      <select id="agh-bulk-verified"><option value="">verified</option><option value="true">verified yes</option><option value="false">verified no</option></select>
       <input id="agh-bulk-category" placeholder="category">
+      <input id="agh-bulk-resource" placeholder="resource type">
+      <input id="agh-bulk-expected" placeholder="expected catalog">
+      <input id="agh-bulk-action" placeholder="action">
+      <input id="agh-bulk-notes" placeholder="notes">
       <input id="agh-bulk-reason" placeholder="rewrite reason">
       <button class="act" data-cmd="bulkManagedCatalog">Apply bulk edit</button>
     </div>`:''}
-    <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th></th></tr></thead><tbody>
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th></th><th>domain</th><th>source</th><th>category</th><th>resource</th><th>risk</th><th>verified</th><th>expected</th><th>action</th><th>notes</th><th>review</th><th>confidence</th><th>rewrite</th><th>reason</th><th></th></tr></thead><tbody>
     ${rows.slice(0,500).map(r=>managedCatalogRow(r,false)).join('')}
     </tbody></table></div></div>`));
 }
@@ -448,12 +464,22 @@ async function saveManagedCatalogRow(id){ try{
   const body={};
   const category=tr.querySelector('.agh-edit-category')?.value.trim()||'';
   const resource=tr.querySelector('.agh-edit-resource')?.value.trim()||'';
+  const risk=tr.querySelector('.agh-edit-risk')?.value||'';
+  const verified=tr.querySelector('.agh-edit-verified')?.value||'';
+  const expected=tr.querySelector('.agh-edit-expected')?.value.trim()||'';
+  const action=tr.querySelector('.agh-edit-action')?.value.trim()||'';
+  const notes=tr.querySelector('.agh-edit-notes')?.value.trim()||'';
   const review=tr.querySelector('.agh-edit-review')?.value||'';
   const confidence=tr.querySelector('.agh-edit-confidence')?.value||'';
   const rewrite=tr.querySelector('.agh-edit-rewrite')?.value||'';
   const reason=tr.querySelector('.agh-edit-reason')?.value.trim()||'';
   if(category && category!==(r.category||'')) body.category=category;
   if(resource && resource!==(r.resource_type||'')) body.resource_type=resource;
+  if(risk && risk!==(r.risk||'')) body.risk=risk;
+  if(verified && (verified==='true')!==!!r.verified) body.verified=verified==='true';
+  if(expected && expected!==(r.expected_catalog||'')) body.expected_catalog=expected;
+  if(action && action!==(r.action||'')) body.action=action;
+  if(notes && notes!==(r.notes||'')) body.notes=notes;
   if(review && review!==(r.review_status||'')) body.review_status=review;
   if(confidence && confidence!==(r.confidence||'')) body.confidence=confidence;
   if(rewrite && (rewrite==='true')!==!!r.rewrite_enabled) body.rewrite_enabled=rewrite==='true';
@@ -471,11 +497,25 @@ async function bulkManagedCatalog(){ try{
   const override={};
   const rewrite=document.getElementById('agh-bulk-rewrite')?.value||'';
   const review=document.getElementById('agh-bulk-review')?.value||'';
+  const risk=document.getElementById('agh-bulk-risk')?.value||'';
+  const confidence=document.getElementById('agh-bulk-confidence')?.value||'';
+  const verified=document.getElementById('agh-bulk-verified')?.value||'';
   const category=(document.getElementById('agh-bulk-category')?.value||'').trim();
+  const resource=(document.getElementById('agh-bulk-resource')?.value||'').trim();
+  const expected=(document.getElementById('agh-bulk-expected')?.value||'').trim();
+  const action=(document.getElementById('agh-bulk-action')?.value||'').trim();
+  const notes=(document.getElementById('agh-bulk-notes')?.value||'').trim();
   const reason=(document.getElementById('agh-bulk-reason')?.value||'').trim();
   if(rewrite) override.rewrite_enabled=rewrite==='true';
   if(review) override.review_status=review;
+  if(risk) override.risk=risk;
+  if(confidence) override.confidence=confidence;
+  if(verified) override.verified=verified==='true';
   if(category) override.category=category;
+  if(resource) override.resource_type=resource;
+  if(expected) override.expected_catalog=expected;
+  if(action) override.action=action;
+  if(notes) override.notes=notes;
   if(reason) override.rewrite_reason=reason;
   if(!Object.keys(override).length) throw new Error('choose at least one bulk edit value');
   await api('POST','/api/agh/managed-catalog/bulk',{ids,override});

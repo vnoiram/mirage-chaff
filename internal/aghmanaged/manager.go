@@ -111,6 +111,8 @@ type FeedItem struct {
 type CatalogRow struct {
 	rulecatalog.Entry
 	SourceIDs      []string `json:"source_ids,omitempty"`
+	Action         string   `json:"action,omitempty"`
+	Notes          string   `json:"notes,omitempty"`
 	RewriteEnabled bool     `json:"rewrite_enabled"`
 	RewriteReason  string   `json:"rewrite_reason,omitempty"`
 }
@@ -542,11 +544,17 @@ func (m *Manager) SourceEntries(id string) ([]CatalogRow, error) {
 
 func (m *Manager) catalogRowLocked(e rulecatalog.Entry) CatalogRow {
 	e = m.applyOverrideLocked(e)
+	return m.catalogRowFromEntryLocked(e, m.overrides[e.ID])
+}
+
+func (m *Manager) catalogRowFromEntryLocked(e rulecatalog.Entry, ov CatalogOverride) CatalogRow {
 	return CatalogRow{
 		Entry:          e,
 		SourceIDs:      []string{e.Source.Name},
-		RewriteEnabled: rewriteEnabled(e, m.overrides[e.ID], m.cfg),
-		RewriteReason:  m.overrides[e.ID].RewriteReason,
+		Action:         ov.Action,
+		Notes:          ov.Notes,
+		RewriteEnabled: rewriteEnabled(e, ov, m.cfg),
+		RewriteReason:  ov.RewriteReason,
 	}
 }
 
@@ -609,7 +617,7 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride) (CatalogR
 		return CatalogRow{}, err
 	}
 	e = m.applyOverrideLocked(e)
-	return CatalogRow{Entry: e, SourceIDs: []string{e.Source.Name}, RewriteEnabled: rewriteEnabled(e, cur, m.cfg), RewriteReason: cur.RewriteReason}, nil
+	return m.catalogRowFromEntryLocked(e, cur), nil
 }
 
 func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) {
@@ -628,7 +636,7 @@ func (m *Manager) PatchEntry(id string, ov CatalogOverride) (CatalogRow, error) 
 		return CatalogRow{}, err
 	}
 	e = m.applyOverrideLocked(e)
-	return CatalogRow{Entry: e, SourceIDs: []string{e.Source.Name}, RewriteEnabled: rewriteEnabled(e, cur, m.cfg), RewriteReason: cur.RewriteReason}, nil
+	return m.catalogRowFromEntryLocked(e, cur), nil
 }
 
 func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride) ([]CatalogRow, error) {
@@ -711,7 +719,7 @@ func (m *Manager) rowsForIDsLocked(ids []string) []CatalogRow {
 	for _, id := range ids {
 		e := m.applyOverrideLocked(m.entries[id])
 		cur := m.overrides[id]
-		rows = append(rows, CatalogRow{Entry: e, SourceIDs: []string{e.Source.Name}, RewriteEnabled: rewriteEnabled(e, cur, m.cfg), RewriteReason: cur.RewriteReason})
+		rows = append(rows, m.catalogRowFromEntryLocked(e, cur))
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Match.Domain != rows[j].Match.Domain {
