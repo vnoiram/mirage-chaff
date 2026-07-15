@@ -159,7 +159,7 @@ func (s *Server) handleAGHManagedSourceEntries(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id := r.PathValue("id")
-	entries, err := s.deps.AGHManaged.SourceEntries(id)
+	page, err := s.deps.AGHManaged.SourceEntriesPage(id, aghManagedCatalogQuery(r))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -170,7 +170,7 @@ func (s *Server) handleAGHManagedSourceEntries(w http.ResponseWriter, r *http.Re
 	}
 	for _, src := range s.deps.AGHManaged.ListSources() {
 		if src.ID == id {
-			writeJSON(w, map[string]any{"source": src, "entries": entries})
+			writeJSON(w, map[string]any{"source": src, "entries": page.Entries, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 			return
 		}
 	}
@@ -182,7 +182,40 @@ func (s *Server) handleAGHManagedCatalog(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, map[string]any{"entries": s.deps.AGHManaged.CatalogRows()})
+	page := s.deps.AGHManaged.CatalogPage(aghManagedCatalogQuery(r))
+	writeJSON(w, map[string]any{"entries": page.Entries, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
+}
+
+func aghManagedCatalogQuery(r *http.Request) aghmanaged.CatalogQuery {
+	values := r.URL.Query()
+	q := aghmanaged.CatalogQuery{
+		Q:            strings.TrimSpace(values.Get("q")),
+		Source:       strings.TrimSpace(values.Get("source")),
+		Category:     strings.TrimSpace(values.Get("category")),
+		ResourceType: strings.TrimSpace(values.Get("resource_type")),
+		ReviewStatus: strings.TrimSpace(values.Get("review_status")),
+	}
+	if v := strings.TrimSpace(values.Get("rewrite_enabled")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			q.RewriteEnabled = &parsed
+		}
+	}
+	if v := strings.TrimSpace(values.Get("unsupported")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			q.Unsupported = &parsed
+		}
+	}
+	if v := strings.TrimSpace(values.Get("limit")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			q.Limit = parsed
+		}
+	}
+	if v := strings.TrimSpace(values.Get("offset")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			q.Offset = parsed
+		}
+	}
+	return q
 }
 
 func (s *Server) handleAGHManagedConflicts(w http.ResponseWriter, r *http.Request, sess *session) {

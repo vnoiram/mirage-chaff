@@ -1421,6 +1421,9 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	var resp struct {
 		Source  aghmanaged.Source       `json:"source"`
 		Entries []aghmanaged.CatalogRow `json:"entries"`
+		Total   int                     `json:"total"`
+		Limit   int                     `json:"limit"`
+		Offset  int                     `json:"offset"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -1436,6 +1439,27 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/sources/"+sourceA.ID+"/entries?q=viewer&rewrite_enabled=false&limit=1", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer source entries query status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	resp = struct {
+		Source  aghmanaged.Source       `json:"source"`
+		Entries []aghmanaged.CatalogRow `json:"entries"`
+		Total   int                     `json:"total"`
+		Limit   int                     `json:"limit"`
+		Offset  int                     `json:"offset"`
+	}{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || resp.Limit != 1 || resp.Offset != 0 || len(resp.Entries) != 1 || resp.Entries[0].Match.Domain != "a.example.net" {
+		t.Fatalf("source entries query response = %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/agh/managed-catalog", nil)
 	req.AddCookie(viewerCookie)
 	h.ServeHTTP(rr, req)
@@ -1444,6 +1468,9 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 	var catalogResp struct {
 		Entries []aghmanaged.CatalogRow `json:"entries"`
+		Total   int                     `json:"total"`
+		Limit   int                     `json:"limit"`
+		Offset  int                     `json:"offset"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &catalogResp); err != nil {
 		t.Fatal(err)
@@ -1456,6 +1483,26 @@ func TestAGHManagedSourceEntriesHandlerAllowsViewer(t *testing.T) {
 	}
 	if !sawUnsupported {
 		t.Fatalf("managed catalog response missing unsupported row: %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/agh/managed-catalog?source="+sourceB.ID+"&unsupported=true&limit=1&offset=0", nil)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("viewer managed catalog query status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	catalogResp = struct {
+		Entries []aghmanaged.CatalogRow `json:"entries"`
+		Total   int                     `json:"total"`
+		Limit   int                     `json:"limit"`
+		Offset  int                     `json:"offset"`
+	}{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &catalogResp); err != nil {
+		t.Fatal(err)
+	}
+	if catalogResp.Total != 1 || catalogResp.Limit != 1 || catalogResp.Offset != 0 || len(catalogResp.Entries) != 1 || !catalogResp.Entries[0].Unsupported || catalogResp.Entries[0].SourceIDs[0] != sourceB.ID {
+		t.Fatalf("managed catalog query response = %s", rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
