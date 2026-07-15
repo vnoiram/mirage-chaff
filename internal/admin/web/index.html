@@ -460,6 +460,20 @@ function managedCatalogActionResultHTML(r){
   ];
   return `<div id="agh-catalog-status"><strong>catalog action complete</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
+function managedFeedPreviewResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-feed-preview-status">error: ${esc(r.error)}</div>`;
+  if(r.previewing) return `<div id="agh-feed-preview-status">previewing feed...</div>`;
+  const st=r.status||{};
+  const rows=[
+    ['target mode',st.target_mode||'resolved_ip'],
+    ['included',Number(st.item_count||0)],
+    ['excluded',Number(st.excluded_count||0)],
+    ['conflicts',Number(st.conflict_count||0)],
+    ['matching items',Number(r.total||0)]
+  ];
+  return `<div id="agh-feed-preview-status"><strong>feed preview ready</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
+}
 function managedSourceOperationResultHTML(r){
   if(!r) return '';
   if(r.error) return `<div id="agh-source-status">error: ${esc(r.error)}</div>`;
@@ -563,6 +577,7 @@ async function viewAGHManaged(v){
   </div>
   <div class="row" style="margin-top:12px">
     <button class="act" onclick="previewManagedFeed()">Preview feed</button>
+    <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(null)}</span>
     <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
     ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted"></span>`:''}
   </div>
