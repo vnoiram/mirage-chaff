@@ -861,6 +861,7 @@ func TestAGHManagedAGHStatusHandlerChecksRegistrationAndHost(t *testing.T) {
 		t.Fatalf("AGH status/check_host called = %v/%v", sawStatus, sawCheckHost)
 	}
 	var resp struct {
+		BaseURL       string          `json:"base_url"`
 		FeedURL       string          `json:"feed_url"`
 		Registered    bool            `json:"registered"`
 		Enabled       bool            `json:"enabled"`
@@ -873,7 +874,7 @@ func TestAGHManagedAGHStatusHandlerChecksRegistrationAndHost(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.FeedURL != "https://managed.example/agh/managed-rewrites.txt" || !resp.Registered || !resp.Enabled || resp.MatchedFilter == nil || resp.MatchedFilter.ID != 9 {
+	if resp.BaseURL != "http://agh.test" || resp.FeedURL != "https://managed.example/agh/managed-rewrites.txt" || !resp.Registered || !resp.Enabled || resp.MatchedFilter == nil || resp.MatchedFilter.ID != 9 {
 		t.Fatalf("registration response = %+v", resp)
 	}
 	if resp.CheckDomain != "status.example.net" || resp.CheckResult.Raw["reason"] != "RewriteRule" {
