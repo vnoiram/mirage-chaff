@@ -503,7 +503,7 @@ async function viewAGHManaged(v){
     <div>AGH feed URL</div><div><code>${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')}</code></div>
     <div>AGH setting</div><div>Filters - DNS blocklists - Add blocklist - Add a custom list</div>
     <div>registration check</div><div>Add the custom list in AGH, run a manual list update in AGH, then verify the feed timestamp and item count here.</div>
-    <div>AGH registration</div><div><button class="act" data-cmd="checkManagedAGHStatus">Check AGH registration</button><div id="agh-registration-result" class="muted" style="margin-top:6px"></div></div>
+    <div>AGH registration</div><div><button class="act" data-cmd="checkManagedAGHStatus">Check AGH registration</button><div id="agh-registration-result" class="muted" style="margin-top:6px">${managedAGHRegistrationStatusHTML(null)}</div></div>
     ${has('agh.manage')?`<div>AGH refresh</div><div><label><input id="agh-refresh-force" type="checkbox"> force refresh</label> <button class="act" data-cmd="refreshAGHFilters">Refresh AGH filters</button> <span id="agh-refresh-result" class="muted"></span></div>`:''}
     <div>fetch check</div><div><code>curl -fsS ${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')} | head</code></div>
     <div>expected feed header</div><div><code>! mirage-chaff managed rewrites</code></div>
@@ -1129,14 +1129,14 @@ function managedAGHRegistrationStatusHTML(r){
 }
 async function checkManagedAGHStatus(){ try{
   const out=document.getElementById('agh-registration-result');
-  if(out) out.textContent='checking...';
+  if(out) out.innerHTML=`<div id="agh-registration-status">checking...</div>`;
   const r=await api('GET','/api/agh/rewrite-feed/agh-status');
   AGH_MANAGED_LAST_BASE_URL = r.base_url||AGH_MANAGED_LAST_BASE_URL;
   updateManagedSourceTypeFields();
   if(out) out.innerHTML=managedAGHRegistrationStatusHTML(r);
 }catch(e){
   const out=document.getElementById('agh-registration-result');
-  if(out) out.textContent=e.message;
+  if(out) out.innerHTML=`<div id="agh-registration-status">error: ${esc(e.message)}</div>`;
   else alert(e.message);
 } }
 function exportManagedFeedSnapshot(){ window.location.href='/api/agh/rewrite-feed/export'; }
