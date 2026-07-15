@@ -179,6 +179,17 @@ type CatalogPage struct {
 	Offset  int          `json:"offset"`
 }
 
+// CatalogFacets summarizes filter options and counts for catalog rows.
+type CatalogFacets struct {
+	Sources        []string `json:"sources"`
+	Categories     []string `json:"categories"`
+	ResourceTypes  []string `json:"resource_types"`
+	ReviewStatuses []string `json:"review_statuses"`
+	Unsupported    int      `json:"unsupported_count"`
+	Supported      int      `json:"supported_count"`
+	Total          int      `json:"total"`
+}
+
 // Conflict is a grouped domain/path disagreement that blocks feed emission.
 type Conflict struct {
 	ID             string       `json:"id"`
@@ -652,6 +663,47 @@ func (m *Manager) CatalogPage(q CatalogQuery) CatalogPage {
 	}
 	sortCatalogRows(rows)
 	return catalogPage(rows, q)
+}
+
+func (m *Manager) CatalogFacets(q CatalogQuery) CatalogFacets {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var facets CatalogFacets
+	sourceSet := map[string]bool{}
+	categorySet := map[string]bool{}
+	resourceSet := map[string]bool{}
+	reviewSet := map[string]bool{}
+	for _, e := range m.entries {
+		row := m.catalogRowLocked(e)
+		if !catalogRowMatchesQuery(row, q) {
+			continue
+		}
+		facets.Total++
+		if row.Unsupported {
+			facets.Unsupported++
+		} else {
+			facets.Supported++
+		}
+		for _, source := range row.SourceIDs {
+			if source != "" {
+				sourceSet[source] = true
+			}
+		}
+		if row.Category != "" {
+			categorySet[row.Category] = true
+		}
+		if row.ResourceType != "" {
+			resourceSet[row.ResourceType] = true
+		}
+		if row.ReviewStatus != "" {
+			reviewSet[row.ReviewStatus] = true
+		}
+	}
+	facets.Sources = sortedKeys(sourceSet)
+	facets.Categories = sortedKeys(categorySet)
+	facets.ResourceTypes = sortedKeys(resourceSet)
+	facets.ReviewStatuses = sortedKeys(reviewSet)
+	return facets
 }
 
 func (m *Manager) SourceEntries(id string) ([]CatalogRow, error) {
