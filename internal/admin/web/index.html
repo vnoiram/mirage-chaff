@@ -105,6 +105,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='showMoreManagedCatalogRows') showMoreManagedCatalogRows();
   if(d.cmd==='bulkManagedCatalog') bulkManagedCatalog();
   if(d.cmd==='exportManagedFeedSnapshot') exportManagedFeedSnapshot();
+  if(d.cmd==='showMoreManagedFeedPreviewItems') showMoreManagedFeedPreviewItems();
   if(d.cmd==='toggleManagedRollbackDetails') toggleManagedRollbackDetails(d.id||'');
   if(d.cmd==='applyManagedRollback') applyManagedRollback(d.id||'');
   if(d.cmd==='saveManagedPreset') saveManagedPreset();
@@ -936,15 +937,45 @@ function managedFeedPreviewDiagnostics(p){
   </div>`;
 }
 function managedFeedItemLineCount(i){ return (i.lines||[]).length; }
+function managedFeedPreviewItemSearch(i){
+  return [i.domain,managedSourceTraceRefSearch(i.source_refs,i.source_ids||[]),i.reason,i.category,i.resource_type,i.review_status,i.rewrite_enabled?'rewrite':'no-rewrite',i.included?'included':'excluded'].join(' ').toLowerCase();
+}
+function managedFeedPreviewFilteredItems(){
+  const state=window.AGH_MANAGED_FEED_PREVIEW_STATE||{items:[]};
+  const q=(document.getElementById('agh-feed-preview-filter')?.value||'').toLowerCase();
+  const included=document.getElementById('agh-feed-preview-included')?.value||'';
+  return (state.items||[]).filter(i=>managedFeedPreviewItemSearch(i).includes(q) && (!included || String(!!i.included)===included));
+}
 function managedFeedPreviewTable(items){
-  const shown=(items||[]).slice(0,500);
-  const note=(items||[]).length>500?` <span class="muted">showing 500 of ${(items||[]).length}</span>`:'';
-  return `<h3>feed items${note}</h3><div class="grid"><table><thead><tr><th>domain</th><th>included</th><th>reason</th><th>source trace</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite</th><th>lines</th></tr></thead><tbody>${shown.map(i=>`<tr><td>${esc(i.domain)}</td><td>${i.included?'yes':'no'}</td><td>${esc(i.reason)}</td><td>${managedSourceTraceRefs(i.source_refs,i.source_ids||[])}</td><td>${esc(i.category||'')}</td><td>${esc(i.resource_type||'')}</td><td>${esc(i.review_status||'')}</td><td>${i.rewrite_enabled?'yes':'no'}</td><td>${managedFeedItemLineCount(i)}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">none</td></tr>'}</tbody></table></div>`;
+  return `<div class="row"><input id="agh-feed-preview-filter" oninput="filterManagedFeedPreviewItems()" placeholder="filter feed preview domain/source/reason/category/resource/review"><select id="agh-feed-preview-included" onchange="filterManagedFeedPreviewItems()"><option value="">included</option><option value="true">included only</option><option value="false">excluded only</option></select><button class="act" data-cmd="showMoreManagedFeedPreviewItems">show more</button><span id="agh-feed-preview-count" class="muted"></span></div><h3>feed items</h3><div class="grid"><table><thead><tr><th>domain</th><th>included</th><th>reason</th><th>source trace</th><th>category</th><th>resource_type</th><th>review_status</th><th>rewrite</th><th>lines</th></tr></thead><tbody id="agh-feed-preview-body"></tbody></table></div>`;
+}
+function renderManagedFeedPreviewItems(){
+  const state=window.AGH_MANAGED_FEED_PREVIEW_STATE;
+  const body=document.getElementById('agh-feed-preview-body');
+  if(!state||!body) return;
+  const filtered=managedFeedPreviewFilteredItems();
+  const shown=filtered.slice(0,state.limit||500);
+  body.innerHTML=shown.map(i=>`<tr><td>${esc(i.domain)}</td><td>${i.included?'yes':'no'}</td><td>${esc(i.reason)}</td><td>${managedSourceTraceRefs(i.source_refs,i.source_ids||[])}</td><td>${esc(i.category||'')}</td><td>${esc(i.resource_type||'')}</td><td>${esc(i.review_status||'')}</td><td>${i.rewrite_enabled?'yes':'no'}</td><td>${managedFeedItemLineCount(i)}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">none</td></tr>';
+  const count=document.getElementById('agh-feed-preview-count');
+  if(count) count.textContent=`showing ${shown.length} of ${filtered.length} matching / ${(state.items||[]).length} total`;
+}
+function filterManagedFeedPreviewItems(){
+  const state=window.AGH_MANAGED_FEED_PREVIEW_STATE;
+  if(state) state.limit=500;
+  renderManagedFeedPreviewItems();
+}
+function showMoreManagedFeedPreviewItems(){
+  const state=window.AGH_MANAGED_FEED_PREVIEW_STATE;
+  if(!state) return;
+  state.limit=(state.limit||500)+500;
+  renderManagedFeedPreviewItems();
 }
 async function previewManagedFeed(){ try{
   const p=await api('GET','/api/agh/rewrite-feed/preview');
+  window.AGH_MANAGED_FEED_PREVIEW_STATE={items:p.items||[],limit:500};
   document.getElementById('agh-feed').textContent=p.lines||'';
   document.getElementById('agh-feed-items').innerHTML=managedFeedPreviewDiagnostics(p)+managedFeedPreviewTable(p.items||[]);
+  renderManagedFeedPreviewItems();
 }catch(e){ alert(e.message);} }
 function managedCatalogFilteredRows(){
   const state=window.AGH_MANAGED_CATALOG_STATE||{rows:[]};
