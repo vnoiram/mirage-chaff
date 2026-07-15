@@ -893,14 +893,34 @@ async function showMoreManagedSourcePreviewEntries(){
   await fetchManagedSourcePreviewEntries(false);
 }
 async function pendingManagedSource(id){ try{
+  const detail=document.getElementById('agh-source-detail');
+  if(detail) detail.innerHTML=managedPendingDiffResultHTML({sourceID:id,loading:true});
   const r=await api('GET','/api/agh/sources/'+id+'/pending-diff');
   window.AGH_MANAGED_SOURCE_DIFF_STATE={sourceID:id,source:r.source||{},entries:{added:[],removed:[],changed:[]},totals:{added:(r.added||[]).length,removed:(r.removed||[]).length,changed:(r.changed||[]).length},limits:{added:100,removed:100,changed:100},filters:{added:'',removed:'',changed:''}};
-  document.getElementById('agh-source-detail').innerHTML=managedSourcePendingDiff(r);
+  if(detail) detail.innerHTML=managedPendingDiffResultHTML(r)+managedSourcePendingDiff(r);
   await Promise.all(['added','removed','changed'].map(kind=>fetchManagedPendingDiffKind(kind,true)));
-}catch(e){ alert(e.message);} }
+}catch(e){
+  const detail=document.getElementById('agh-source-detail');
+  if(detail) detail.innerHTML=managedPendingDiffResultHTML({error:e.message});
+  else alert(e.message);
+} }
 function managedSourcePendingDiff(diff){
   const source=diff.source||{};
   return `<div><h3>pending diff: ${esc(source.name||source.id||'source')}</h3><div class="kv"><div>added</div><div>${(diff.added||[]).length}</div><div>removed</div><div>${(diff.removed||[]).length}</div><div>changed</div><div>${(diff.changed||[]).length}</div></div>${managedPendingDiffTable('added',diff.added||[])}${managedPendingDiffTable('removed',diff.removed||[])}${managedPendingDiffTable('changed',diff.changed||[])}</div>`;
+}
+function managedPendingDiffResultHTML(r){
+  if(!r) return '';
+  if(r.error) return `<div id="agh-pending-diff-status">error: ${esc(r.error)}</div>`;
+  if(r.loading) return `<div id="agh-pending-diff-status">loading pending diff...</div>`;
+  const source=r.source||{};
+  const totals=r.totals||{added:(r.added||[]).length,removed:(r.removed||[]).length,changed:(r.changed||[]).length};
+  const rows=[
+    ['source',source.name||source.id||r.sourceID||'source'],
+    ['added',Number(totals.added||0)],
+    ['removed',Number(totals.removed||0)],
+    ['changed',Number(totals.changed||0)]
+  ];
+  return `<div id="agh-pending-diff-status"><strong>pending diff ready</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
 }
 function managedPendingDiffTable(kind,entries){
   return `<h3>${esc(kind)}</h3><div class="row"><input id="agh-pending-${esc(kind)}-filter" oninput="filterManagedPendingDiff('${esc(kind)}')" placeholder="filter ${esc(kind)} diff"><button class="act" data-cmd="showMoreManagedPendingDiff" data-kind="${esc(kind)}">show more</button><span id="agh-pending-${esc(kind)}-count" class="muted"></span></div><div class="grid" style="margin-top:6px"><table><thead><tr><th>domain</th><th>source trace</th><th>path</th><th>category</th><th>resource_type</th><th>review_status</th><th>changes</th><th>feed impact</th><th>original_rule</th></tr></thead><tbody id="agh-pending-${esc(kind)}-body"></tbody></table></div>`;
