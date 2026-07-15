@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -23,6 +24,26 @@ type aghAPIConfig struct {
 type aghRefreshResult struct {
 	BaseURL string `json:"base_url"`
 	Force   bool   `json:"force"`
+}
+
+type aghFilterMatch struct {
+	ID      int    `json:"id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Enabled bool   `json:"enabled"`
+}
+
+type aghRegistrationStatus struct {
+	BaseURL       string          `json:"base_url"`
+	FeedURL       string          `json:"feed_url"`
+	Registered    bool            `json:"registered"`
+	Enabled       bool            `json:"enabled"`
+	MatchedFilter *aghFilterMatch `json:"matched_filter,omitempty"`
+}
+
+type aghCheckHostResult struct {
+	Domain string         `json:"domain"`
+	Raw    map[string]any `json:"raw,omitempty"`
 }
 
 func refreshAGHFilters(ctx context.Context, client *http.Client, cfg config.AGHSyncConfig, force bool) (aghRefreshResult, error) {
@@ -54,6 +75,88 @@ func refreshAGHFilters(ctx context.Context, client *http.Client, cfg config.AGHS
 		return aghRefreshResult{}, fmt.Errorf("refresh AGH filters: status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	return aghRefreshResult{BaseURL: apiCfg.BaseURL, Force: force}, nil
+}
+
+func checkAGHFeedRegistration(ctx context.Context, client *http.Client, cfg config.AGHSyncConfig, feedURL string) (aghRegistrationStatus, error) {
+	apiCfg, err := loadAGHAPIConfig(cfg)
+	if err != nil {
+		return aghRegistrationStatus{}, err
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	var response struct {
+		Filters []struct {
+			ID      int    `json:"id"`
+			Name    string `json:"name"`
+			URL     string `json:"url"`
+			Enabled bool   `json:"enabled"`
+		} `json:"filters"`
+	}
+	if err := doAGHJSON(ctx, client, apiCfg, http.MethodGet, "/control/filtering/status", nil, &response); err != nil {
+		return aghRegistrationStatus{}, fmt.Errorf("check AGH feed registration: %w", err)
+	}
+	out := aghRegistrationStatus{BaseURL: apiCfg.BaseURL, FeedURL: feedURL}
+	want := normalizeAGHURL(feedURL)
+	for _, filter := range response.Filters {
+		if normalizeAGHURL(filter.URL) != want {
+			continue
+		}
+		matched := aghFilterMatch{ID: filter.ID, Name: filter.Name, URL: filter.URL, Enabled: filter.Enabled}
+		out.Registered = true
+		out.Enabled = filter.Enabled
+		out.MatchedFilter = &matched
+		break
+	}
+	return out, nil
+}
+
+func checkAGHHost(ctx context.Context, client *http.Client, cfg config.AGHSyncConfig, domain string) (aghCheckHostResult, error) {
+	apiCfg, err := loadAGHAPIConfig(cfg)
+	if err != nil {
+		return aghCheckHostResult{}, err
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	path := "/control/filtering/check_host?name=" + url.QueryEscape(domain)
+	var raw map[string]any
+	if err := doAGHJSON(ctx, client, apiCfg, http.MethodGet, path, nil, &raw); err != nil {
+		return aghCheckHostResult{}, fmt.Errorf("check AGH host: %w", err)
+	}
+	return aghCheckHostResult{Domain: domain, Raw: raw}, nil
+}
+
+func doAGHJSON(ctx context.Context, client *http.Client, cfg aghAPIConfig, method, path string, body io.Reader, dst any) error {
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(cfg.BaseURL, "/")+path, body)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.SetBasicAuth(cfg.User, cfg.Pass)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	if dst == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeAGHURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
 func loadAGHAPIConfig(cfg config.AGHSyncConfig) (aghAPIConfig, error) {

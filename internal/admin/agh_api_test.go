@@ -86,6 +86,63 @@ func TestRefreshAGHFiltersHTTPErrorRedactsCredentials(t *testing.T) {
 	}
 }
 
+func TestCheckAGHFeedRegistration(t *testing.T) {
+	var sawAuth bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/control/filtering/status" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		user, pass, ok := r.BasicAuth()
+		sawAuth = ok && user == "admin" && pass == "secret"
+		return stringResponse(http.StatusOK, `{"filters":[{"id":7,"name":"mirage","url":"https://mirage.example/agh/managed-rewrites.txt/","enabled":false}]}`), nil
+	})}
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	got, err := checkAGHFeedRegistration(context.Background(), client, config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath}, "https://mirage.example/agh/managed-rewrites.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawAuth || !got.Registered || got.Enabled || got.MatchedFilter == nil || got.MatchedFilter.ID != 7 {
+		t.Fatalf("status=%+v sawAuth=%v", got, sawAuth)
+	}
+}
+
+func TestCheckAGHFeedRegistrationNotFound(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return stringResponse(http.StatusOK, `{"filters":[{"url":"https://other.example/list.txt","enabled":true}]}`), nil
+	})}
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	got, err := checkAGHFeedRegistration(context.Background(), client, config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath}, "https://mirage.example/agh/managed-rewrites.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Registered || got.Enabled || got.MatchedFilter != nil {
+		t.Fatalf("status=%+v", got)
+	}
+}
+
+func TestCheckAGHHost(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/control/filtering/check_host" || r.URL.Query().Get("name") != "tracker.example.net" {
+			t.Fatalf("url = %s", r.URL.String())
+		}
+		return stringResponse(http.StatusOK, `{"reason":"RewriteRule","rule":"||tracker.example.net^$dnsrewrite=NOERROR;A;192.0.2.10"}`), nil
+	})}
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	got, err := checkAGHHost(context.Background(), client, config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath}, "tracker.example.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Domain != "tracker.example.net" || got.Raw["reason"] != "RewriteRule" {
+		t.Fatalf("check result = %+v", got)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
