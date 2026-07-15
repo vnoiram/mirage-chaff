@@ -104,6 +104,7 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='clearManagedCatalogSelection') clearManagedCatalogSelection();
   if(d.cmd==='bulkManagedCatalog') bulkManagedCatalog();
   if(d.cmd==='exportManagedFeedSnapshot') exportManagedFeedSnapshot();
+  if(d.cmd==='toggleManagedRollbackDetails') toggleManagedRollbackDetails(d.id||'');
   if(d.cmd==='applyManagedRollback') applyManagedRollback(d.id||'');
   if(d.cmd==='saveManagedPreset') saveManagedPreset();
   if(d.cmd==='refreshAGHFilters') refreshAGHFilters();
@@ -452,6 +453,7 @@ async function viewAGHManaged(v){
   const unsupportedCount=rows.filter(r=>r.unsupported).length;
   window.AGH_MANAGED_SOURCES=sources;
   window.AGH_MANAGED_ROWS=rows;
+  window.AGH_MANAGED_ROLLBACKS=rollbacks;
   v.appendChild(el(`<div class="card"><h2>AGH Managed Overview</h2><div class="kv">
     <div>feed path</div><div>${esc(status.feed_path||'/agh/managed-rewrites.txt')}</div>
     <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
@@ -492,8 +494,9 @@ async function viewAGHManaged(v){
     <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
   </div></div>`));
   v.appendChild(el(`<div class="card"><h2>AGH Managed History</h2>
+    <div class="row"><input id="agh-history-filter" oninput="filterManagedHistory()" placeholder="filter history kind/action/detail"></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>kind</th><th>actor</th><th>action</th><th>detail</th><th>counts</th></tr></thead><tbody>
-    ${((history&&history.events)||[]).slice(0,100).map(e=>`<tr><td>${esc(e.time?new Date(e.time).toLocaleString():'')}</td><td>${esc(e.kind||'')}</td><td>${esc(e.actor||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.detail||e.summary||'')}</td><td>${managedHistoryCounts(e)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}
+    ${((history&&history.events)||[]).slice(0,100).map(e=>`<tr data-managed-history data-search="${esc(managedHistorySearch(e))}"><td>${esc(e.time?new Date(e.time).toLocaleString():'')}</td><td>${esc(e.kind||'')}</td><td>${esc(e.actor||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.detail||e.summary||'')}</td><td>${managedHistoryCounts(e)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Feed Generation History</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>target mode</th><th>included</th><th>delta</th><th>excluded</th><th>conflicts</th><th>emergency empty</th></tr></thead><tbody>
@@ -501,8 +504,8 @@ async function viewAGHManaged(v){
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Rollback Candidates</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>action</th><th>summary</th><th>entries</th><th></th></tr></thead><tbody>
-    ${rollbacks.slice(0,50).map(r=>`<tr><td>${esc(r.time?new Date(r.time).toLocaleString():'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.summary||'')}</td><td>${(r.entry_ids||[]).length}</td>
-    <td>${has('agh.manage')?`<button class="act danger" data-cmd="applyManagedRollback" data-id="${esc(r.id)}">rollback</button>`:''}</td></tr>`).join('')}
+    ${rollbacks.slice(0,50).map(r=>`<tr data-managed-rollback="${esc(r.id)}"><td>${esc(r.time?new Date(r.time).toLocaleString():'')}</td><td>${esc(r.action||'')}</td><td>${esc(r.summary||'')}</td><td>${(r.entry_ids||[]).length}</td>
+    <td><button class="act" data-cmd="toggleManagedRollbackDetails" data-id="${esc(r.id)}">details</button>${has('agh.manage')?`<button class="act danger" data-cmd="applyManagedRollback" data-id="${esc(r.id)}">rollback</button>`:''}</td></tr>`).join('')}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Conflicts</h2>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>domain</th><th>path</th><th>reason</th><th>sources</th><th>entries</th><th></th></tr></thead><tbody>
@@ -599,6 +602,32 @@ function managedHistoryCounts(e){
   if(e.entry_count) parts.push(`${Number(e.entry_count)} entries`);
   if(e.emergency_empty) parts.push('emergency');
   return esc(parts.join(', '));
+}
+function managedHistorySearch(e){
+  return [e.kind,e.actor,e.action,e.detail,e.summary,managedHistoryCounts(e),e.target_mode].join(' ').toLowerCase();
+}
+function filterManagedHistory(){
+  const q=(document.getElementById('agh-history-filter')?.value||'').toLowerCase();
+  document.querySelectorAll('tr[data-managed-history]').forEach(tr=>{ tr.style.display=tr.dataset.search.includes(q)?'':'none'; });
+}
+function managedRollbackOverrideList(title,map){
+  const ids=Object.keys(map||{}).sort();
+  if(!ids.length) return `<h3>${esc(title)}</h3><div class="muted">none</div>`;
+  return `<h3>${esc(title)}</h3><div class="grid"><table><thead><tr><th>entry id</th><th>override</th></tr></thead><tbody>${ids.map(id=>`<tr><td><code>${esc(id)}</code></td><td><pre style="white-space:pre-wrap;margin:0">${esc(JSON.stringify(map[id]||{},null,2))}</pre></td></tr>`).join('')}</tbody></table></div>`;
+}
+function managedRollbackDetailsRow(r){
+  return `<tr data-managed-rollback-detail="${esc(r.id)}"><td colspan="5"><div class="kv">
+    <div>rollback id</div><div><code>${esc(r.id)}</code></div>
+    <div>entry IDs</div><div>${(r.entry_ids||[]).map(id=>`<code>${esc(id)}</code>`).join(' ')||'<span class="muted">none</span>'}</div>
+  </div>${managedRollbackOverrideList('before',r.before||{})}${managedRollbackOverrideList('after',r.after||{})}</td></tr>`;
+}
+function toggleManagedRollbackDetails(id){
+  const existing=document.querySelector(`tr[data-managed-rollback-detail="${CSS.escape(id)}"]`);
+  if(existing){ existing.remove(); return; }
+  const row=document.querySelector(`tr[data-managed-rollback="${CSS.escape(id)}"]`);
+  const rec=(window.AGH_MANAGED_ROLLBACKS||[]).find(r=>r.id===id);
+  if(!row || !rec) return;
+  row.insertAdjacentHTML('afterend',managedRollbackDetailsRow(rec));
 }
 function managedConflictControls(c){
   const id=esc(c.id);
