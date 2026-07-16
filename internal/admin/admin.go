@@ -133,13 +133,6 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/oidc/login", s.handleOIDCLogin)
 		mux.HandleFunc("GET /api/oidc/callback", s.handleOIDCCallback)
 	}
-	if s.deps.AGHManaged != nil {
-		path := s.deps.AGHManaged.Config().FeedPath
-		if path == "" {
-			path = "/agh/managed-rewrites.txt"
-		}
-		mux.HandleFunc("GET "+path, s.handleAGHManagedFeed)
-	}
 
 	// Read views.
 	mux.HandleFunc("GET /api/dashboard", s.withAuth("dashboard.view", s.handleDashboard))
@@ -223,7 +216,30 @@ func (s *Server) Handler() http.Handler {
 	// Embedded SPA.
 	sub, _ := fs.Sub(webFS, "web")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
-	return s.limitBody(mux)
+	return s.limitBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && s.isAGHManagedFeedPath(r.URL.Path) {
+			s.handleAGHManagedFeed(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+}
+
+func (s *Server) isAGHManagedFeedPath(path string) bool {
+	if s.deps.AGHManaged == nil {
+		return false
+	}
+	return path == normalizedFeedPath(s.deps.AGHManaged.Config().FeedPath)
+}
+
+func normalizedFeedPath(path string) string {
+	if path == "" {
+		return "/agh/managed-rewrites.txt"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
 }
 
 // --- middleware ---

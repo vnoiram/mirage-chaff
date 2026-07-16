@@ -46,4 +46,25 @@ func TestManagedRewriteFeedRegisteredWithoutAdmin(t *testing.T) {
 	if body := rr.Body.String(); !strings.Contains(body, "||ads.example.net^$dnsrewrite=NOERROR;A;192.0.2.44") {
 		t.Fatalf("feed missing rewrite line:\n%s", body)
 	}
+
+	next := cfg.AGHManaged
+	next.FeedPath = "/agh/new-managed-rewrites.txt"
+	m.SetConfig(next)
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/agh/managed-rewrites.txt", nil)
+	obs.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("old feed path status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/agh/new-managed-rewrites.txt", nil)
+	obs.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("new feed path status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "||ads.example.net^$dnsrewrite=NOERROR;A;192.0.2.44") {
+		t.Fatalf("new feed path missing rewrite line:\n%s", body)
+	}
 }

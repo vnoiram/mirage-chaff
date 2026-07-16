@@ -698,6 +698,61 @@ func TestAGHManagedFeedExportHandler(t *testing.T) {
 	}
 }
 
+func TestAGHManagedFeedPathFollowsCurrentConfig(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := managed.UpsertSource(aghmanaged.Source{Type: aghmanaged.SourceManual, Name: "manual", Enabled: true, Content: "||ads.example.net^\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	h := New(store, Deps{AGHManaged: managed}).Handler()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/agh/managed-rewrites.txt", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("initial feed path status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	cfg.FeedPath = "/agh/new-managed-rewrites.txt"
+	managed.SetConfig(cfg)
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/agh/managed-rewrites.txt", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("old feed path status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/agh/new-managed-rewrites.txt", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("new feed path status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "||ads.example.net^$dnsrewrite=NOERROR;A;192.0.2.10") {
+		t.Fatalf("new feed path missing rewrite line:\n%s", rr.Body.String())
+	}
+}
+
 func TestAGHManagedSourceSyncAuditDetail(t *testing.T) {
 	dir := t.TempDir()
 	policyDir := filepath.Join(dir, "policy")

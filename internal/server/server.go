@@ -302,15 +302,19 @@ func (s *Server) registerManagedRewriteFeed(obs *observability.Server) {
 	if obs == nil || s.managed == nil || !s.cfg.AGHManaged.Enabled {
 		return
 	}
-	path := s.managed.Config().FeedPath
-	if path == "" {
-		path = "/agh/managed-rewrites.txt"
-	}
-	obs.Handle("GET "+path, http.HandlerFunc(s.handleManagedRewriteFeed))
+	obs.Handle("/", http.HandlerFunc(s.handleManagedRewriteFeed))
 }
 
 func (s *Server) handleManagedRewriteFeed(w http.ResponseWriter, r *http.Request) {
 	if s.managed == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Path != normalizedManagedFeedPath(s.managed.Config().FeedPath) {
 		http.NotFound(w, r)
 		return
 	}
@@ -322,6 +326,16 @@ func (s *Server) handleManagedRewriteFeed(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(p.Lines))
+}
+
+func normalizedManagedFeedPath(path string) string {
+	if path == "" {
+		return "/agh/managed-rewrites.txt"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
 }
 
 // runKillSwitch executes the kill-switch script (design doc A-4). Its path comes

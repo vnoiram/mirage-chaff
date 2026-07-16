@@ -217,6 +217,12 @@ func parseAnswers(wire []byte, wantName dnsmessage.Name, wantType dnsmessage.Typ
 		if err != nil {
 			return nil, err
 		}
+		if h.Type != wantType || !strings.EqualFold(h.Name.String(), wantName.String()) {
+			if err := p.SkipAnswer(); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		switch h.Type {
 		case dnsmessage.TypeA:
 			r, err := p.AResource()

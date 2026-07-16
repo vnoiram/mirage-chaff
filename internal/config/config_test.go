@@ -19,6 +19,37 @@ func TestCheckRejectsBadValues(t *testing.T) {
 		"bad log mode":        func(c *Config) { c.Log.Mode = "raw-ish" },
 		"bad unknown profile": func(c *Config) { c.UnknownProfile.Default = "reckless" },
 		"empty rule catalog":  func(c *Config) { c.RuleCatalog.Path = "" },
+		"resolved ip without target name": func(c *Config) {
+			c.AGHManaged.TargetMode = "resolved_ip"
+			c.AGHManaged.TargetName = ""
+		},
+		"cname without target name": func(c *Config) {
+			c.AGHManaged.TargetMode = "cname"
+			c.AGHManaged.TargetName = ""
+		},
+		"static ip without addresses": func(c *Config) {
+			c.AGHManaged.TargetMode = "static_ip"
+			c.AGHManaged.StaticIPv4 = nil
+			c.AGHManaged.StaticIPv6 = nil
+		},
+		"static ipv4 rejects invalid ip": func(c *Config) {
+			c.AGHManaged.TargetMode = "static_ip"
+			c.AGHManaged.StaticIPv4 = []string{"not-an-ip"}
+		},
+		"static ipv4 rejects ipv6": func(c *Config) {
+			c.AGHManaged.TargetMode = "static_ip"
+			c.AGHManaged.StaticIPv4 = []string{"2001:db8::1"}
+		},
+		"static ipv6 rejects ipv4": func(c *Config) {
+			c.AGHManaged.TargetMode = "static_ip"
+			c.AGHManaged.StaticIPv6 = []string{"192.0.2.10"}
+		},
+		"negative large change percent": func(c *Config) {
+			c.AGHManaged.Scheduler.LargeChangeThresholdPercent = -1
+		},
+		"negative large change count": func(c *Config) {
+			c.AGHManaged.Scheduler.LargeChangeThresholdCount = -1
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -37,5 +68,15 @@ func TestHTTP3RequiresQUIC(t *testing.T) {
 	c.Protocols.HTTP3 = true
 	if err := c.Check(); err != nil {
 		t.Fatalf("http3 with quic should be valid, got: %v", err)
+	}
+}
+
+func TestCheckAcceptsValidStaticIPTargets(t *testing.T) {
+	c := Defaults()
+	c.AGHManaged.TargetMode = "static_ip"
+	c.AGHManaged.StaticIPv4 = []string{"192.0.2.10"}
+	c.AGHManaged.StaticIPv6 = []string{"2001:db8::1"}
+	if err := c.Check(); err != nil {
+		t.Fatalf("valid static_ip target should be accepted, got: %v", err)
 	}
 }

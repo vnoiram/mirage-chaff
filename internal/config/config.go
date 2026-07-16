@@ -20,6 +20,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -371,14 +372,59 @@ func (c Config) Check() error {
 	default:
 		return fmt.Errorf("agh_managed_rewrites.target_mode: must be resolved_ip|cname|static_ip, got %q", c.AGHManaged.TargetMode)
 	}
+	switch targetMode(c.AGHManaged.TargetMode) {
+	case "resolved_ip", "cname":
+		if c.AGHManaged.TargetName == "" {
+			return errors.New("agh_managed_rewrites.target_name must be set for resolved_ip/cname target mode")
+		}
+	case "static_ip":
+		if err := checkStaticIPs(c.AGHManaged.StaticIPv4, c.AGHManaged.StaticIPv6); err != nil {
+			return err
+		}
+	}
 	switch c.AGHManaged.DefaultPreset {
 	case "", "conservative", "balanced", "aggressive":
 	default:
 		return fmt.Errorf("agh_managed_rewrites.default_preset: must be conservative|balanced|aggressive, got %q", c.AGHManaged.DefaultPreset)
 	}
+	if c.AGHManaged.Scheduler.LargeChangeThresholdPercent < 0 {
+		return errors.New("agh_managed_rewrites.scheduler.large_change_threshold_percent must be >= 0")
+	}
+	if c.AGHManaged.Scheduler.LargeChangeThresholdCount < 0 {
+		return errors.New("agh_managed_rewrites.scheduler.large_change_threshold_count must be >= 0")
+	}
 	if c.Observability.Listen == "" {
 		// A-3: health/metrics must be independent of admin and always available.
 		return errors.New("observability.listen must be set (health/metrics must stay up even when admin is disabled)")
+	}
+	return nil
+}
+
+func targetMode(mode string) string {
+	if mode == "" {
+		return "resolved_ip"
+	}
+	return mode
+}
+
+func checkStaticIPs(v4s, v6s []string) error {
+	valid := 0
+	for _, raw := range v4s {
+		ip := net.ParseIP(raw)
+		if ip == nil || ip.To4() == nil {
+			return fmt.Errorf("agh_managed_rewrites.static_ipv4: invalid IPv4 address %q", raw)
+		}
+		valid++
+	}
+	for _, raw := range v6s {
+		ip := net.ParseIP(raw)
+		if ip == nil || ip.To4() != nil {
+			return fmt.Errorf("agh_managed_rewrites.static_ipv6: invalid IPv6 address %q", raw)
+		}
+		valid++
+	}
+	if valid == 0 {
+		return errors.New("agh_managed_rewrites.static_ip target mode requires at least one static IPv4 or IPv6 address")
 	}
 	return nil
 }
