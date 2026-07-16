@@ -209,6 +209,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agh/rewrite-feed/emergency-empty", s.withAuth("agh.manage", s.handleAGHManagedEmergencyEmpty))
 	mux.HandleFunc("POST /api/agh/rewrite-feed/preset", s.withAuth("agh.manage", s.handleAGHManagedPreset))
 	mux.HandleFunc("POST /api/agh/rewrite-feed/refresh-agh", s.withAuth("agh.manage", s.handleAGHManagedRefreshAGH))
+	mux.HandleFunc("POST /api/agh/rewrite-feed/register-agh", s.withAuth("agh.manage", s.handleAGHManagedRegisterAGH))
 	mux.HandleFunc("POST /api/allow/permanent", s.withAuth("policy.edit", s.handlePermanentAllow))
 	mux.HandleFunc("POST /api/site-override", s.withAuth("policy.edit", s.handleSiteOverride))
 	mux.HandleFunc("POST /api/killswitch", s.withAuth("killswitch.execute", s.handleKillSwitch))

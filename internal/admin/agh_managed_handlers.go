@@ -762,6 +762,30 @@ func (s *Server) handleAGHManagedRefreshAGH(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, map[string]any{"status": "ok", "force": result.Force, "base_url": result.BaseURL})
 }
 
+func (s *Server) handleAGHManagedRegisterAGH(w http.ResponseWriter, r *http.Request, sess *session) {
+	if s.deps.AGHManaged == nil {
+		http.Error(w, "managed rewrites unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	status := s.deps.AGHManaged.Status(r.Context())
+	feedURL := aghManagedFeedURL(r, status.FeedPath)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	result, err := registerAGHFeed(ctx, s.deps.AGHHTTPClient, s.deps.AGHSyncConfig, feedURL, "mirage-chaff managed rewrites")
+	if err != nil {
+		detail := fmt.Sprintf("feed_url=%s result=%s", feedURL, err.Error())
+		s.store.Audit(sess.username, "agh_managed.agh_register", detail)
+		httpStatus := http.StatusBadGateway
+		if isAGHRefreshConfigError(err) {
+			httpStatus = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), httpStatus)
+		return
+	}
+	s.store.Audit(sess.username, "agh_managed.agh_register", fmt.Sprintf("base_url=%s feed_url=%s already_registered=%s refreshed=%s result=ok", result.BaseURL, result.FeedURL, mapBool(result.AlreadyRegistered), mapBool(result.Refreshed)))
+	writeJSON(w, result)
+}
+
 func isAGHRefreshConfigError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "base_url required") || strings.Contains(msg, "credentials required") || strings.Contains(msg, "env file")

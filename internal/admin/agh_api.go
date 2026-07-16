@@ -41,6 +41,12 @@ type aghRegistrationStatus struct {
 	MatchedFilter *aghFilterMatch `json:"matched_filter,omitempty"`
 }
 
+type aghRegisterResult struct {
+	aghRegistrationStatus
+	AlreadyRegistered bool `json:"already_registered"`
+	Refreshed         bool `json:"refreshed"`
+}
+
 type aghCheckHostResult struct {
 	Domain string         `json:"domain"`
 	Raw    map[string]any `json:"raw,omitempty"`
@@ -109,6 +115,49 @@ func checkAGHFeedRegistration(ctx context.Context, client *http.Client, cfg conf
 		break
 	}
 	return out, nil
+}
+
+func registerAGHFeed(ctx context.Context, client *http.Client, cfg config.AGHSyncConfig, feedURL, name string) (aghRegisterResult, error) {
+	apiCfg, err := loadAGHAPIConfig(cfg)
+	if err != nil {
+		return aghRegisterResult{}, err
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	status, err := checkAGHFeedRegistration(ctx, client, cfg, feedURL)
+	if err != nil {
+		return aghRegisterResult{}, err
+	}
+	result := aghRegisterResult{aghRegistrationStatus: status}
+	if status.Registered {
+		result.AlreadyRegistered = true
+		return result, nil
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "mirage-chaff managed rewrites"
+	}
+	body, err := json.Marshal(map[string]any{
+		"name":      name,
+		"url":       feedURL,
+		"whitelist": false,
+	})
+	if err != nil {
+		return aghRegisterResult{}, err
+	}
+	if err := doAGHJSON(ctx, client, apiCfg, http.MethodPost, "/control/filtering/add_url", bytes.NewReader(body), nil); err != nil {
+		return aghRegisterResult{}, fmt.Errorf("register AGH feed: %w", err)
+	}
+	if _, err := refreshAGHFilters(ctx, client, cfg, false); err != nil {
+		return aghRegisterResult{}, err
+	}
+	result.Refreshed = true
+	status, err = checkAGHFeedRegistration(ctx, client, cfg, feedURL)
+	if err != nil {
+		return aghRegisterResult{}, err
+	}
+	result.aghRegistrationStatus = status
+	return result, nil
 }
 
 func checkAGHHost(ctx context.Context, client *http.Client, cfg config.AGHSyncConfig, domain string) (aghCheckHostResult, error) {

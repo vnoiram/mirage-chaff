@@ -256,6 +256,10 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"saveManagedSourceSettings",
 		"agh-src-stale-policy",
 		"refreshManagedTarget",
+		"Rewrite Feed",
+		"viewAGHRewriteFeed",
+		"Open Rewrite Feed",
+		"openRewriteFeed",
 		"Feed Setup",
 		"Feed Generation History",
 		"AGH Managed History",
@@ -341,6 +345,8 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"AGH registration",
 		"Check AGH registration",
 		"checkManagedAGHStatus",
+		"Register in AGH",
+		"registerManagedAGHFeed",
 		"managedAGHCheckSummary",
 		"managedAGHRegistrationStatusLine",
 		"managedAGHMatchedFilterText",
@@ -350,10 +356,14 @@ func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 		"agh-registration-result",
 		"agh-registration-status",
 		"checking AGH registration",
+		"registering AGH feed",
+		"already registered",
+		"refreshed",
 		"base URL",
 		"feed URL",
 		"matched filter",
 		"/api/agh/rewrite-feed/agh-status",
+		"/api/agh/rewrite-feed/register-agh",
 		"check_host",
 		"fetch check",
 		"manual list update",
@@ -925,6 +935,148 @@ func TestAGHManagedRefreshAGHHandlerConfigError(t *testing.T) {
 	entry, ok := auditEntryForAction(store, "agh_managed.agh_refresh")
 	if !ok || !strings.Contains(entry.Detail, "credentials required") {
 		t.Fatalf("refresh failure audit = %+v ok=%v", entry, ok)
+	}
+}
+
+func TestAGHManagedRegisterAGHHandlerRBACAndAudit(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "viewer", Hash: HashPassword("password123"), Role: RoleViewer, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	var paths []string
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/control/filtering/status":
+			if len(paths) == 1 {
+				return stringResponse(http.StatusOK, `{"filters":[]}`), nil
+			}
+			return stringResponse(http.StatusOK, `{"filters":[{"id":12,"name":"mirage-chaff managed rewrites","url":"https://managed.example/agh/managed-rewrites.txt","enabled":true}]}`), nil
+		case "/control/filtering/add_url":
+			var body struct {
+				Name      string `json:"name"`
+				URL       string `json:"url"`
+				Whitelist bool   `json:"whitelist"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Name != "mirage-chaff managed rewrites" || body.URL != "https://managed.example/agh/managed-rewrites.txt" || body.Whitelist {
+				t.Fatalf("add_url body = %+v", body)
+			}
+			return stringResponse(http.StatusOK, `{}`), nil
+		case "/control/filtering/refresh":
+			return stringResponse(http.StatusOK, `{"updated":1}`), nil
+		default:
+			t.Fatalf("unexpected AGH request path %s", r.URL.Path)
+			return nil, nil
+		}
+	})}
+	s := New(store, Deps{
+		AGHManaged:    managed,
+		AGHSyncConfig: config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath},
+		AGHHTTPClient: httpClient,
+	})
+	h := s.Handler()
+
+	viewerCookie, viewerCSRF := loginForTest(t, h, "viewer", "password123")
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/register-agh", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", viewerCSRF)
+	req.AddCookie(viewerCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("viewer register status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/register-agh", strings.NewReader(`{}`))
+	req.Host = "managed.example"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin register status = %d, want %d: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	wantPaths := []string{"/control/filtering/status", "/control/filtering/add_url", "/control/filtering/refresh", "/control/filtering/status"}
+	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
+		t.Fatalf("AGH paths = %v", paths)
+	}
+	var resp aghRegisterResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Registered || !resp.Enabled || resp.AlreadyRegistered || !resp.Refreshed || resp.MatchedFilter == nil || resp.MatchedFilter.ID != 12 {
+		t.Fatalf("register response = %+v", resp)
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.agh_register")
+	if !ok || !strings.Contains(entry.Detail, "base_url=http://agh.test") || !strings.Contains(entry.Detail, "feed_url=https://managed.example/agh/managed-rewrites.txt") || strings.Contains(entry.Detail, "secret") {
+		t.Fatalf("register audit = %+v ok=%v", entry, ok)
+	}
+}
+
+func TestAGHManagedRegisterAGHHandlerConfigError(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "admin", Hash: HashPassword("password123"), Role: RoleAdmin, Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AGHManagedConfig{
+		Enabled:       true,
+		FeedPath:      "/agh/managed-rewrites.txt",
+		TargetMode:    "static_ip",
+		StaticIPv4:    []string{"192.0.2.10"},
+		DefaultPreset: "balanced",
+		Scheduler:     config.AGHManagedScheduler{DefaultSyncInterval: "12h", SyncTimeout: "1s"},
+	}
+	managed, err := aghmanaged.Open(filepath.Join(dir, "managed.json"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(store, Deps{AGHManaged: managed, AGHSyncConfig: config.AGHSyncConfig{BaseURL: "http://agh.test"}})
+	h := s.Handler()
+	adminCookie, adminCSRF := loginForTest(t, h, "admin", "password123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/agh/rewrite-feed/register-agh", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", adminCSRF)
+	req.AddCookie(adminCookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("config error status = %d, want %d: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	entry, ok := auditEntryForAction(store, "agh_managed.agh_register")
+	if !ok || !strings.Contains(entry.Detail, "credentials required") {
+		t.Fatalf("register failure audit = %+v ok=%v", entry, ok)
 	}
 }
 

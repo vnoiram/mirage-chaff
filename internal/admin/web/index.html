@@ -113,6 +113,8 @@ document.addEventListener('click', (e) => {
   if(d.cmd==='saveManagedPreset') saveManagedPreset();
   if(d.cmd==='refreshAGHFilters') refreshAGHFilters();
   if(d.cmd==='checkManagedAGHStatus') checkManagedAGHStatus();
+  if(d.cmd==='registerManagedAGHFeed') registerManagedAGHFeed();
+  if(d.cmd==='openRewriteFeed') { CUR='Rewrite Feed'; render(); }
   if(d.cmd==='useManagedAGHBaseURL') useManagedAGHBaseURL();
   if(d.cmd==='saveManagedTargetConfig') saveManagedTargetConfig();
   if(d.cmd==='saveManagedSchedulerConfig') saveManagedSchedulerConfig();
@@ -142,6 +144,7 @@ const TABS = [
   ['Analytics','traffic.view',viewAnalytics],
   ['Rule Catalog','catalog.view',viewRuleCatalog],
   ['AGH Managed','catalog.view',viewAGHManaged],
+  ['Rewrite Feed','catalog.view',viewAGHRewriteFeed],
   ['Curation','policy.view',viewCuration],
   ['Policy','policy.view',viewPolicy],
   ['Config','config.view',viewConfig],
@@ -192,6 +195,9 @@ function render(){
     renderManagedSourcePreviewEntries();
     ['added','removed','changed'].forEach(renderManagedPendingDiffKind);
     restoreManagedSourceEntryRows();
+  }
+  if(CUR==='Rewrite Feed'){
+    renderManagedFeedPreviewItems();
   }
   if(ME.must_change) alert('Please change your temporary password (Users tab / your account).');
 }
@@ -649,9 +655,56 @@ function managedSourceHealthSummaryText(h){
   return ['healthy','pending','stale','failing','paused','never synced','unknown'].map(k=>`${k}: ${Number(h[k]||0)}`).join(' / ');
 }
 
-async function viewAGHManaged(v){
+async function viewAGHRewriteFeed(v){
   const status=await api('GET','/api/agh/rewrite-feed/status');
   const target=await api('GET','/api/agh/rewrite-feed/target');
+  const scheduler=await api('GET','/api/agh/rewrite-feed/scheduler');
+  v.appendChild(el(`<div class="card"><h2>Rewrite Feed</h2><div class="kv">
+    <div>feed path</div><div>${esc(status.feed_path||'/agh/managed-rewrites.txt')}</div>
+    <div>AGH feed URL</div><div><code>${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')}</code></div>
+    <div>enabled</div><div>${status.enabled?'yes':'no'}</div>
+    <div>emergency empty</div><div>${managedEmergencyEmptyPanel(status)}</div>
+    <div>target mode</div><div>${esc(status.target_mode||'resolved_ip')}</div>
+    <div>target name</div><div>${esc(status.target_name||'')}</div>
+    <div>resolved IPs</div><div>${esc((status.resolved_ips||[]).join(', ')||'none')}</div>
+    <div>target cache</div><div>${status.target_cache_used?'stale cache in use':'fresh or not needed'}</div>
+    <div>feed items</div><div>${status.item_count||0} included / ${status.excluded_count||0} excluded</div>
+    <div>unresolved conflicts</div><div>${status.conflict_count||0}</div>
+    <div>last generated</div><div>${esc(status.last_generated?new Date(status.last_generated).toLocaleString():'never')}</div>
+    <div>last resolve error</div><div>${esc(status.last_resolve_error||'')}</div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button class="act" onclick="previewManagedFeed()">Preview feed</button>
+    <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT)}</span>
+    <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
+    <span id="agh-feed-export-result" class="muted">${managedFeedExportResultHTML(AGH_MANAGED_FEED_EXPORT_RESULT)}</span>
+  </div>
+  <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
+  <div id="agh-feed-items"></div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Feed Setup</h2><div class="kv">
+    <div>AGH setting</div><div>Filters - DNS blocklists - Add blocklist - Add a custom list</div>
+    <div>registration check</div><div>Add the custom list in AGH, run a manual list update in AGH, then verify the feed timestamp and item count here.</div>
+    <div>AGH registration</div><div><button class="act" data-cmd="checkManagedAGHStatus">Check AGH registration</button> ${has('agh.manage')?`<button class="act" data-cmd="registerManagedAGHFeed">Register in AGH</button>`:''}<div id="agh-registration-result" class="muted" style="margin-top:6px">${managedAGHRegistrationResultHTML(AGH_MANAGED_REGISTRATION_RESULT)}</div></div>
+    ${has('agh.manage')?`<div>AGH refresh</div><div><label><input id="agh-refresh-force" type="checkbox"> force refresh</label> <button class="act" data-cmd="refreshAGHFilters">Refresh AGH filters</button> <span id="agh-refresh-result" class="muted">${managedAGHRefreshResultHTML(AGH_MANAGED_REFRESH_RESULT)}</span></div>`:''}
+    <div>fetch check</div><div><code>curl -fsS ${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')} | head</code></div>
+    <div>expected feed header</div><div><code>! mirage-chaff managed rewrites</code></div>
+    <div>target output</div><div>${esc(managedTargetState(status))}</div>
+    <div>target diagnostics</div><div>${managedTargetDiagnostics(status)}</div>
+    <div>target settings</div><div>${managedTargetConfigForm(target)}</div>
+    <div>scheduler</div><div>${scheduler.enabled?'enabled':'disabled'} / next sync: ${esc(scheduler.next_sync?new Date(scheduler.next_sync).toLocaleString():'none scheduled')}</div>
+    <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted">${managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT)}</span>`:''}
+  </div></div>`));
+  v.appendChild(el(`<div class="card"><h2>Feed Generation History</h2>
+    <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>target mode</th><th>included</th><th>delta</th><th>excluded</th><th>conflicts</th><th>emergency empty</th></tr></thead><tbody>
+    ${(status.history||[]).slice(0,20).map(h=>`<tr><td>${esc(h.time?new Date(h.time).toLocaleString():'')}</td><td>${esc(h.target_mode||'')}</td><td>${h.included_count||0}</td><td>+${h.added_count||0} -${h.removed_count||0}</td><td>${h.excluded_count||0}</td><td>${h.conflict_count||0}</td><td>${h.emergency_empty?'yes':'no'}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">none</td></tr>'}
+    </tbody></table></div></div>`));
+}
+
+async function viewAGHManaged(v){
+  const status=await api('GET','/api/agh/rewrite-feed/status');
   const scheduler=await api('GET','/api/agh/rewrite-feed/scheduler');
   const sources=(await api('GET','/api/agh/sources')).sources||[];
   const conflicts=(await api('GET','/api/agh/managed-catalog/conflicts')).conflicts||[];
@@ -682,37 +735,13 @@ async function viewAGHManaged(v){
     <div>last resolve error</div><div>${esc(status.last_resolve_error||'')}</div>
   </div>
   <div class="row" style="margin-top:12px">
-    <button class="act" onclick="previewManagedFeed()">Preview feed</button>
-    <span id="agh-feed-preview-result" class="muted">${managedFeedPreviewResultHTML(AGH_MANAGED_FEED_PREVIEW_RESULT)}</span>
-    <button class="act" data-cmd="exportManagedFeedSnapshot">Export snapshot</button>
-    <span id="agh-feed-export-result" class="muted">${managedFeedExportResultHTML(AGH_MANAGED_FEED_EXPORT_RESULT)}</span>
-    ${has('agh.manage')?`<button class="act" onclick="refreshManagedTarget()">Refresh target</button> <span id="agh-target-refresh-result" class="muted">${managedTargetResultHTML(AGH_MANAGED_TARGET_REFRESH_RESULT)}</span>`:''}
+    <button class="act" data-cmd="openRewriteFeed">Open Rewrite Feed</button>
   </div>
-  <pre id="agh-feed" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre>
-  <div id="agh-feed-items"></div></div>`));
-  v.appendChild(el(`<div class="card"><h2>Feed Setup</h2><div class="kv">
-    <div>AGH feed URL</div><div><code>${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')}</code></div>
-    <div>AGH setting</div><div>Filters - DNS blocklists - Add blocklist - Add a custom list</div>
-    <div>registration check</div><div>Add the custom list in AGH, run a manual list update in AGH, then verify the feed timestamp and item count here.</div>
-    <div>AGH registration</div><div><button class="act" data-cmd="checkManagedAGHStatus">Check AGH registration</button><div id="agh-registration-result" class="muted" style="margin-top:6px">${managedAGHRegistrationResultHTML(AGH_MANAGED_REGISTRATION_RESULT)}</div></div>
-    ${has('agh.manage')?`<div>AGH refresh</div><div><label><input id="agh-refresh-force" type="checkbox"> force refresh</label> <button class="act" data-cmd="refreshAGHFilters">Refresh AGH filters</button> <span id="agh-refresh-result" class="muted">${managedAGHRefreshResultHTML(AGH_MANAGED_REFRESH_RESULT)}</span></div>`:''}
-    <div>fetch check</div><div><code>curl -fsS ${esc(status.feed_url||status.feed_path||'/agh/managed-rewrites.txt')} | head</code></div>
-    <div>expected feed header</div><div><code>! mirage-chaff managed rewrites</code></div>
-    <div>target output</div><div>${esc(managedTargetState(status))}</div>
-    <div>target diagnostics</div><div>${managedTargetDiagnostics(status)}</div>
-    <div>target settings</div><div>${managedTargetConfigForm(target)}</div>
-    <div>target mode</div><div>${esc(status.target_mode||'resolved_ip')}</div>
-    <div>default preset</div><div>${esc(status.default_preset||'balanced')}</div>
-    <div>emergency empty</div><div>${status.emergency_empty?'enabled, feed serves no rewrite rules':'disabled'}</div>
-  </div></div>`));
+  </div>`));
   v.appendChild(el(`<div class="card"><h2>AGH Managed History</h2>
     <div class="row"><input id="agh-history-filter" oninput="filterManagedHistory()" placeholder="filter history kind/action/detail"><select id="agh-history-kind" onchange="filterManagedHistory()"><option value="">all kinds</option><option value="audit">audit</option><option value="feed_generation">feed_generation</option><option value="rollback_candidate">rollback_candidate</option></select>${managedHistoryActionFilter((history&&history.events)||[])}<span id="agh-history-count" class="muted"></span><span id="agh-history-kind-summary" class="muted">${esc(managedHistoryKindSummary((history&&history.events)||[]))}</span><span id="agh-history-action-summary" class="muted">${esc(managedHistoryActionSummary((history&&history.events)||[]))}</span></div>
     <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>kind</th><th>actor</th><th>action</th><th>detail</th><th>counts</th></tr></thead><tbody>
     ${((history&&history.events)||[]).slice(0,100).map(e=>`<tr data-managed-history data-history-kind="${esc(e.kind||'')}" data-history-action="${esc(e.action||'')}" data-search="${esc(managedHistorySearch(e))}"><td>${esc(e.time?new Date(e.time).toLocaleString():'')}</td><td>${esc(e.kind||'')}</td><td>${esc(e.actor||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.detail||e.summary||'')}</td><td>${managedHistoryCounts(e)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">none</td></tr>'}
-    </tbody></table></div></div>`));
-  v.appendChild(el(`<div class="card"><h2>Feed Generation History</h2>
-    <div class="grid" style="margin-top:10px"><table><thead><tr><th>time</th><th>target mode</th><th>included</th><th>delta</th><th>excluded</th><th>conflicts</th><th>emergency empty</th></tr></thead><tbody>
-    ${(status.history||[]).slice(0,20).map(h=>`<tr><td>${esc(h.time?new Date(h.time).toLocaleString():'')}</td><td>${esc(h.target_mode||'')}</td><td>${h.included_count||0}</td><td>+${h.added_count||0} -${h.removed_count||0}</td><td>${h.excluded_count||0}</td><td>${h.conflict_count||0}</td><td>${h.emergency_empty?'yes':'no'}</td></tr>`).join('')||'<tr><td colspan="7" class="muted">none</td></tr>'}
     </tbody></table></div></div>`));
   v.appendChild(el(`<div class="card"><h2>Rollback Candidates</h2>
     <div class="row"><input id="agh-rollback-filter" oninput="filterManagedRollbacks()" placeholder="filter rollback time/action/summary/entry">${managedRollbackActionFilter(rollbacks)}<span id="agh-rollback-count" class="muted"></span><span id="agh-rollback-action-summary" class="muted">${esc(managedRollbackActionSummary(rollbacks))}</span><span id="agh-rollback-result" class="muted">${managedRollbackResultHTML(AGH_MANAGED_ROLLBACK_RESULT)}</span></div>
@@ -1653,6 +1682,8 @@ function managedAGHRegistrationStatusHTML(r){
     ['registered',r.registered?'yes':'no'],
     ['enabled',r.enabled?'yes':'no'],
     ['matched filter',managedAGHMatchedFilterText(r.matched_filter)],
+    ['already registered',r.already_registered?'yes':'no'],
+    ['refreshed',r.refreshed?'yes':'no'],
     ['check_host',r.check_domain?`${r.check_domain}: ${managedAGHCheckSummary(raw)||JSON.stringify(raw)}`:(r.message||'not run')]
   ];
   return `<div id="agh-registration-status"><strong>${esc(managedAGHRegistrationStatusLine(r))}</strong><div class="kv">${rows.map(x=>`<div>${esc(x[0])}</div><div>${esc(x[1])}</div>`).join('')}</div></div>`;
@@ -1661,6 +1692,7 @@ function managedAGHRegistrationResultHTML(r){
   if(!r) return managedAGHRegistrationStatusHTML(null);
   if(r.error) return `<div id="agh-registration-status">error: ${esc(r.error)}</div>`;
   if(r.checking) return `<div id="agh-registration-status">checking AGH registration...</div>`;
+  if(r.registering) return `<div id="agh-registration-status">registering AGH feed...</div>`;
   return managedAGHRegistrationStatusHTML(r);
 }
 async function checkManagedAGHStatus(){ try{
@@ -1668,6 +1700,21 @@ async function checkManagedAGHStatus(){ try{
   const out=document.getElementById('agh-registration-result');
   if(out) out.innerHTML=managedAGHRegistrationResultHTML(AGH_MANAGED_REGISTRATION_RESULT);
   const r=await api('GET','/api/agh/rewrite-feed/agh-status');
+  AGH_MANAGED_REGISTRATION_RESULT=r;
+  AGH_MANAGED_LAST_BASE_URL = r.base_url||AGH_MANAGED_LAST_BASE_URL;
+  updateManagedSourceTypeFields();
+  if(out) out.innerHTML=managedAGHRegistrationResultHTML(AGH_MANAGED_REGISTRATION_RESULT);
+}catch(e){
+  AGH_MANAGED_REGISTRATION_RESULT={error:e.message};
+  const out=document.getElementById('agh-registration-result');
+  if(out) out.innerHTML=managedAGHRegistrationResultHTML(AGH_MANAGED_REGISTRATION_RESULT);
+  else alert(e.message);
+} }
+async function registerManagedAGHFeed(){ try{
+  AGH_MANAGED_REGISTRATION_RESULT={registering:true};
+  const out=document.getElementById('agh-registration-result');
+  if(out) out.innerHTML=managedAGHRegistrationResultHTML(AGH_MANAGED_REGISTRATION_RESULT);
+  const r=await api('POST','/api/agh/rewrite-feed/register-agh',{});
   AGH_MANAGED_REGISTRATION_RESULT=r;
   AGH_MANAGED_LAST_BASE_URL = r.base_url||AGH_MANAGED_LAST_BASE_URL;
   updateManagedSourceTypeFields();

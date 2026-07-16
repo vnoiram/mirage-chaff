@@ -73,6 +73,8 @@ rebind). `mirage-chaff check` validates before you apply either.
 2. **AGH rewrites:** add A/AAAA rewrites for curated domains → this host, wrapped
    in the cushion marker block so the kill-switch can find them. **Start
    mirage-chaff before adding rewrites**, or those domains break.
+   For managed rewrite feeds, verify AGH registration and DNS rewrite behavior
+   with `docs/agh-managed-rewrite-e2e.md`.
 3. **QUIC:** default off. Block UDP/443 so clients fall back to TCP:
    `sudo deploy/firewall-udp443.sh block`.
 4. **Client DoH/ECH:** disable browser Secure DNS / ECH, or clients bypass AGH

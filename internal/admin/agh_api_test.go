@@ -124,6 +124,99 @@ func TestCheckAGHFeedRegistrationNotFound(t *testing.T) {
 	}
 }
 
+func TestRegisterAGHFeedAddsURLAndRefreshes(t *testing.T) {
+	var paths []string
+	var sawAuth, sawAddBody, sawRefresh bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.Path)
+		user, pass, ok := r.BasicAuth()
+		sawAuth = sawAuth || (ok && user == "admin" && pass == "secret")
+		switch r.URL.Path {
+		case "/control/filtering/status":
+			if len(paths) == 1 {
+				return stringResponse(http.StatusOK, `{"filters":[{"url":"https://other.example/list.txt","enabled":true}]}`), nil
+			}
+			return stringResponse(http.StatusOK, `{"filters":[{"id":11,"name":"mirage-chaff managed rewrites","url":"https://mirage.example/agh/managed-rewrites.txt","enabled":true}]}`), nil
+		case "/control/filtering/add_url":
+			var body struct {
+				Name      string `json:"name"`
+				URL       string `json:"url"`
+				Whitelist bool   `json:"whitelist"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			sawAddBody = body.Name == "mirage-chaff managed rewrites" && body.URL == "https://mirage.example/agh/managed-rewrites.txt" && !body.Whitelist
+			return stringResponse(http.StatusOK, `{}`), nil
+		case "/control/filtering/refresh":
+			sawRefresh = true
+			return stringResponse(http.StatusOK, `{"updated":1}`), nil
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+			return nil, nil
+		}
+	})}
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	got, err := registerAGHFeed(context.Background(), client, config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath}, "https://mirage.example/agh/managed-rewrites.txt", "mirage-chaff managed rewrites")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{"/control/filtering/status", "/control/filtering/add_url", "/control/filtering/refresh", "/control/filtering/status"}
+	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") || !sawAuth || !sawAddBody || !sawRefresh {
+		t.Fatalf("paths=%v sawAuth=%v sawAddBody=%v sawRefresh=%v", paths, sawAuth, sawAddBody, sawRefresh)
+	}
+	if !got.Registered || !got.Enabled || got.AlreadyRegistered || !got.Refreshed || got.MatchedFilter == nil || got.MatchedFilter.ID != 11 {
+		t.Fatalf("register result = %+v", got)
+	}
+}
+
+func TestRegisterAGHFeedAlreadyRegisteredIsNoop(t *testing.T) {
+	var paths []string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/control/filtering/status" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		return stringResponse(http.StatusOK, `{"filters":[{"id":7,"name":"mirage","url":"https://mirage.example/agh/managed-rewrites.txt/","enabled":true}]}`), nil
+	})}
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=secret\n")
+	got, err := registerAGHFeed(context.Background(), client, config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath}, "https://mirage.example/agh/managed-rewrites.txt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths, ",") != "/control/filtering/status" || !got.Registered || !got.Enabled || !got.AlreadyRegistered || got.Refreshed {
+		t.Fatalf("paths=%v result=%+v", paths, got)
+	}
+}
+
+func TestRegisterAGHFeedHTTPErrorRedactsCredentials(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/control/filtering/status":
+			return stringResponse(http.StatusOK, `{"filters":[]}`), nil
+		case "/control/filtering/add_url":
+			return stringResponse(http.StatusBadGateway, "bad add"), nil
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+			return nil, nil
+		}
+	})}
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "agh.env")
+	writeTestFile(t, envPath, "AGH_API_USER=admin\nAGH_API_PASS=supersecret\n")
+	_, err := registerAGHFeed(context.Background(), client, config.AGHSyncConfig{BaseURL: "http://agh.test", EnvFile: envPath}, "https://mirage.example/agh/managed-rewrites.txt", "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "supersecret") || !strings.Contains(err.Error(), "status 502") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestCheckAGHHost(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/control/filtering/check_host" || r.URL.Query().Get("name") != "tracker.example.net" {
