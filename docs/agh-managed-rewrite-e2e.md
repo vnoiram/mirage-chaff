@@ -12,7 +12,8 @@ AdGuard Home (AGH), and selected by AGH for a real domain candidate.
 - The feed is registered in AGH DNS blocklists. Use the admin UI Feed Setup
   `Register in AGH` button, or add the URL manually in AGH.
 - `curl` and `jq` are installed.
-- `dig` is installed when using optional `AGH_DNS_SERVER` DNS listener checks.
+- `dig` is installed when using optional `AGH_DNS_SERVER` DNS listener checks
+  or `CLIENT_DNS_CHECK=true`.
 
 ## Run
 
@@ -60,6 +61,21 @@ deploy/agh-managed-e2e-check.sh
 Use `AGH_DNS_PORT` when AGH listens on a non-default DNS port. Use `DNS_QTYPE`
 to check `AAAA` or another record type.
 
+To verify the normal resolver path from the machine running the script, add
+`CLIENT_DNS_CHECK=true`. This does not force AGH directly; it checks what the
+client host would resolve through its configured DNS path:
+
+```sh
+CLIENT_DNS_CHECK=true \
+EXPECTED_TARGET_IP=192.0.2.10 \
+AGH_API_URL=http://127.0.0.1:3000 \
+AGH_API_USER=admin \
+AGH_API_PASS=secret \
+MIRAGE_FEED_URL=https://mirage.example.lan/agh/managed-rewrites.txt \
+CHECK_DOMAIN=tracker.example.net \
+deploy/agh-managed-e2e-check.sh
+```
+
 ## What It Checks
 
 1. Fetches `MIRAGE_FEED_URL`.
@@ -73,13 +89,16 @@ to check `AAAA` or another record type.
 8. Confirms AGH reports a rewrite/filter match for the domain.
 9. If `AGH_DNS_SERVER` is set, queries AGH with `dig` and verifies the DNS
    answer.
+10. If `CLIENT_DNS_CHECK=true`, queries the host's default resolver path with
+    `dig` and verifies the DNS answer.
 
 The script does not add or remove AGH filters. The only AGH-side mutation it can
 perform is a filter refresh when `FORCE_REFRESH=true`.
 
-`check_host` verifies AGH's filtering decision path. The optional `dig` check
-verifies that the DNS listener returns an answer for the same domain. Client
-browsers may still bypass AGH via Secure DNS, ECH, VPNs, or cached DNS answers.
+`check_host` verifies AGH's filtering decision path. `AGH_DNS_SERVER` verifies
+that the AGH DNS listener returns an answer for the same domain. `CLIENT_DNS_CHECK`
+verifies the default resolver path from the script host. Client browsers may
+still bypass AGH via Secure DNS, ECH, VPNs, or cached DNS answers.
 
 ## Exit Codes
 
@@ -87,20 +106,15 @@ browsers may still bypass AGH via Secure DNS, ECH, VPNs, or cached DNS answers.
 - `2`: missing input or required tool.
 - `3`: feed fetch or feed content failure.
 - `4`: AGH registration or refresh failure.
-- `5`: AGH `check_host` did not confirm the rewrite/filter match.
+- `5`: AGH `check_host` or a DNS resolver check did not confirm the rewrite.
 
 ## Failure Triage
 
-- Exit `3`: open the feed URL from the AGH host and confirm the response starts
-  with `! mirage-chaff managed rewrites`. Then confirm the chosen domain is
-  included in feed preview and not excluded by conflict, preset, review status,
-  stale source policy, or emergency empty.
-- Exit `4`: use Feed Setup in the admin UI. Run `Register in AGH`, then
-  `Check AGH registration`. Confirm `AGH_API_URL`, `AGH_API_USER`, and
-  `AGH_API_PASS` point to the intended AGH instance.
-- Exit `5`: refresh AGH filters, then check the domain again. If
-  `EXPECTED_TARGET_IP` is set, confirm the feed target mode and resolved/static
-  target IPs match that value. When the AGH API check passes but the optional
-  DNS query fails, confirm AGH is listening on `AGH_DNS_SERVER:AGH_DNS_PORT`,
-  clear AGH/client DNS caches, and verify the client is not bypassing AGH with
-  Secure DNS, ECH, VPN routing, or a different resolver.
+| Failing step | What it usually means | Checks |
+| --- | --- | --- |
+| Feed fetch / content | mirage-chaff feed URL, route, or TLS trust is wrong | Open the feed URL from the AGH host; confirm the header, `CHECK_DOMAIN`, `$dnsrewrite`, target mode, emergency empty, and excluded reasons in feed preview |
+| AGH registration | AGH is not subscribed to the feed, the list is disabled, or API credentials point to the wrong instance | Use Feed Setup `Register in AGH`, then `Check AGH registration`; confirm `AGH_API_URL`, `AGH_API_USER`, `AGH_API_PASS`, and blocklist enabled state |
+| AGH refresh | AGH cannot refresh filters or cannot fetch the feed with its own network/TLS context | Retry with `FORCE_REFRESH=true`; check AGH logs, rate limits, route to `MIRAGE_FEED_URL`, and AGH trust store |
+| `check_host` | AGH has not selected the managed rewrite for `CHECK_DOMAIN` | Refresh filters; confirm the feed contains the domain; check for higher-priority AGH rules, stale filter cache, and expected target IP mismatch |
+| AGH DNS listener | AGH's API decision path works, but the DNS listener path does not | Confirm `AGH_DNS_SERVER:AGH_DNS_PORT`, firewall rules, listener bind settings, query type, and AGH DNS cache |
+| Client resolver | AGH works directly, but the client host does not resolve through AGH | Clear OS DNS cache; check resolver settings, VPN routing, Secure DNS, ECH/TLS trust, and browser-level DNS bypass |
