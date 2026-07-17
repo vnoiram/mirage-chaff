@@ -1,5 +1,7 @@
 # mirage-chaff
 
+日本語版はこちら: [README.ja.md](README.ja.md)
+
 A selective **anti-adblock / privacy "cushion" server** that sits behind
 [AdGuard Home](https://adguard.com/adguard-home/overview.html) (AGH) and
 intercepts only a *curated* subset of domains — the ones that break when blocked.
