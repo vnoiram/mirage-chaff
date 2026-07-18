@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -397,6 +399,16 @@ func (c Config) Check() error {
 		// A-3: health/metrics must be independent of admin and always available.
 		return errors.New("observability.listen must be set (health/metrics must stay up even when admin is disabled)")
 	}
+	for _, fd := range []struct{ field, val string }{
+		{"agh_managed_rewrites.scheduler.default_sync_interval", c.AGHManaged.Scheduler.DefaultSyncInterval},
+		{"agh_managed_rewrites.scheduler.sync_timeout", c.AGHManaged.Scheduler.SyncTimeout},
+		{"agh_managed_rewrites.scheduler.jitter", c.AGHManaged.Scheduler.Jitter},
+		{"agh_managed_rewrites.scheduler.stale_source_ttl", c.AGHManaged.Scheduler.StaleSourceTTL},
+	} {
+		if err := checkDuration(fd.field, fd.val); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -427,4 +439,22 @@ func checkStaticIPs(v4s, v6s []string) error {
 		return errors.New("agh_managed_rewrites.static_ip target mode requires at least one static IPv4 or IPv6 address")
 	}
 	return nil
+}
+
+// checkDuration validates that raw is empty (use default) or a parseable
+// duration in Go format ("12h", "30s") or the day-suffix extension ("7d").
+func checkDuration(field, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if _, err := time.ParseDuration(raw); err == nil {
+		return nil
+	}
+	if strings.HasSuffix(raw, "d") {
+		var n int
+		if _, err := fmt.Sscanf(strings.TrimSuffix(raw, "d"), "%d", &n); err == nil && n > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: invalid duration %q (use Go duration like \"12h\" or day suffix like \"7d\")", field, raw)
 }

@@ -50,6 +50,18 @@ func TestCheckRejectsBadValues(t *testing.T) {
 		"negative large change count": func(c *Config) {
 			c.AGHManaged.Scheduler.LargeChangeThresholdCount = -1
 		},
+		"invalid sync interval": func(c *Config) {
+			c.AGHManaged.Scheduler.DefaultSyncInterval = "7days"
+		},
+		"invalid sync timeout": func(c *Config) {
+			c.AGHManaged.Scheduler.SyncTimeout = "thirty-seconds"
+		},
+		"invalid jitter": func(c *Config) {
+			c.AGHManaged.Scheduler.Jitter = "10minutes"
+		},
+		"invalid stale source ttl": func(c *Config) {
+			c.AGHManaged.Scheduler.StaleSourceTTL = "3d0h"
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

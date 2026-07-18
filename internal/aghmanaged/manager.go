@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -2281,6 +2282,7 @@ func durationOr(raw string, fallback time.Duration) time.Duration {
 			return time.Duration(n) * 24 * time.Hour
 		}
 	}
+	log.Printf("warning: invalid duration %q, using default %v", raw, fallback)
 	return fallback
 }
 
