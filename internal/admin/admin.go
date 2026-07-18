@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -326,6 +327,17 @@ func (s *Server) mustChangeBlocked(sess *session, r *http.Request) bool {
 
 // --- auth handlers ---
 
+// clientIP extracts the client IP from r.RemoteAddr, stripping the port.
+// We intentionally use RemoteAddr (the actual TCP connection) rather than
+// X-Forwarded-For to prevent header-spoofed bypasses of rate limiting.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 // handleAuthInfo is a public endpoint telling the SPA which login methods exist.
 func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"oidc": s.oidc != nil})
@@ -334,6 +346,11 @@ func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	ip := clientIP(r)
+	if s.sess.ipLocked(ip) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
 	}
 	if s.sess.locked(req.Username) {
@@ -353,6 +370,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			s.sess.recordFailure(req.Username)
 		}
+		s.sess.recordIPFailure(ip)
 		s.store.Audit(req.Username, "login.fail", "invalid credentials")
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return

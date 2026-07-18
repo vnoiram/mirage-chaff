@@ -2345,3 +2345,30 @@ func TestHandlerSetsSecurityHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestIPRateLimitBlocks(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(store, Deps{}).Handler()
+
+	failLogin := func() int {
+		body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "wrong"})
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "203.0.113.1:12345"
+		h.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	for i := 0; i < ipLockThreshold; i++ {
+		if code := failLogin(); code == http.StatusTooManyRequests {
+			t.Fatalf("IP locked too early at attempt %d", i+1)
+		}
+	}
+	if code := failLogin(); code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after %d failures, got %d", ipLockThreshold, code)
+	}
+}

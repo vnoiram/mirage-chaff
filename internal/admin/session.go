@@ -23,6 +23,7 @@ type sessionManager struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	locks    map[string]*lockState
+	ipLocks  map[string]*ipState
 }
 
 type lockState struct {
@@ -30,9 +31,18 @@ type lockState struct {
 	lockUntil time.Time
 }
 
+type ipState struct {
+	failures  int
+	lockUntil time.Time
+}
+
 const (
 	lockThreshold = 5
 	lockDuration  = 5 * time.Minute
+
+	ipLockThreshold = 20
+	ipLockDuration  = 15 * time.Minute
+	ipLockMapMax    = 500
 )
 
 func newSessionManager(idleTimeout time.Duration) *sessionManager {
@@ -43,6 +53,7 @@ func newSessionManager(idleTimeout time.Duration) *sessionManager {
 		idleTimeout: idleTimeout,
 		sessions:    map[string]*session{},
 		locks:       map[string]*lockState{},
+		ipLocks:     map[string]*ipState{},
 	}
 }
 
@@ -128,4 +139,33 @@ func (m *sessionManager) recordSuccess(username string) {
 	m.mu.Lock()
 	delete(m.locks, username)
 	m.mu.Unlock()
+}
+
+// ipLocked reports whether the given client IP is currently rate-limited.
+func (m *sessionManager) ipLocked(ip string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.ipLocks[ip]
+	return s != nil && time.Now().Before(s.lockUntil)
+}
+
+// recordIPFailure increments the per-IP failure counter and locks the IP
+// after ipLockThreshold failures. The map is capped at ipLockMapMax entries
+// to prevent unbounded growth under enumeration attacks.
+func (m *sessionManager) recordIPFailure(ip string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.ipLocks[ip]; !ok && len(m.ipLocks) >= ipLockMapMax {
+		return
+	}
+	s := m.ipLocks[ip]
+	if s == nil {
+		s = &ipState{}
+		m.ipLocks[ip] = s
+	}
+	s.failures++
+	if s.failures >= ipLockThreshold {
+		s.lockUntil = time.Now().Add(ipLockDuration)
+		s.failures = 0
+	}
 }
