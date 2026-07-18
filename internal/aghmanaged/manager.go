@@ -463,9 +463,9 @@ func (m *Manager) UpsertSource(src Source) (Source, error) {
 		src.PendingReview = old.PendingReview
 	}
 	m.sources[src.ID] = src
-	err := m.saveLocked()
+	st := m.copyStateLocked()
 	m.mu.Unlock()
-	return src, err
+	return src, persistState(m.path, st)
 }
 
 func (m *Manager) DeleteSource(id string) error {
@@ -479,9 +479,9 @@ func (m *Manager) DeleteSource(id string) error {
 			delete(m.feedSeen, eid)
 		}
 	}
-	err := m.saveLocked()
+	st := m.copyStateLocked()
 	m.mu.Unlock()
-	return err
+	return persistState(m.path, st)
 }
 
 func (m *Manager) SyncSource(ctx context.Context, id string) (Source, error) {
@@ -501,8 +501,9 @@ func (m *Manager) SyncSource(ctx context.Context, id string) (Source, error) {
 		src.NextSync = nextSync(src.SyncInterval, m.Config().Scheduler.Jitter)
 		m.mu.Lock()
 		m.sources[id] = src
-		_ = m.saveLocked()
+		st := m.copyStateLocked()
 		m.mu.Unlock()
+		_ = persistState(m.path, st)
 		return src, err
 	}
 	src.LastError = ""
@@ -523,20 +524,22 @@ func (m *Manager) SyncSource(ctx context.Context, id string) (Source, error) {
 	} else {
 		m.pending[id] = entries
 	}
-	err = m.saveLocked()
+	st := m.copyStateLocked()
 	m.mu.Unlock()
+	err = persistState(m.path, st)
 	return src, err
 }
 
 func (m *Manager) ApproveSource(id string) (Source, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	src, ok := m.sources[id]
 	if !ok {
+		m.mu.Unlock()
 		return Source{}, os.ErrNotExist
 	}
 	entries, ok := m.pending[id]
 	if !ok {
+		m.mu.Unlock()
 		return Source{}, os.ErrNotExist
 	}
 	prev := entriesForSource(m.entries, id)
@@ -547,29 +550,28 @@ func (m *Manager) ApproveSource(id string) (Source, error) {
 	m.applyEntriesLocked(id, entries)
 	delete(m.pending, id)
 	m.sources[id] = src
-	if err := m.saveLocked(); err != nil {
-		return Source{}, err
-	}
-	return src, nil
+	st := m.copyStateLocked()
+	m.mu.Unlock()
+	return src, persistState(m.path, st)
 }
 
 func (m *Manager) RejectSource(id string) (Source, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	src, ok := m.sources[id]
 	if !ok {
+		m.mu.Unlock()
 		return Source{}, os.ErrNotExist
 	}
 	if _, ok := m.pending[id]; !ok {
+		m.mu.Unlock()
 		return Source{}, os.ErrNotExist
 	}
 	src.PendingReview = false
 	delete(m.pending, id)
 	m.sources[id] = src
-	if err := m.saveLocked(); err != nil {
-		return Source{}, err
-	}
-	return src, nil
+	st := m.copyStateLocked()
+	m.mu.Unlock()
+	return src, persistState(m.path, st)
 }
 
 func (m *Manager) PendingDiff(id string) (PendingDiff, error) {
@@ -903,7 +905,6 @@ func (m *Manager) ListConflicts() []Conflict {
 
 func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy ...string) (CatalogRow, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	cfg := m.cfg
 	cfg.DefaultPreset = m.effectivePresetLocked()
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
@@ -928,10 +929,12 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy
 		break
 	}
 	if targetID == "" {
+		m.mu.Unlock()
 		return CatalogRow{}, os.ErrNotExist
 	}
 	e, ok := m.entries[targetID]
 	if !ok {
+		m.mu.Unlock()
 		return CatalogRow{}, os.ErrNotExist
 	}
 	cur := m.overrides[targetID]
@@ -940,16 +943,15 @@ func (m *Manager) ResolveConflict(id string, override CatalogOverride, changedBy
 	setLastChangedBy(&cur, changedBy...)
 	m.overrides[targetID] = cur
 	m.recordRollbackLocked("conflict resolve", []string{targetID}, before, beforeExists, fmt.Sprintf("resolved %s", id))
-	if err := m.saveLocked(); err != nil {
-		return CatalogRow{}, err
-	}
 	e = m.applyOverrideLocked(e)
-	return m.catalogRowFromEntryLocked(e, cur), nil
+	row := m.catalogRowFromEntryLocked(e, cur)
+	st := m.copyStateLocked()
+	m.mu.Unlock()
+	return row, persistState(m.path, st)
 }
 
 func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]CatalogRow, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	cfg := m.cfg
 	cfg.DefaultPreset = m.effectivePresetLocked()
 	entries := make([]rulecatalog.Entry, 0, len(m.entries))
@@ -965,6 +967,7 @@ func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]C
 		}
 	}
 	if target == nil {
+		m.mu.Unlock()
 		return nil, os.ErrNotExist
 	}
 	var winner CatalogRow
@@ -984,9 +987,11 @@ func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]C
 		}
 	}
 	if !winnerSet {
+		m.mu.Unlock()
 		return nil, os.ErrNotExist
 	}
 	if tied {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("source priority tie for conflict %s at priority %d; resolve manually", id, winner.SourcePriority)
 	}
 	ids := make([]string, 0, len(target.Entries)-1)
@@ -996,6 +1001,7 @@ func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]C
 		}
 	}
 	if len(ids) == 0 {
+		m.mu.Unlock()
 		return nil, os.ErrNotExist
 	}
 	before, beforeExists := captureOverrides(m.overrides, ids)
@@ -1021,17 +1027,17 @@ func (m *Manager) ResolveConflictByPriority(id string, changedBy ...string) ([]C
 		source = winner.SourceIDs[0]
 	}
 	m.recordRollbackLocked("conflict source priority resolve", ids, before, beforeExists, fmt.Sprintf("resolved %s with source %s priority %d", id, source, winner.SourcePriority))
-	if err := m.saveLocked(); err != nil {
-		return nil, err
-	}
-	return m.rowsForIDsLocked(ids), nil
+	rows := m.rowsForIDsLocked(ids)
+	st := m.copyStateLocked()
+	m.mu.Unlock()
+	return rows, persistState(m.path, st)
 }
 
 func (m *Manager) PatchEntry(id string, ov CatalogOverride, changedBy ...string) (CatalogRow, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	e, ok := m.entries[id]
 	if !ok {
+		m.mu.Unlock()
 		return CatalogRow{}, os.ErrNotExist
 	}
 	cur := m.overrides[id]
@@ -1040,11 +1046,11 @@ func (m *Manager) PatchEntry(id string, ov CatalogOverride, changedBy ...string)
 	setLastChangedBy(&cur, changedBy...)
 	m.overrides[id] = cur
 	m.recordRollbackLocked("catalog patch", []string{id}, before, beforeExists, "patched 1 entry")
-	if err := m.saveLocked(); err != nil {
-		return CatalogRow{}, err
-	}
 	e = m.applyOverrideLocked(e)
-	return m.catalogRowFromEntryLocked(e, cur), nil
+	row := m.catalogRowFromEntryLocked(e, cur)
+	st := m.copyStateLocked()
+	m.mu.Unlock()
+	return row, persistState(m.path, st)
 }
 
 func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride, changedBy ...string) ([]CatalogRow, error) {
@@ -1052,9 +1058,9 @@ func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride, changedBy .
 		return nil, fmt.Errorf("ids required")
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	for _, id := range ids {
 		if _, ok := m.entries[id]; !ok {
+			m.mu.Unlock()
 			return nil, fmt.Errorf("entry %q not found", id)
 		}
 	}
@@ -1066,10 +1072,10 @@ func (m *Manager) BulkPatchEntries(ids []string, ov CatalogOverride, changedBy .
 		m.overrides[id] = cur
 	}
 	m.recordRollbackLocked("catalog bulk patch", ids, before, beforeExists, fmt.Sprintf("bulk patched %d entries", len(ids)))
-	if err := m.saveLocked(); err != nil {
-		return nil, err
-	}
-	return m.rowsForIDsLocked(ids), nil
+	rows := m.rowsForIDsLocked(ids)
+	st := m.copyStateLocked()
+	m.mu.Unlock()
+	return rows, persistState(m.path, st)
 }
 
 func (m *Manager) ListRollbacks() []RollbackRecord {
@@ -1083,7 +1089,6 @@ func (m *Manager) ListRollbacks() []RollbackRecord {
 
 func (m *Manager) Rollback(id string) ([]CatalogRow, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	idx := -1
 	for i, rec := range m.rollbacks {
 		if rec.ID == id {
@@ -1092,12 +1097,14 @@ func (m *Manager) Rollback(id string) ([]CatalogRow, error) {
 		}
 	}
 	if idx < 0 {
+		m.mu.Unlock()
 		return nil, os.ErrNotExist
 	}
 	rec := m.rollbacks[idx]
 	targets := map[string]bool{}
 	for _, entryID := range rec.EntryIDs {
 		if _, ok := m.entries[entryID]; !ok {
+			m.mu.Unlock()
 			return nil, fmt.Errorf("entry %q not found", entryID)
 		}
 		targets[entryID] = true
@@ -1105,6 +1112,7 @@ func (m *Manager) Rollback(id string) ([]CatalogRow, error) {
 	for i := idx + 1; i < len(m.rollbacks); i++ {
 		for _, entryID := range m.rollbacks[i].EntryIDs {
 			if targets[entryID] {
+				m.mu.Unlock()
 				return nil, fmt.Errorf("newer rollback candidate overlaps entry %q", entryID)
 			}
 		}
@@ -1117,10 +1125,10 @@ func (m *Manager) Rollback(id string) ([]CatalogRow, error) {
 		}
 	}
 	m.rollbacks = append(m.rollbacks[:idx], m.rollbacks[idx+1:]...)
-	if err := m.saveLocked(); err != nil {
-		return nil, err
-	}
-	return m.rowsForIDsLocked(rec.EntryIDs), nil
+	rows := m.rowsForIDsLocked(rec.EntryIDs)
+	st := m.copyStateLocked()
+	m.mu.Unlock()
+	return rows, persistState(m.path, st)
 }
 
 func (m *Manager) rowsForIDsLocked(ids []string) []CatalogRow {
@@ -1202,9 +1210,9 @@ func uniqueStrings(ids []string) []string {
 func (m *Manager) SetEmergencyEmpty(on bool) error {
 	m.mu.Lock()
 	m.cfg.EmergencyEmpty = on
-	err := m.saveLocked()
+	st := m.copyStateLocked()
 	m.mu.Unlock()
-	return err
+	return persistState(m.path, st)
 }
 
 func (m *Manager) SetPreset(preset string) error {
@@ -1213,9 +1221,9 @@ func (m *Manager) SetPreset(preset string) error {
 	}
 	m.mu.Lock()
 	m.preset = preset
-	err := m.saveLocked()
+	st := m.copyStateLocked()
 	m.mu.Unlock()
-	return err
+	return persistState(m.path, st)
 }
 
 func (m *Manager) effectivePresetLocked() string {
@@ -1347,10 +1355,13 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 		status.ExcludedCount = len(entries)
 		if recordHistory {
 			m.mu.Lock()
-			err := m.persistGenerationLocked(status, nil, nil, now, false)
+			st, err := m.persistGenerationLocked(status, nil, nil, now, false)
 			status.History = feedHistoryNewestFirst(m.feedHistory)
 			m.mu.Unlock()
 			if err != nil {
+				return Preview{Status: status, Lines: b.String(), Sources: sources}, err
+			}
+			if err := persistState(m.path, st); err != nil {
 				return Preview{Status: status, Lines: b.String(), Sources: sources}, err
 			}
 		}
@@ -1406,9 +1417,10 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	}
 	status.StaleSources = len(staleSources)
 	var saveErr error
+	var persistSt state
 	m.mu.Lock()
 	if recordHistory {
-		saveErr = m.persistGenerationLocked(status, feedSeen, includedIDs, now, true)
+		persistSt, saveErr = m.persistGenerationLocked(status, feedSeen, includedIDs, now, true)
 		status.History = feedHistoryNewestFirst(m.feedHistory)
 	} else {
 		m.lastGenerated = now
@@ -1416,6 +1428,11 @@ func (m *Manager) generate(ctx context.Context, includeRows bool, recordHistory 
 	m.mu.Unlock()
 	if saveErr != nil {
 		return Preview{Status: status, Items: items, Lines: b.String(), Sources: sources}, saveErr
+	}
+	if recordHistory {
+		if saveErr = persistState(m.path, persistSt); saveErr != nil {
+			return Preview{Status: status, Items: items, Lines: b.String(), Sources: sources}, saveErr
+		}
 	}
 	p := Preview{Status: status, Items: items, Lines: b.String(), Sources: sources}
 	if includeRows {
@@ -1486,7 +1503,7 @@ func feedItemSearchText(item FeedItem) string {
 	return strings.ToLower(strings.Join(parts, " "))
 }
 
-func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string]time.Time, includedIDs []string, generatedAt time.Time, updateFeedSeen bool) error {
+func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string]time.Time, includedIDs []string, generatedAt time.Time, updateFeedSeen bool) (state, error) {
 	m.lastGenerated = generatedAt
 	if updateFeedSeen {
 		m.feedSeen = feedSeen
@@ -1506,7 +1523,7 @@ func (m *Manager) persistGenerationLocked(status FeedStatus, feedSeen map[string
 	if len(m.feedHistory) > 50 {
 		m.feedHistory = m.feedHistory[len(m.feedHistory)-50:]
 	}
-	return m.saveLocked()
+	return m.copyStateLocked(), nil
 }
 
 func feedSnapshotDelta(prev map[string]bool, nextIDs []string) (added, removed int) {
@@ -1722,7 +1739,7 @@ func (m *Manager) applyOverrideLocked(e rulecatalog.Entry) rulecatalog.Entry {
 	return e
 }
 
-func (m *Manager) saveLocked() error {
+func (m *Manager) copyStateLocked() state {
 	emergency := m.cfg.EmergencyEmpty
 	st := state{Overrides: m.overrides, EmergencyEmpty: &emergency}
 	st.PresetOverride = m.preset
@@ -1749,15 +1766,19 @@ func (m *Manager) saveLocked() error {
 	}
 	sort.Slice(st.Sources, func(i, j int) bool { return st.Sources[i].ID < st.Sources[j].ID })
 	sort.Slice(st.Entries, func(i, j int) bool { return st.Entries[i].ID < st.Entries[j].ID })
+	return st
+}
+
+func persistState(path string, st state) error {
 	raw, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := m.path + ".tmp"
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, m.path)
+	return os.Rename(tmp, path)
 }
 
 func (m *Manager) applyEntriesLocked(sourceID string, entries []rulecatalog.Entry) {
