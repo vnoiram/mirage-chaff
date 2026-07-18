@@ -29,6 +29,7 @@ type sessionManager struct {
 type lockState struct {
 	failures  int
 	lockUntil time.Time
+	lastSeen  time.Time
 }
 
 type ipState struct {
@@ -39,6 +40,7 @@ type ipState struct {
 const (
 	lockThreshold = 5
 	lockDuration  = 5 * time.Minute
+	lockSweepAge  = 30 * time.Minute
 
 	ipLockThreshold = 20
 	ipLockDuration  = 15 * time.Minute
@@ -120,14 +122,23 @@ func (m *sessionManager) locked(username string) bool {
 }
 
 // recordFailure bumps the failure count and locks after the threshold.
+// It also opportunistically sweeps sub-threshold entries whose window has
+// expired, so stale entries from users who failed < 5 times and never
+// returned do not accumulate forever.
 func (m *sessionManager) recordFailure(username string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for k, ls := range m.locks {
+		if ls.lockUntil.IsZero() && time.Since(ls.lastSeen) > lockSweepAge {
+			delete(m.locks, k)
+		}
+	}
 	l := m.locks[username]
 	if l == nil {
 		l = &lockState{}
 		m.locks[username] = l
 	}
+	l.lastSeen = time.Now()
 	l.failures++
 	if l.failures >= lockThreshold {
 		l.lockUntil = time.Now().Add(lockDuration)

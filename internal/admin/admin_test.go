@@ -136,6 +136,24 @@ func TestSessionLockout(t *testing.T) {
 	}
 }
 
+func TestLockStateGCRemovesStaleSubThresholdEntries(t *testing.T) {
+	m := newSessionManager(0)
+	// Record sub-threshold failures for u1 (fewer than lockThreshold).
+	for i := 0; i < lockThreshold-1; i++ {
+		m.recordFailure("u1")
+	}
+	if _, exists := m.locks["u1"]; !exists {
+		t.Fatal("u1 lock entry should exist after failures")
+	}
+	// Backdate lastSeen beyond lockSweepAge to simulate an expired window.
+	m.locks["u1"].lastSeen = time.Now().Add(-lockSweepAge - time.Second)
+	// Trigger sweep via a failure for a different user.
+	m.recordFailure("u2")
+	if _, exists := m.locks["u1"]; exists {
+		t.Error("stale sub-threshold entry for u1 should have been swept")
+	}
+}
+
 func TestAdminUISmokeIncludesAnalyticsAndCatalogActions(t *testing.T) {
 	b, err := fs.ReadFile(webFS, "web/index.html")
 	if err != nil {
