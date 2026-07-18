@@ -43,36 +43,22 @@ delete_rewrites_via_api() {
     log "curl not found; falling back to file method"
     return 1
   fi
-  if ! command -v python3 >/dev/null 2>&1; then
-    log "python3 not found; falling back to file method"
+  if ! command -v jq >/dev/null 2>&1; then
+    log "jq not found; falling back to file method"
     return 1
   fi
 
-  local list payloads count
+  local list payloads count jq_targets
   if ! list="$(curl -fsS -u "${AGH_API_USER}:${AGH_API_PASS}" "$(api_url control/rewrite/list)")"; then
     log "failed to list AGH rewrites via API; falling back to file method"
     return 1
   fi
-  if ! payloads="$(
-    AGH_KILLSWITCH_TARGETS="$AGH_KILLSWITCH_TARGETS" python3 -c '
-import json
-import os
-import re
-import sys
-
-targets = {x for x in re.split(r"[\s,]+", os.environ.get("AGH_KILLSWITCH_TARGETS", "").strip()) if x}
-rewrites = json.load(sys.stdin)
-if not isinstance(rewrites, list):
-    raise SystemExit("rewrite list response is not a JSON array")
-for rewrite in rewrites:
-    if not isinstance(rewrite, dict):
-        continue
-    domain = rewrite.get("domain")
-    answer = rewrite.get("answer")
-    if domain and answer in targets:
-        print(json.dumps({"domain": domain, "answer": answer}, separators=(",", ":")))
-' <<<"$list"
-  )"; then
+  jq_targets="$(printf '%s' "$AGH_KILLSWITCH_TARGETS" \
+    | tr ' ,\t' '\n' | grep -v '^$' \
+    | jq -Rsc 'split("\n") | map(select(. != ""))')"
+  if ! payloads="$(printf '%s' "$list" | jq -rc \
+    --argjson targets "$jq_targets" \
+    '.[] | select(.answer as $a | $targets | index($a) != null) | {domain,answer}')"; then
     log "failed to parse AGH rewrite list; falling back to file method"
     return 1
   fi
