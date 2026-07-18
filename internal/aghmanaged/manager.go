@@ -5,7 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -1144,7 +1144,7 @@ func (m *Manager) recordRollbackLocked(action string, ids []string, before map[s
 	for _, id := range ids {
 		after[id] = copyOverride(m.overrides[id])
 	}
-	h := sha1.Sum([]byte(action + "\x00" + strings.Join(ids, "\x00") + "\x00" + time.Now().UTC().Format(time.RFC3339Nano)))
+	h := sha256.Sum256([]byte(action + "\x00" + strings.Join(ids, "\x00") + "\x00" + time.Now().UTC().Format(time.RFC3339Nano)))
 	rec := RollbackRecord{
 		ID:           "rb_" + hex.EncodeToString(h[:])[:12],
 		Time:         time.Now(),
@@ -1777,7 +1777,7 @@ func sourceID(src Source) string {
 	if src.Type == SourceManual {
 		material = src.Type + "\x00" + src.Name + "\x00" + src.Content
 	}
-	h := sha1.Sum([]byte(material))
+	h := sha256.Sum256([]byte(material))
 	return "src_" + hex.EncodeToString(h[:])[:12]
 }
 
@@ -2120,7 +2120,7 @@ func splitEntryKey(key string) (string, string) {
 }
 
 func conflictID(domain, path string) string {
-	h := sha1.Sum([]byte(domainPathKey(domain, path)))
+	h := sha256.Sum256([]byte(domainPathKey(domain, path)))
 	return "conflict_" + hex.EncodeToString(h[:])[:12]
 }
 

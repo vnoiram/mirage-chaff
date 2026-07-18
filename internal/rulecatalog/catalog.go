@@ -4,7 +4,7 @@
 package rulecatalog
 
 import (
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -500,7 +500,7 @@ func safeCNAMEHost(host string) bool {
 }
 
 func stableID(e Entry) string {
-	h := sha1.Sum([]byte(e.Source.Type + "\x00" + e.Source.Name + "\x00" + e.OriginalRule + "\x00" + e.Match.Domain + "\x00" + e.Match.Path))
+	h := sha256.Sum256([]byte(e.Source.Type + "\x00" + e.Source.Name + "\x00" + e.OriginalRule + "\x00" + e.Match.Domain + "\x00" + e.Match.Path))
 	return "rc_" + hex.EncodeToString(h[:])[:16]
 }
 
