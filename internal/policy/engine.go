@@ -52,6 +52,8 @@ func (e *Engine) TempRules() map[string]time.Time {
 	for d, t := range e.temps {
 		if now.Before(t.expires) {
 			out[d] = t.expires
+		} else {
+			delete(e.temps, d)
 		}
 	}
 	return out

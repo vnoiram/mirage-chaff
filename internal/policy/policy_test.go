@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func loadDir(t *testing.T, yaml string) *Ruleset {
@@ -116,5 +117,28 @@ default: { action: stub, catalog: beacon-204 }
 	}
 	if top[0].Domain != "new.test" || top[0].Count != 2 {
 		t.Errorf("expected new.test x2 first, got %+v", top[0])
+	}
+}
+
+func TestTempRuleSweepsExpiredOnList(t *testing.T) {
+	e := NewEngine(&Ruleset{})
+	e.AddTempRule("expired.example", "forward-asis", "", time.Millisecond)
+	e.AddTempRule("alive.example", "forward-asis", "", time.Hour)
+	time.Sleep(10 * time.Millisecond)
+
+	got := e.TempRules()
+	if _, ok := got["expired.example"]; ok {
+		t.Error("expired rule should not appear in TempRules result")
+	}
+	if _, ok := got["alive.example"]; !ok {
+		t.Error("live rule should appear in TempRules result")
+	}
+
+	// Verify the expired entry was swept from the internal map.
+	e.tmu.Lock()
+	_, stillThere := e.temps["expired.example"]
+	e.tmu.Unlock()
+	if stillThere {
+		t.Error("expired rule should have been deleted from temps map by TempRules sweep")
 	}
 }
