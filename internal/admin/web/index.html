@@ -152,6 +152,16 @@ const TABS = [
   ['Audit','audit.view',viewAudit],
 ];
 let CUR = 'Dashboard';
+if (location.hash) {
+  const _h = decodeURIComponent(location.hash.slice(1));
+  if (TABS.some(t => t[0] === _h)) CUR = _h;
+}
+window.addEventListener('hashchange', () => {
+  if (!ME) return;
+  const _h = decodeURIComponent(location.hash.slice(1));
+  if (TABS.some(t => t[0] === _h)) CUR = _h;
+  render();
+});
 let AGH_MANAGED_LAST_BASE_URL = '';
 let AGH_MANAGED_EMERGENCY_RESULT = '';
 let AGH_MANAGED_REFRESH_RESULT = null;
@@ -180,7 +190,7 @@ function render(){
   TABS.filter(t=>has(t[1])).forEach(t=>{
     const b=document.createElement('button'); b.textContent=t[0];
     if(t[0]===CUR) b.className='active';
-    b.onclick=()=>{ CUR=t[0]; render(); };
+    b.onclick=()=>{ location.hash=encodeURIComponent(t[0]); };
     nav.appendChild(b);
   });
   const tab = TABS.find(t=>t[0]===CUR) || TABS[0];
