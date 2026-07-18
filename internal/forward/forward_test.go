@@ -118,6 +118,18 @@ func TestAsisPreservesRequest(t *testing.T) {
 	}
 }
 
+func TestScrubbedUAFallsBackOnBlank(t *testing.T) {
+	origin, got := newOrigin(t)
+	f := New(staticResolver{net.IPv4(127, 0, 0, 1)}, Options{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		ScrubbedUA:      "   ", // whitespace-only must fall back to defaultScrubbedUA
+	})
+	f.Scrubbed(httptest.NewRecorder(), request(t, origin, "/"))
+	if got.UA != defaultScrubbedUA {
+		t.Errorf("UA = %q, want %q (whitespace ScrubbedUA should fall back to default)", got.UA, defaultScrubbedUA)
+	}
+}
+
 func TestOnErrorFailSafe(t *testing.T) {
 	called := false
 	f := New(staticResolver{net.IPv4(127, 0, 0, 1)}, Options{

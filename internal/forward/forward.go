@@ -86,7 +86,7 @@ func New(res Resolver, opts Options) *Forwarder {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
-	ua := opts.ScrubbedUA
+	ua := strings.TrimSpace(opts.ScrubbedUA)
 	if ua == "" {
 		ua = defaultScrubbedUA
 	}

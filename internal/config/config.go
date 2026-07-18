@@ -1,10 +1,6 @@
 // Package config loads and validates mirage-chaff.conf.
 //
-// The on-disk config is TOML (see configs/mirage-chaff.conf.sample). Phase 0
-// establishes the full config surface, sane defaults, and validation so that
-// `mirage-chaff check` works end-to-end; the TOML decode step is wired in
-// Phase 1 (marked TODO below) to keep the Phase 0 skeleton dependency-free and
-// buildable offline.
+// The on-disk config is TOML (see configs/mirage-chaff.conf.sample).
 //
 // Reload semantics (see design doc "設定項目の反映方法"):
 //   - Reload-safe (SIGHUP): policy.d, catalog, Mimic thresholds, Log, RateLimit,
@@ -411,6 +407,9 @@ func (c Config) Check() error {
 		if err := checkDuration(fd.field, fd.val); err != nil {
 			return err
 		}
+	}
+	if c.ScrubbedUA != "" && strings.TrimSpace(c.ScrubbedUA) == "" {
+		return fmt.Errorf("scrubbed_ua: must not be blank or whitespace-only (omit the field to use the built-in default)")
 	}
 	return nil
 }

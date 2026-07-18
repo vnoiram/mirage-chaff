@@ -62,6 +62,9 @@ func TestCheckRejectsBadValues(t *testing.T) {
 		"invalid stale source ttl": func(c *Config) {
 			c.AGHManaged.Scheduler.StaleSourceTTL = "3d0h"
 		},
+		"whitespace-only scrubbed_ua": func(c *Config) {
+			c.ScrubbedUA = "   "
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
