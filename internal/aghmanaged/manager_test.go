@@ -2036,3 +2036,36 @@ func TestSyncDueHonorsMaxParallelSyncs(t *testing.T) {
 		t.Fatalf("max active syncs = %d, want at least 2", got)
 	}
 }
+
+func TestSyncSourceRejectsOversizedFilterURL(t *testing.T) {
+	const limit = 32 << 20
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Write limit+1 bytes so the manager detects overflow.
+		w.Header().Set("Content-Type", "text/plain")
+		chunk := make([]byte, 4096)
+		for written := 0; written < limit+1; written += len(chunk) {
+			remaining := limit + 1 - written
+			if remaining < len(chunk) {
+				chunk = chunk[:remaining]
+			}
+			_, _ = w.Write(chunk)
+		}
+	}))
+	defer srv.Close()
+
+	m, err := Open(filepath.Join(t.TempDir(), "managed.json"), testConfig(), fakeResolver{ips: []net.IP{net.ParseIP("192.0.2.10")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{Type: SourceFilterURL, Name: "big", URL: srv.URL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.SyncSource(context.Background(), src.ID)
+	if err == nil {
+		t.Fatal("expected error for oversized filter list, got nil")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected 'too large' in error, got: %v", err)
+	}
+}

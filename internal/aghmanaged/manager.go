@@ -1558,9 +1558,13 @@ func (m *Manager) fetchSource(ctx context.Context, src Source) ([]rulecatalog.En
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("fetch status %d", resp.StatusCode)
 		}
-		b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		const filterURLMaxBytes = 32 << 20
+		b, err := io.ReadAll(io.LimitReader(resp.Body, filterURLMaxBytes+1))
 		if err != nil {
 			return nil, err
+		}
+		if int64(len(b)) > filterURLMaxBytes {
+			return nil, fmt.Errorf("filter list too large (> %d bytes): %s", filterURLMaxBytes, src.URL)
 		}
 		content = string(b)
 	case SourceAGHCustomRules:
