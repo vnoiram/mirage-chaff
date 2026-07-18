@@ -2069,3 +2069,49 @@ func TestSyncSourceRejectsOversizedFilterURL(t *testing.T) {
 		t.Fatalf("expected 'too large' in error, got: %v", err)
 	}
 }
+
+func TestDeleteSourceCleansUpEntriesAndPersists(t *testing.T) {
+	cfg := testConfig()
+	cfg.TargetMode = "static_ip"
+	cfg.StaticIPv4 = []string{"192.0.2.10"}
+	path := filepath.Join(t.TempDir(), "managed.json")
+
+	m, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := m.UpsertSource(Source{
+		Type: SourceManual, Name: "src1", Enabled: true,
+		Content: "||delete-me.example.com^\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SyncSource(context.Background(), src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rows := m.CatalogRows(); len(rows) == 0 {
+		t.Fatal("expected at least one catalog row after SyncSource")
+	}
+
+	if err := m.DeleteSource(src.ID); err != nil {
+		t.Fatal(err)
+	}
+	if sources := m.ListSources(); len(sources) != 0 {
+		t.Fatalf("expected 0 sources after delete, got %d", len(sources))
+	}
+	if rows := m.CatalogRows(); len(rows) != 0 {
+		t.Fatalf("expected 0 catalog rows after delete, got %d", len(rows))
+	}
+
+	reopened, err := Open(path, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sources := reopened.ListSources(); len(sources) != 0 {
+		t.Fatalf("expected 0 sources after reopen, got %d", len(sources))
+	}
+	if rows := reopened.CatalogRows(); len(rows) != 0 {
+		t.Fatalf("expected 0 catalog rows after reopen, got %d", len(rows))
+	}
+}
