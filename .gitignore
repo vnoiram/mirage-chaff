@@ -20,7 +20,6 @@ agh.env
 # --- Build artifacts ---
 /bin/
 /dist/*
-!/dist/agh-managed-rewrite-ui-implementation-diff.md
 /docs/*
 !/docs/agh-managed-rewrite-e2e.md
 mirage-chaff
