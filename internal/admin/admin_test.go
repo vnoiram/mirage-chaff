@@ -2288,3 +2288,30 @@ func auditEntryForAction(store *Store, action string) (AuditEntry, bool) {
 	}
 	return AuditEntry{}, false
 }
+
+func TestHandlerSetsSecurityHeaders(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(store, Deps{}).Handler()
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	cases := map[string]string{
+		"X-Frame-Options":         "DENY",
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+		"Content-Security-Policy": "default-src 'self'", // prefix check
+	}
+	for header, want := range cases {
+		got := rr.Header().Get(header)
+		if header == "Content-Security-Policy" {
+			if !strings.HasPrefix(got, want) {
+				t.Errorf("%s = %q, want prefix %q", header, got, want)
+			}
+		} else if got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+}

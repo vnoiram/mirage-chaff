@@ -216,13 +216,13 @@ func (s *Server) Handler() http.Handler {
 	// Embedded SPA.
 	sub, _ := fs.Sub(webFS, "web")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
-	return s.limitBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return s.securityHeaders(s.limitBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && s.isAGHManagedFeedPath(r.URL.Path) {
 			s.handleAGHManagedFeed(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}))
+	})))
 }
 
 func (s *Server) isAGHManagedFeedPath(path string) bool {
@@ -275,6 +275,19 @@ func (s *Server) withAuth(capability string, h func(http.ResponseWriter, *http.R
 		}
 		h(w, r, sess)
 	}
+}
+
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		// SPA requires inline scripts; frame-ancestors 'none' redundantly enforces no framing.
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) limitBody(next http.Handler) http.Handler {
