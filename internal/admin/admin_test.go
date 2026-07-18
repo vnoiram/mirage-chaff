@@ -2289,6 +2289,36 @@ func auditEntryForAction(store *Store, action string) (AuditEntry, bool) {
 	return AuditEntry{}, false
 }
 
+func TestLoginCookieHasMaxAge(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "admin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(User{Username: "u", Hash: HashPassword("pass"), Role: RoleAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	h := New(store, Deps{}).Handler()
+	body, _ := json.Marshal(map[string]string{"username": "u", "password": "pass"})
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("login status %d", rr.Code)
+	}
+	for _, raw := range rr.Header().Values("Set-Cookie") {
+		if strings.HasPrefix(raw, sessionCookie+"=") {
+			if !strings.Contains(raw, "Max-Age=") {
+				t.Errorf("session cookie missing Max-Age: %q", raw)
+			}
+			return
+		}
+	}
+	t.Error("no session cookie found in login response")
+}
+
 func TestHandlerSetsSecurityHeaders(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "admin.json"))
 	if err != nil {

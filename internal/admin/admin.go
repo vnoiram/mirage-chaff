@@ -363,6 +363,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Name:     sessionCookie,
 		Value:    sess.id,
 		Path:     "/",
+		MaxAge:   int(s.sess.idleTimeout.Seconds()),
 		HttpOnly: true,
 		Secure:   s.secureCookie(r),
 		SameSite: http.SameSiteStrictMode,
