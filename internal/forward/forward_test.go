@@ -76,7 +76,7 @@ func TestScrubbedRemovesIdentifiers(t *testing.T) {
 	if got.Cookie != "" {
 		t.Errorf("cookie should be scrubbed, origin saw %q", got.Cookie)
 	}
-	if got.UA != genericUA {
+	if got.UA != defaultScrubbedUA {
 		t.Errorf("UA = %q, want generic", got.UA)
 	}
 	if got.XFF != "" {

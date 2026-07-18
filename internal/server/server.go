@@ -119,7 +119,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.resolver = res
 	s.mimic.Store(mimic.New(res, mimic.Options{MaxBytes: s.cfg.Mimic.MaxBytes, AllowVideo: s.cfg.Mimic.AllowVideo, CacheMax: s.cfg.Mimic.CacheMax}))
-	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes}))
+	s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes, ScrubbedUA: s.cfg.ScrubbedUA}))
 	s.recorder = observability.NewRecorderWithOptions(recorderOptions(s.cfg), 4096)
 	s.breaker = newBreaker(5, 30*time.Second)
 	s.limiter.Store(newRateLimiter(s.cfg.Resources.RateLimit))
@@ -893,7 +893,7 @@ func (s *Server) reload() {
 			log.Printf("reload: keeping current resolver (new one invalid: %v)", err)
 		} else {
 			s.resolver = res
-			s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes}))
+			s.fwd.Store(forward.New(res, forward.Options{OnError: s.forwardFailSafe, BodyModifier: s.rewriteHashes, ScrubbedUA: newCfg.ScrubbedUA}))
 			s.cfg.Upstream = newCfg.Upstream
 			log.Printf("reload: resolver updated")
 		}

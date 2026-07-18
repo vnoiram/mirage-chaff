@@ -51,6 +51,9 @@ type Config struct {
 	AGHSync        AGHSyncConfig        `toml:"agh_sync" reload:"safe"`
 	RuleCatalog    RuleCatalogConfig    `toml:"rule_catalog" reload:"safe"`
 	UnknownProfile UnknownProfileConfig `toml:"unknown_profile" reload:"safe"`
+	// ScrubbedUA overrides the User-Agent used on forward-scrubbed requests.
+	// Empty uses the built-in default (current Chrome on Linux).
+	ScrubbedUA string `toml:"scrubbed_ua" reload:"safe"`
 
 	// path is the file this config was loaded from (empty if defaults-only).
 	path string

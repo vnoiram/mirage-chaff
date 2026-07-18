@@ -24,8 +24,9 @@ type Resolver interface {
 	LookupIP(ctx context.Context, host string) ([]net.IP, error)
 }
 
-// genericUA is the User-Agent substituted on scrubbed requests.
-const genericUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+// defaultScrubbedUA is the User-Agent substituted on scrubbed requests when
+// Options.ScrubbedUA is empty.
+const defaultScrubbedUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 // trackingIDParams are common client-identifier query/body parameters removed on
 // scrubbed requests.
@@ -69,6 +70,9 @@ type Options struct {
 	// body and returns the possibly-changed body plus whether it changed. Only
 	// called for uncompressed bodies with a known length under htmlModifyLimit.
 	BodyModifier func(contentType string, body []byte) ([]byte, bool)
+	// ScrubbedUA overrides the User-Agent set on scrubbed requests. Empty uses
+	// defaultScrubbedUA.
+	ScrubbedUA string
 }
 
 // New builds a Forwarder using res for upstream resolution.
@@ -82,6 +86,10 @@ func New(res Resolver, opts Options) *Forwarder {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
+	ua := opts.ScrubbedUA
+	if ua == "" {
+		ua = defaultScrubbedUA
+	}
 	f := &Forwarder{res: res}
 	errHandler := func(w http.ResponseWriter, r *http.Request, err error) {
 		if opts.OnError != nil {
@@ -92,13 +100,13 @@ func New(res Resolver, opts Options) *Forwarder {
 		w.WriteHeader(http.StatusBadGateway)
 	}
 	f.asis = &httputil.ReverseProxy{
-		Rewrite:        rewriteTo(false),
+		Rewrite:        rewriteTo(false, ""),
 		Transport:      transport,
 		ModifyResponse: modifyResponse(false, opts.BodyModifier),
 		ErrorHandler:   errHandler,
 	}
 	f.scrubbed = &httputil.ReverseProxy{
-		Rewrite:        rewriteTo(true),
+		Rewrite:        rewriteTo(true, ua),
 		Transport:      transport,
 		ModifyResponse: modifyResponse(true, opts.BodyModifier),
 		ErrorHandler:   errHandler,
@@ -115,7 +123,7 @@ func (f *Forwarder) Scrubbed(w http.ResponseWriter, r *http.Request) { f.scrubbe
 // rewriteTo builds a ReverseProxy Rewrite that targets the request's own host
 // over HTTPS. When scrub is set, identifying data is stripped from the outbound
 // request.
-func rewriteTo(scrub bool) func(*httputil.ProxyRequest) {
+func rewriteTo(scrub bool, ua string) func(*httputil.ProxyRequest) {
 	return func(pr *httputil.ProxyRequest) {
 		// Preserve the authority (host[:port]); the transport's resolver-backed
 		// dialer splits it and resolves the host. Production authorities carry no
@@ -127,12 +135,12 @@ func rewriteTo(scrub bool) func(*httputil.ProxyRequest) {
 		// Do not leak the client IP via X-Forwarded-For.
 		pr.Out.Header.Del("X-Forwarded-For")
 		if scrub {
-			scrubRequest(pr.Out)
+			scrubRequest(pr.Out, ua)
 		}
 	}
 }
 
-func scrubRequest(r *http.Request) {
+func scrubRequest(r *http.Request, ua string) {
 	for _, h := range trackingHeaders {
 		r.Header.Del(h)
 	}
@@ -141,7 +149,7 @@ func scrubRequest(r *http.Request) {
 			r.Header.Del(name)
 		}
 	}
-	r.Header.Set("User-Agent", genericUA)
+	r.Header.Set("User-Agent", ua)
 
 	// Strip client-identifier query parameters.
 	if q := r.URL.Query(); len(q) > 0 {
